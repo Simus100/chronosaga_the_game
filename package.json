@@ -1,0 +1,18 @@
+{
+  "name": "parametric-ai-adventure",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@latest",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @paa/web --filter @paa/server dev",
+    "dev:web": "pnpm --filter @paa/web dev",
+    "dev:server": "pnpm --filter @paa/server dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @paa/game-core test",
+    "lint": "pnpm -r lint --if-present"
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  }
+}

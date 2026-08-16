@@ -1,0 +1,12 @@
+{
+  "id": "dm-lite",
+  "version": "0.0-unselected",
+  "family": "TBD_AFTER_P0_BENCHMARK",
+  "file": "dungeon-master-default.gguf",
+  "sha256": null,
+  "quantization": "TBD",
+  "license": "TBD",
+  "contextTarget": 4096,
+  "minRamMb": null,
+  "recommendedRamMb": null
+}

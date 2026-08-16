@@ -1,0 +1,12 @@
+{
+  "name": "@paa/procedural-narrator",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": { "@paa/ai-contracts": "workspace:*" },
+  "devDependencies": { "typescript": "latest" }
+}

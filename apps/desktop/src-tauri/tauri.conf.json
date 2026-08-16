@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Parametric AI Adventure",
+  "version": "0.1.0",
+  "identifier": "it.universalis.parametricaiadventure",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "beforeBuildCommand": "pnpm --filter @paa/web build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Parametric AI Adventure",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 700
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": [
+      "../../models/manifest.json"
+    ]
+  }
+}

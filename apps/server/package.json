@@ -1,0 +1,26 @@
+{
+  "name": "@paa/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@paa/ai-contracts": "workspace:*",
+    "@paa/game-core": "workspace:*",
+    "@paa/game-data": "workspace:*",
+    "@paa/game-types": "workspace:*",
+    "@paa/procedural-narrator": "workspace:*",
+    "fastify": "latest",
+    "@fastify/cors": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}
