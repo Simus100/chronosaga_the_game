@@ -1,8 +1,7 @@
 {
-  "name": "parametric-ai-adventure",
+  "name": "chronosaga-the-game",
   "private": true,
   "version": "0.1.0",
-  "packageManager": "pnpm@latest",
   "scripts": {
     "dev": "pnpm --parallel --filter @paa/web --filter @paa/server dev",
     "dev:web": "pnpm --filter @paa/web dev",
