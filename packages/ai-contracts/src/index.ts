@@ -26,3 +26,5 @@ export interface AIDMOutput {
 export interface AIDMProvider {
   generateNarration(input: AIDMInput): Promise<AIDMOutput>;
 }
+
+export * from './profile-selection.js';
