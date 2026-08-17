@@ -8,7 +8,7 @@
     "dev:server": "pnpm --filter @paa/server dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @paa/game-core test",
+    "test": "pnpm --filter @paa/game-core test && pnpm --filter @paa/ai-contracts test",
     "lint": "pnpm -r lint --if-present"
   },
   "devDependencies": {
