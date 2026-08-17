@@ -51,3 +51,12 @@ jobs:
         run: pnpm --filter @paa/web build
       - name: Check Tauri Windows runtime
         run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Build Windows P0 NSIS installer
+        run: pnpm --dir apps/desktop tauri build --bundles nsis
+      - name: Upload Windows P0 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: chronosaga-windows-p0-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
