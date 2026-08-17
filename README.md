@@ -30,6 +30,8 @@ flowchart LR
 
 The Web target remains alive throughout development because the Simulation Core, data contracts and most UI are shared. What is deliberately postponed is the expensive operational layer: authentication, multi-user scaling, server AI concurrency and public VPS deployment.
 
+Lovable remains part of the implementation workflow, but advanced UI production follows the Windows/local-AI P0 gate so visual work does not hide unresolved runtime constraints.
+
 ---
 
 # Vision
@@ -427,11 +429,11 @@ Principles:
 - no generic SaaS dashboard;
 - no permanent central AI chatbot.
 
-Lovable is part of the workflow, but its advanced implementation follows the Windows/local-AI P0 gate.
+Lovable is part of the workflow, but advanced implementation follows the Windows/local-AI P0 gate.
 
 ```mermaid
 flowchart LR
-    SPEC[ChatGPT / Project Specs] --> GIT[GitHub]
+    SPEC[Project specifications] --> GIT[GitHub]
     P0[P0 Windows + AI] --> UI[Lovable UI work]
     GIT --> UI
     UI --> BR[feature branch]
@@ -465,8 +467,8 @@ models/                     # manifests only; no model weights
 data/                       # game content
 assets/                     # project assets/placeholders
 infra/                      # Docker/Nginx/deployment
-/docs                       # authoritative project specifications
-/tests                      # cross-system tests
+docs/                       # authoritative project specifications
+tests/                      # cross-system tests
 ```
 
 ---
