@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@paa/game-types": "workspace:*",
+    "@tauri-apps/api": "^2.11.0",
     "react": "latest",
     "react-dom": "latest"
   },
