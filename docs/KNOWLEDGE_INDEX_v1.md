@@ -96,6 +96,21 @@ Brief operativo per Lovable:
 - Definition of Done;
 - limiti di autonomia e dipendenze.
 
+## 8. `LOCAL_AI_MODEL_PROFILES_v0.1.md`
+Fonte prevalente per la strategia dual-model locale:
+- profilo Lite ~1.7B;
+- profilo Standard ~3B;
+- selezione `AUTO / LITE / STANDARD / PROCEDURAL`;
+- hardware probe;
+- requisiti RAM/VRAM/storage PROVISIONAL;
+- fallback Standard → Lite → Procedural;
+- packaging Windows con due modelli;
+- modello WebGPU on-demand nel browser;
+- benchmark VPS Lite/Standard;
+- UI requirements del model selector;
+- candidate families e gate di licenza;
+- acceptance criteria del P0 dual-model.
+
 ---
 
 # Regola di precedenza
@@ -106,12 +121,13 @@ In caso di conflitto:
 2. documento con versione/data più recente;
 3. `PRODUCT_VISION_LOCKED_v1.md` prevale sulle preferenze generali di prodotto;
 4. `GAME_SYSTEMS_SCHEMA_v0.1.md` prevale sui dettagli di gameplay e simulazione;
-5. `UI_VISUAL_SYSTEM_v0.1.md` prevale su UI/UX e linguaggio visuale;
-6. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md` governa l'esecuzione Lovable ma non può contraddire Product Vision, Game Systems o UI Visual System;
-7. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md` prevale su packaging/distribuzione/AI locale;
-8. `TECHNICAL_ROADMAP_v0.1.md` prevale su dettagli di implementazione generici.
+5. `UI_VISUAL_SYSTEM_v0.1.md` prevale su UI/UX e linguaggio visuale generale;
+6. `LOCAL_AI_MODEL_PROFILES_v0.1.md` prevale sui profili locali, selezione modello, requisiti visualizzati nel menu e fallback dual-model;
+7. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md` governa l'esecuzione Lovable ma non può contraddire Product Vision, Game Systems, UI Visual System o Local AI Model Profiles;
+8. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md` prevale sugli aspetti generali di packaging/distribuzione/AI locale non ridefiniti dal documento dual-model;
+9. `TECHNICAL_ROADMAP_v0.1.md` prevale su dettagli di implementazione generici.
 
-Le formule o scelte marcate `PROVISIONAL` non sono considerate definitive e possono essere sostituite dopo playtest/prototype review senza modificare la Product Vision.
+Le formule o scelte marcate `PROVISIONAL` non sono considerate definitive e possono essere sostituite dopo playtest, benchmark o prototype review senza modificare la Product Vision.
 
 ---
 
@@ -123,4 +139,4 @@ Priorità consigliata:
 2. `DATA_SCHEMA_v0.1.md`
 3. `P0_BENCHMARK_PLAN_v0.1.md`
 
-Prima della produzione avanzata deve essere eseguito anche il gate tecnico P0 definito nel documento di fattibilità.
+Prima della produzione avanzata deve essere eseguito anche il gate tecnico P0 definito nei documenti di fattibilità e nei Local AI Model Profiles.
