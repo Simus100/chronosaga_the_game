@@ -6,6 +6,16 @@
 //! [`ProcessBackend`], [`HealthProbe`] and [`Clock`] traits, so every transition
 //! can be exercised without a binary on disk.
 //!
+//! Two invariants drive the design:
+//!
+//! * **We never lose a process we might still own.** A failure that leaves the
+//!   child potentially alive keeps its PID tracked until a kill actually
+//!   succeeds; only a confirmed-dead process releases its PID.
+//! * **No external I/O happens while the state lock is held.** Every operation
+//!   locks to reserve a transition, unlocks, performs the I/O, then locks again
+//!   to commit. P0.3-B can therefore spawn, kill and issue HTTP without ever
+//!   blocking a reader.
+//!
 //! The Simulation Core stays authoritative regardless of what happens here: a
 //! runtime that never reaches [`RuntimePhase::Ready`] must degrade to the
 //! procedural fallback, never block gameplay.
@@ -13,7 +23,7 @@
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, TryLockError},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -37,6 +47,10 @@ pub const DEFAULT_PORT: u16 = 8081;
 pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 30_000;
 
 /// Lifecycle phase of the local AI runtime.
+///
+/// `Loading` and `Ready` are only constructed on the polling path, which has no
+/// production caller until P0.3-B wires the background watcher.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimePhase {
@@ -54,6 +68,9 @@ pub enum RuntimePhase {
     /// A stop was requested and is being carried out.
     Stopping,
     /// The runtime crashed, timed out or answered in a way we cannot use.
+    ///
+    /// A failed runtime may still own a live process: check `pid` on the
+    /// snapshot rather than assuming the child is gone.
     Failed,
 }
 
@@ -84,21 +101,61 @@ pub enum HealthOutcome {
     UnexpectedStatus(u16),
 }
 
+/// Validated launch contract handed to the process backend.
+///
+/// The fields are private and there is no public constructor: the only way to
+/// obtain a `LaunchSpec` is [`RuntimeConfig::launch_spec`], which can only ever
+/// produce a loopback host because [`RuntimeConfig::new`] refuses anything else.
+/// P0.3-B therefore cannot assemble a command line from arbitrary strings — it
+/// receives an already-validated contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchSpec {
+    host: String,
+    port: u16,
+    endpoint: String,
+}
+
+// Consumed by the real command-line builder in P0.3-B.
+#[allow(dead_code)]
+impl LaunchSpec {
+    /// Host to bind. Guaranteed to be [`LOOPBACK_HOST`].
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Health endpoint derived from the same host and port as the bind address,
+    /// so the probe can never be pointed somewhere else than the process.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+}
+
 /// Everything the manager needs from an operating-system process.
+///
+/// Implementations are called without the state lock held, so they may block on
+/// real I/O. `spawn` must return `Err` only when no process was created.
 pub trait ProcessBackend: Send + Sync {
     /// Whether the runtime binary exists on disk right now.
     fn binary_present(&self) -> bool;
     /// Where the binary is expected, for diagnostics.
     fn binary_path(&self) -> &Path;
-    /// Start the runtime, returning its PID.
-    fn spawn(&self, host: &str, port: u16) -> Result<u32, String>;
+    /// Start the runtime from a validated launch contract, returning its PID.
+    fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String>;
     /// Whether a previously spawned PID is still alive.
+    #[allow(dead_code)]
     fn is_running(&self, pid: u32) -> bool;
-    /// Terminate a previously spawned PID.
+    /// Terminate a previously spawned PID. `Err` means the process may still be
+    /// running and its PID must stay tracked.
     fn kill(&self, pid: u32) -> Result<(), String>;
 }
 
 /// Everything the manager needs from the `/health` endpoint.
+///
+/// Called without the state lock held.
 pub trait HealthProbe: Send + Sync {
     fn poll(&self, endpoint: &str) -> HealthOutcome;
 }
@@ -121,11 +178,14 @@ impl Clock for SystemClock {
     }
 }
 
-/// Validated network and timing configuration.
+/// Validated network and timing configuration: the single source of host and
+/// port for the whole runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     host: String,
     port: u16,
+    // Read only by the timeout policy on the polling path (P0.3-B).
+    #[allow(dead_code)]
     startup_timeout_ms: u64,
 }
 
@@ -164,12 +224,22 @@ impl RuntimeConfig {
         self.port
     }
 
+    #[allow(dead_code)]
     pub fn startup_timeout_ms(&self) -> u64 {
         self.startup_timeout_ms
     }
 
     pub fn endpoint(&self) -> String {
         format!("http://{}:{}/health", self.host, self.port)
+    }
+
+    /// Derive the validated launch contract for the process backend.
+    pub fn launch_spec(&self) -> LaunchSpec {
+        LaunchSpec {
+            host: self.host.clone(),
+            port: self.port,
+            endpoint: self.endpoint(),
+        }
     }
 }
 
@@ -179,8 +249,12 @@ impl RuntimeConfig {
 pub struct LocalAiRuntimeSnapshot {
     /// Current lifecycle phase.
     pub state: RuntimePhase,
+    /// Whether the binary was on disk at the last operation. Cached so that
+    /// reading the snapshot costs no filesystem access.
     pub binary_present: bool,
     pub binary_path: String,
+    /// PID of the process we still own. Present in [`RuntimePhase::Failed`] when
+    /// the child may be alive and has not been reaped yet.
     pub pid: Option<u32>,
     /// Milliseconds since the Unix epoch, set when the process was spawned.
     pub started_at: Option<u64>,
@@ -196,20 +270,31 @@ struct RuntimeInner {
     pid: Option<u32>,
     started_at: Option<u64>,
     last_error: Option<String>,
+    binary_present: bool,
 }
 
 /// Owns the lifecycle of the local AI runtime.
 ///
-/// Every public method takes `&self` and locks internally, so the manager can be
-/// shared as Tauri state. All operations are synchronous and cheap (a mutex plus
-/// at most one filesystem stat), so no lock is ever held across an await and the
-/// UI thread is not blocked on I/O.
+/// Two locks with distinct jobs:
+///
+/// * `state` protects the fields above and is held only for short, I/O-free
+///   critical sections.
+/// * `operation` serialises the mutating operations (start, stop, poll) so that
+///   two external calls can never interleave and orphan a process. It is
+///   acquired with `try_lock`, so a busy runtime answers immediately instead of
+///   blocking the caller.
+///
+/// Everything is synchronous and no lock is ever held across an await.
 pub struct LocalAiRuntimeManager {
     config: RuntimeConfig,
     process: Box<dyn ProcessBackend>,
+    // Exercised by the polling path only (P0.3-B).
+    #[allow(dead_code)]
     health: Box<dyn HealthProbe>,
     clock: Box<dyn Clock>,
-    inner: Mutex<RuntimeInner>,
+    binary_path: String,
+    state: Mutex<RuntimeInner>,
+    operation: Mutex<()>,
 }
 
 impl LocalAiRuntimeManager {
@@ -219,7 +304,9 @@ impl LocalAiRuntimeManager {
         health: Box<dyn HealthProbe>,
         clock: Box<dyn Clock>,
     ) -> Self {
-        let phase = if process.binary_present() {
+        let binary_present = process.binary_present();
+        let binary_path = process.binary_path().to_string_lossy().into_owned();
+        let phase = if binary_present {
             RuntimePhase::Stopped
         } else {
             RuntimePhase::Unavailable
@@ -230,26 +317,38 @@ impl LocalAiRuntimeManager {
             process,
             health,
             clock,
-            inner: Mutex::new(RuntimeInner {
+            binary_path,
+            state: Mutex::new(RuntimeInner {
                 phase,
                 pid: None,
                 started_at: None,
                 last_error: None,
+                binary_present,
             }),
+            operation: Mutex::new(()),
         }
     }
 
     /// A poisoned lock must not take the application down: the runtime is
     /// optional, gameplay continues without it.
     fn lock(&self) -> MutexGuard<'_, RuntimeInner> {
-        self.inner
+        self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Idle phase implied by the binary being on disk or not.
-    fn idle_phase(&self) -> RuntimePhase {
-        if self.process.binary_present() {
+    /// Reserve the right to perform one external operation, or `None` if another
+    /// one is already in flight.
+    fn try_operation(&self) -> Option<MutexGuard<'_, ()>> {
+        match self.operation.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
+    fn idle_phase(binary_present: bool) -> RuntimePhase {
+        if binary_present {
             RuntimePhase::Stopped
         } else {
             RuntimePhase::Unavailable
@@ -259,8 +358,8 @@ impl LocalAiRuntimeManager {
     fn build_snapshot(&self, inner: &RuntimeInner) -> LocalAiRuntimeSnapshot {
         LocalAiRuntimeSnapshot {
             state: inner.phase,
-            binary_present: self.process.binary_present(),
-            binary_path: self.process.binary_path().to_string_lossy().into_owned(),
+            binary_present: inner.binary_present,
+            binary_path: self.binary_path.clone(),
             pid: inner.pid,
             started_at: inner.started_at,
             last_error: inner.last_error.clone(),
@@ -270,81 +369,112 @@ impl LocalAiRuntimeManager {
         }
     }
 
-    fn fail(&self, inner: &mut RuntimeInner, reason: String) {
+    /// Fail after confirming the process is gone: the PID may be released.
+    fn fail_process_gone(inner: &mut RuntimeInner, reason: String) {
         inner.phase = RuntimePhase::Failed;
         inner.pid = None;
         inner.started_at = None;
         inner.last_error = Some(reason);
     }
 
+    /// Fail while the process may still be alive.
+    ///
+    /// The PID and start time are deliberately retained: something must still be
+    /// able to kill this child, and a later [`Self::stop`] is that something.
+    fn fail_retaining_process(inner: &mut RuntimeInner, reason: String) {
+        inner.phase = RuntimePhase::Failed;
+        inner.last_error = Some(reason);
+    }
+
     /// Whether a runtime that is still coming up has exhausted its grace period.
-    fn startup_expired(&self, inner: &RuntimeInner) -> bool {
-        match inner.started_at {
+    #[allow(dead_code)]
+    fn startup_expired(&self, started_at: Option<u64>, now_ms: u64) -> bool {
+        match started_at {
             Some(started_at) => {
-                self.clock.now_ms().saturating_sub(started_at) > self.config.startup_timeout_ms()
+                now_ms.saturating_sub(started_at) > self.config.startup_timeout_ms()
             }
             None => false,
         }
     }
 
-    /// Current snapshot without advancing the state machine. While idle the
-    /// phase is recomputed, so a binary that appears (or disappears) between
-    /// calls is reflected without a restart.
+    /// Current snapshot.
     ///
-    /// The shipped binary reaches the same information through [`Self::poll`];
-    /// this pure read exists for callers that must not cause a transition, which
-    /// is what P0.3-B's background watcher will need once it owns polling.
-    #[allow(dead_code)]
+    /// A pure read: it takes the state lock briefly, copies the fields and
+    /// returns. It performs no filesystem or network access and never advances
+    /// the state machine, so the UI can call it as often as it likes.
     pub fn snapshot(&self) -> LocalAiRuntimeSnapshot {
-        let mut inner = self.lock();
-        if matches!(inner.phase, RuntimePhase::Unavailable | RuntimePhase::Stopped) {
-            inner.phase = self.idle_phase();
-        }
+        let inner = self.lock();
         self.build_snapshot(&inner)
     }
 
     /// Request a start.
     ///
-    /// Refuses to start a second instance, and never reports success when the
-    /// binary is missing or the spawn fails.
+    /// Refuses to start a second instance, refuses to abandon a process that is
+    /// still tracked, and never reports success when the binary is missing or
+    /// the spawn fails.
     pub fn start(&self) -> Result<LocalAiRuntimeSnapshot, String> {
-        let mut inner = self.lock();
+        let Some(_operation) = self.try_operation() else {
+            return Err("another local AI runtime operation is already in progress".to_string());
+        };
 
-        match inner.phase {
-            RuntimePhase::Starting | RuntimePhase::Loading | RuntimePhase::Ready => {
+        // External probe, deliberately outside the state lock.
+        let binary_present = self.process.binary_present();
+
+        let spec = {
+            let mut inner = self.lock();
+            inner.binary_present = binary_present;
+
+            match inner.phase {
+                RuntimePhase::Starting | RuntimePhase::Loading | RuntimePhase::Ready => {
+                    return Err(format!(
+                        "local AI runtime is already active (phase {:?})",
+                        inner.phase
+                    ));
+                }
+                RuntimePhase::Stopping => {
+                    return Err("local AI runtime is still stopping".to_string());
+                }
+                RuntimePhase::Unavailable | RuntimePhase::Stopped | RuntimePhase::Failed => {}
+            }
+
+            // A failed runtime may still own a live child. Starting a second one
+            // would leak the first.
+            if let Some(pid) = inner.pid {
                 return Err(format!(
-                    "local AI runtime is already active (phase {:?})",
-                    inner.phase
+                    "local AI runtime process {pid} is still tracked; stop it before starting again"
                 ));
             }
-            RuntimePhase::Stopping => {
-                return Err("local AI runtime is still stopping".to_string());
+
+            if !binary_present {
+                let reason = format!("llama-server binary not found at {}", self.binary_path);
+                inner.phase = RuntimePhase::Unavailable;
+                inner.started_at = None;
+                inner.last_error = Some(reason.clone());
+                return Err(reason);
             }
-            RuntimePhase::Unavailable | RuntimePhase::Stopped | RuntimePhase::Failed => {}
-        }
 
-        if !self.process.binary_present() {
-            let reason = format!(
-                "llama-server binary not found at {}",
-                self.process.binary_path().display()
-            );
-            inner.phase = RuntimePhase::Unavailable;
-            inner.pid = None;
+            // Reserve the transition so a concurrent start is refused.
+            inner.phase = RuntimePhase::Starting;
             inner.started_at = None;
-            inner.last_error = Some(reason.clone());
-            return Err(reason);
-        }
+            inner.last_error = None;
+            self.config.launch_spec()
+        };
 
-        match self.process.spawn(self.config.host(), self.config.port()) {
+        // External spawn, no state lock held.
+        let outcome = self.process.spawn(&spec);
+        let now_ms = self.clock.now_ms();
+
+        let mut inner = self.lock();
+        match outcome {
             Ok(pid) => {
-                inner.phase = RuntimePhase::Starting;
                 inner.pid = Some(pid);
-                inner.started_at = Some(self.clock.now_ms());
-                inner.last_error = None;
+                inner.started_at = Some(now_ms);
                 Ok(self.build_snapshot(&inner))
             }
             Err(error) => {
-                self.fail(&mut inner, error.clone());
+                // The backend contract says Err means nothing was created, so
+                // there is no process to keep track of.
+                Self::fail_process_gone(&mut inner, error.clone());
                 Err(error)
             }
         }
@@ -352,44 +482,65 @@ impl LocalAiRuntimeManager {
 
     /// Advance the state machine by one `/health` observation.
     ///
-    /// Only meaningful while starting, loading or ready; in any other phase it
-    /// is a pure read.
+    /// Internal to the manager for now: P0.3-B's background watcher will drive
+    /// it. Only meaningful while starting, loading or ready; in any other phase,
+    /// or while another operation is in flight, it is a pure read.
+    #[allow(dead_code)]
     pub fn poll(&self) -> LocalAiRuntimeSnapshot {
+        let Some(_operation) = self.try_operation() else {
+            return self.snapshot();
+        };
+
+        let (phase, pid, started_at) = {
+            let inner = self.lock();
+            if !matches!(
+                inner.phase,
+                RuntimePhase::Starting | RuntimePhase::Loading | RuntimePhase::Ready
+            ) {
+                return self.build_snapshot(&inner);
+            }
+            (inner.phase, inner.pid, inner.started_at)
+        };
+
+        // External observations, no state lock held.
+        let process_alive = pid.map(|pid| self.process.is_running(pid));
+        let health = match process_alive {
+            Some(false) => None,
+            _ => Some(self.health.poll(&self.config.endpoint())),
+        };
+        let now_ms = self.clock.now_ms();
+        let expired = self.startup_expired(started_at, now_ms);
+
         let mut inner = self.lock();
 
-        if !matches!(
-            inner.phase,
-            RuntimePhase::Starting | RuntimePhase::Loading | RuntimePhase::Ready
-        ) {
+        // Nothing else may mutate state while the operation guard is held, but
+        // reconcile defensively rather than clobber an unexpected transition.
+        if inner.phase != phase || inner.pid != pid {
             return self.build_snapshot(&inner);
         }
 
-        // A dead process outranks whatever /health would say.
-        if let Some(pid) = inner.pid {
-            if !self.process.is_running(pid) {
-                self.fail(
-                    &mut inner,
-                    format!("local AI runtime process {pid} exited unexpectedly"),
-                );
-                return self.build_snapshot(&inner);
-            }
+        if process_alive == Some(false) {
+            let pid = pid.unwrap_or_default();
+            Self::fail_process_gone(
+                &mut inner,
+                format!("local AI runtime process {pid} exited unexpectedly"),
+            );
+            return self.build_snapshot(&inner);
         }
 
-        let was_ready = inner.phase == RuntimePhase::Ready;
+        let was_ready = phase == RuntimePhase::Ready;
+        let timeout_ms = self.config.startup_timeout_ms();
 
-        match self.health.poll(&self.config.endpoint()) {
+        match health.expect("health is only skipped for a confirmed-dead process") {
             HealthOutcome::Ready => {
                 inner.phase = RuntimePhase::Ready;
                 inner.last_error = None;
             }
             HealthOutcome::Loading => {
-                if self.startup_expired(&inner) {
-                    self.fail(
+                if expired {
+                    Self::fail_retaining_process(
                         &mut inner,
-                        format!(
-                            "local AI runtime was still loading after {} ms",
-                            self.config.startup_timeout_ms()
-                        ),
+                        format!("local AI runtime was still loading after {timeout_ms} ms"),
                     );
                 } else {
                     inner.phase = RuntimePhase::Loading;
@@ -399,39 +550,33 @@ impl LocalAiRuntimeManager {
             // silence after Ready means we lost the runtime.
             HealthOutcome::ConnectionRefused => {
                 if was_ready {
-                    self.fail(
+                    Self::fail_retaining_process(
                         &mut inner,
                         "local AI runtime refused the connection after becoming ready".to_string(),
                     );
-                } else if self.startup_expired(&inner) {
-                    self.fail(
+                } else if expired {
+                    Self::fail_retaining_process(
                         &mut inner,
-                        format!(
-                            "local AI runtime did not accept connections within {} ms",
-                            self.config.startup_timeout_ms()
-                        ),
+                        format!("local AI runtime did not accept connections within {timeout_ms} ms"),
                     );
                 }
             }
             HealthOutcome::Timeout => {
-                if was_ready || self.startup_expired(&inner) {
-                    self.fail(
+                if was_ready || expired {
+                    Self::fail_retaining_process(
                         &mut inner,
-                        format!(
-                            "local AI runtime health check timed out after {} ms",
-                            self.config.startup_timeout_ms()
-                        ),
+                        format!("local AI runtime health check timed out after {timeout_ms} ms"),
                     );
                 }
             }
             HealthOutcome::Malformed(detail) => {
-                self.fail(
+                Self::fail_retaining_process(
                     &mut inner,
                     format!("local AI runtime returned an unreadable health payload: {detail}"),
                 );
             }
             HealthOutcome::UnexpectedStatus(status) => {
-                self.fail(
+                Self::fail_retaining_process(
                     &mut inner,
                     format!("local AI runtime returned unexpected health status {status}"),
                 );
@@ -441,30 +586,58 @@ impl LocalAiRuntimeManager {
         self.build_snapshot(&inner)
     }
 
-    /// Stop the runtime. Idempotent: stopping an idle runtime does nothing and
-    /// is not an error, which is what makes it safe to call on app shutdown.
+    /// Stop the runtime.
+    ///
+    /// Idempotent when nothing is owned, and retryable when it is: a kill that
+    /// fails leaves the runtime `Failed` with its PID intact, so calling stop
+    /// again attempts the kill once more. Safe to call on app shutdown.
     pub fn stop(&self) -> LocalAiRuntimeSnapshot {
+        let Some(_operation) = self.try_operation() else {
+            return self.snapshot();
+        };
+
+        // External probe, deliberately outside the state lock.
+        let binary_present = self.process.binary_present();
+
+        let pid = {
+            let mut inner = self.lock();
+            inner.binary_present = binary_present;
+
+            match inner.pid {
+                // Nothing owned: settle into the idle phase and report success.
+                None => {
+                    inner.phase = Self::idle_phase(binary_present);
+                    inner.started_at = None;
+                    return self.build_snapshot(&inner);
+                }
+                Some(pid) => {
+                    inner.phase = RuntimePhase::Stopping;
+                    pid
+                }
+            }
+        };
+
+        // External kill, no state lock held.
+        let outcome = self.process.kill(pid);
+
         let mut inner = self.lock();
-
-        if matches!(inner.phase, RuntimePhase::Unavailable | RuntimePhase::Stopped) {
-            inner.phase = self.idle_phase();
-            inner.pid = None;
-            inner.started_at = None;
-            return self.build_snapshot(&inner);
-        }
-
-        inner.phase = RuntimePhase::Stopping;
-        inner.last_error = None;
-
-        if let Some(pid) = inner.pid {
-            if let Err(error) = self.process.kill(pid) {
-                inner.last_error = Some(format!("failed to stop process {pid}: {error}"));
+        match outcome {
+            Ok(()) => {
+                inner.pid = None;
+                inner.started_at = None;
+                inner.last_error = None;
+                inner.phase = Self::idle_phase(binary_present);
+            }
+            Err(error) => {
+                // The child may still be running: keep owning it so a later stop
+                // can try again.
+                Self::fail_retaining_process(
+                    &mut inner,
+                    format!("failed to stop local AI runtime process {pid}: {error}"),
+                );
             }
         }
 
-        inner.pid = None;
-        inner.started_at = None;
-        inner.phase = self.idle_phase();
         self.build_snapshot(&inner)
     }
 }
@@ -493,7 +666,7 @@ impl ProcessBackend for SystemProcessBackend {
         &self.binary_path
     }
 
-    fn spawn(&self, _host: &str, _port: u16) -> Result<u32, String> {
+    fn spawn(&self, _spec: &LaunchSpec) -> Result<u32, String> {
         if !self.binary_present() {
             return Err(format!(
                 "llama-server binary not found at {}",
@@ -537,7 +710,7 @@ pub fn system_manager(binary_path: PathBuf) -> LocalAiRuntimeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     /// Scriptable process backend. Test-only by construction: it lives inside
     /// `#[cfg(test)]` and never ships.
@@ -573,6 +746,18 @@ mod tests {
         fn crash(&self) {
             *self.running.lock().unwrap() = false;
         }
+
+        fn fail_kill_with(&self, error: &str) {
+            *self.kill_error.lock().unwrap() = Some(error.to_string());
+        }
+
+        fn allow_kill(&self) {
+            *self.kill_error.lock().unwrap() = None;
+        }
+
+        fn kill_calls(&self) -> u32 {
+            *self.kill_calls.lock().unwrap()
+        }
     }
 
     impl ProcessBackend for FakeProcess {
@@ -584,8 +769,12 @@ mod tests {
             &self.path
         }
 
-        fn spawn(&self, host: &str, _port: u16) -> Result<u32, String> {
-            assert_eq!(host, LOOPBACK_HOST, "spawn must only ever be told loopback");
+        fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String> {
+            assert_eq!(
+                spec.host(),
+                LOOPBACK_HOST,
+                "spawn must only ever receive a loopback launch contract"
+            );
             if let Some(error) = self.spawn_error.lock().unwrap().clone() {
                 return Err(error);
             }
@@ -660,39 +849,39 @@ mod tests {
         }
     }
 
-    use std::sync::Arc;
+    struct SharedProcess(Arc<FakeProcess>);
+
+    impl ProcessBackend for SharedProcess {
+        fn binary_present(&self) -> bool {
+            self.0.binary_present()
+        }
+        fn binary_path(&self) -> &Path {
+            self.0.binary_path()
+        }
+        fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String> {
+            self.0.spawn(spec)
+        }
+        fn is_running(&self, pid: u32) -> bool {
+            self.0.is_running(pid)
+        }
+        fn kill(&self, pid: u32) -> Result<(), String> {
+            self.0.kill(pid)
+        }
+    }
+
+    struct SharedClock(Arc<FakeClock>);
+
+    impl Clock for SharedClock {
+        fn now_ms(&self) -> u64 {
+            self.0.now_ms()
+        }
+    }
 
     fn manager_with(
         process: Arc<FakeProcess>,
         health: Vec<HealthOutcome>,
         clock: Arc<FakeClock>,
     ) -> LocalAiRuntimeManager {
-        struct SharedProcess(Arc<FakeProcess>);
-        impl ProcessBackend for SharedProcess {
-            fn binary_present(&self) -> bool {
-                self.0.binary_present()
-            }
-            fn binary_path(&self) -> &Path {
-                self.0.binary_path()
-            }
-            fn spawn(&self, host: &str, port: u16) -> Result<u32, String> {
-                self.0.spawn(host, port)
-            }
-            fn is_running(&self, pid: u32) -> bool {
-                self.0.is_running(pid)
-            }
-            fn kill(&self, pid: u32) -> Result<(), String> {
-                self.0.kill(pid)
-            }
-        }
-
-        struct SharedClock(Arc<FakeClock>);
-        impl Clock for SharedClock {
-            fn now_ms(&self) -> u64 {
-                self.0.now_ms()
-            }
-        }
-
         LocalAiRuntimeManager::new(
             RuntimeConfig::new(LOOPBACK_HOST, 8081, DEFAULT_STARTUP_TIMEOUT_MS).unwrap(),
             Box::new(SharedProcess(process)),
@@ -706,6 +895,18 @@ mod tests {
         let manager = manager_with(process, vec![HealthOutcome::Ready], clock);
         manager.start().expect("start should succeed");
         assert_eq!(manager.poll().state, RuntimePhase::Ready);
+        manager
+    }
+
+    /// Drive a manager into Failed while its process is still alive.
+    fn failed_but_alive(
+        process: Arc<FakeProcess>,
+        outcome: HealthOutcome,
+    ) -> LocalAiRuntimeManager {
+        let manager = manager_with(process, vec![outcome], Arc::new(FakeClock::new()));
+        manager.start().expect("start should succeed");
+        let snapshot = manager.poll();
+        assert_eq!(snapshot.state, RuntimePhase::Failed);
         manager
     }
 
@@ -867,12 +1068,10 @@ mod tests {
 
     #[test]
     fn connection_refused_after_ready_fails() {
-        let process = Arc::new(FakeProcess::present());
-        let clock = Arc::new(FakeClock::new());
         let manager = manager_with(
-            process,
+            Arc::new(FakeProcess::present()),
             vec![HealthOutcome::Ready, HealthOutcome::ConnectionRefused],
-            clock,
+            Arc::new(FakeClock::new()),
         );
         manager.start().expect("start should succeed");
         assert_eq!(manager.poll().state, RuntimePhase::Ready);
@@ -883,7 +1082,7 @@ mod tests {
     }
 
     #[test]
-    fn process_crash_fails_the_runtime() {
+    fn process_crash_releases_the_pid() {
         let process = Arc::new(FakeProcess::present());
         let manager = manager_with(
             process.clone(),
@@ -895,12 +1094,128 @@ mod tests {
 
         let snapshot = manager.poll();
         assert_eq!(snapshot.state, RuntimePhase::Failed);
-        assert_eq!(snapshot.pid, None, "a dead PID must not linger");
+        assert_eq!(
+            snapshot.pid, None,
+            "a confirmed-dead process releases its PID"
+        );
         assert!(snapshot.last_error.unwrap().contains("exited unexpectedly"));
     }
 
     #[test]
-    fn spawn_failure_fails_the_runtime() {
+    fn malformed_health_keeps_tracking_a_process_that_may_be_alive() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = failed_but_alive(
+            process.clone(),
+            HealthOutcome::Malformed("garbage".to_string()),
+        );
+
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.state, RuntimePhase::Failed);
+        assert_eq!(
+            snapshot.pid,
+            Some(4242),
+            "the child may still be running and must stay owned"
+        );
+        assert!(snapshot.started_at.is_some());
+    }
+
+    #[test]
+    fn unexpected_health_keeps_tracking_a_process_that_may_be_alive() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = failed_but_alive(process, HealthOutcome::UnexpectedStatus(500));
+
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.state, RuntimePhase::Failed);
+        assert_eq!(snapshot.pid, Some(4242));
+    }
+
+    #[test]
+    fn health_timeout_keeps_tracking_a_process_that_may_be_alive() {
+        let process = Arc::new(FakeProcess::present());
+        let clock = Arc::new(FakeClock::new());
+        let manager = manager_with(process, vec![HealthOutcome::Timeout], clock.clone());
+        manager.start().expect("start should succeed");
+        clock.advance(DEFAULT_STARTUP_TIMEOUT_MS + 1);
+
+        let snapshot = manager.poll();
+        assert_eq!(snapshot.state, RuntimePhase::Failed);
+        assert_eq!(
+            snapshot.pid,
+            Some(4242),
+            "a timeout says nothing about whether the child died"
+        );
+    }
+
+    #[test]
+    fn connection_refused_after_ready_keeps_tracking_the_process() {
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Ready, HealthOutcome::ConnectionRefused],
+            Arc::new(FakeClock::new()),
+        );
+        manager.start().expect("start should succeed");
+        manager.poll();
+
+        let snapshot = manager.poll();
+        assert_eq!(snapshot.state, RuntimePhase::Failed);
+        assert_eq!(snapshot.pid, Some(4242));
+    }
+
+    #[test]
+    fn a_failed_runtime_that_still_owns_a_process_refuses_to_start_again() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = failed_but_alive(process, HealthOutcome::UnexpectedStatus(500));
+
+        let error = manager
+            .start()
+            .expect_err("starting a second child while one is owned must be refused");
+        assert!(error.contains("still tracked"), "unexpected error: {error}");
+        assert_eq!(manager.snapshot().pid, Some(4242));
+    }
+
+    #[test]
+    fn pid_is_not_lost_until_cleanup_succeeds() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = failed_but_alive(
+            process.clone(),
+            HealthOutcome::Malformed("garbage".to_string()),
+        );
+
+        process.fail_kill_with("access denied");
+        for _ in 0..3 {
+            let snapshot = manager.stop();
+            assert_eq!(snapshot.state, RuntimePhase::Failed);
+            assert_eq!(snapshot.pid, Some(4242), "a failed kill must not drop the PID");
+        }
+        assert_eq!(process.kill_calls(), 3, "every stop retries the kill");
+
+        process.allow_kill();
+        let snapshot = manager.stop();
+        assert_eq!(snapshot.state, RuntimePhase::Stopped);
+        assert_eq!(snapshot.pid, None);
+    }
+
+    #[test]
+    fn kill_failure_fails_the_stop_and_a_retry_completes_it() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = ready_manager(process.clone(), Arc::new(FakeClock::new()));
+        process.fail_kill_with("the process would not die");
+
+        let failed = manager.stop();
+        assert_eq!(failed.state, RuntimePhase::Failed);
+        assert_eq!(failed.pid, Some(4242), "the PID must survive a failed kill");
+        assert!(failed.last_error.unwrap().contains("failed to stop"));
+
+        process.allow_kill();
+        let stopped = manager.stop();
+        assert_eq!(stopped.state, RuntimePhase::Stopped);
+        assert_eq!(stopped.pid, None);
+        assert_eq!(stopped.last_error, None);
+        assert_eq!(process.kill_calls(), 2, "the second stop retried the kill");
+    }
+
+    #[test]
+    fn spawn_failure_releases_the_pid() {
         let process = Arc::new(FakeProcess::present());
         *process.spawn_error.lock().unwrap() = Some("permission denied".to_string());
         let manager = manager_with(process, vec![HealthOutcome::Ready], Arc::new(FakeClock::new()));
@@ -910,7 +1225,10 @@ mod tests {
 
         let snapshot = manager.snapshot();
         assert_eq!(snapshot.state, RuntimePhase::Failed);
-        assert_eq!(snapshot.pid, None);
+        assert_eq!(
+            snapshot.pid, None,
+            "a spawn that returned Err created no process"
+        );
     }
 
     #[test]
@@ -938,7 +1256,7 @@ mod tests {
 
         let snapshot = manager.stop();
         assert_eq!(snapshot.state, RuntimePhase::Stopped);
-        assert_eq!(*process.kill_calls.lock().unwrap(), 1, "the process must be killed once");
+        assert_eq!(process.kill_calls(), 1, "the process must be killed once");
     }
 
     #[test]
@@ -953,7 +1271,7 @@ mod tests {
         assert_eq!(second.state, RuntimePhase::Stopped);
         assert_eq!(third.state, RuntimePhase::Stopped);
         assert_eq!(
-            *process.kill_calls.lock().unwrap(),
+            process.kill_calls(),
             1,
             "a stopped runtime must not be killed again"
         );
@@ -970,11 +1288,11 @@ mod tests {
 
         let snapshot = manager.stop();
         assert_eq!(snapshot.state, RuntimePhase::Unavailable);
-        assert_eq!(*process.kill_calls.lock().unwrap(), 0);
+        assert_eq!(process.kill_calls(), 0);
     }
 
     #[test]
-    fn failed_runtime_can_be_restarted() {
+    fn failed_runtime_can_be_restarted_once_its_process_is_released() {
         let process = Arc::new(FakeProcess::present());
         let manager = manager_with(
             process.clone(),
@@ -984,9 +1302,30 @@ mod tests {
         manager.start().expect("start should succeed");
         assert_eq!(manager.poll().state, RuntimePhase::Failed);
 
+        // The child may still be alive, so the runtime must be reaped first.
+        assert_eq!(manager.stop().state, RuntimePhase::Stopped);
+
         let snapshot = manager.start().expect("restart after failure must be allowed");
         assert_eq!(snapshot.state, RuntimePhase::Starting);
         assert_eq!(snapshot.last_error, None, "a restart clears the previous error");
+    }
+
+    #[test]
+    fn crashed_runtime_restarts_without_an_explicit_stop() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = manager_with(
+            process.clone(),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager.start().expect("start should succeed");
+        process.crash();
+        assert_eq!(manager.poll().pid, None, "a dead process is released");
+
+        let snapshot = manager
+            .start()
+            .expect("a confirmed-dead runtime owns nothing and may restart");
+        assert_eq!(snapshot.state, RuntimePhase::Starting);
     }
 
     #[test]
@@ -1018,8 +1357,90 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_is_a_pure_read_and_never_advances_the_state_machine() {
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+
+        manager.start().expect("start should succeed");
+        for _ in 0..10 {
+            assert_eq!(
+                manager.snapshot().state,
+                RuntimePhase::Starting,
+                "reading the status must not drive the runtime forward"
+            );
+        }
+
+        assert_eq!(manager.poll().state, RuntimePhase::Ready);
+        for _ in 0..10 {
+            assert_eq!(manager.snapshot().state, RuntimePhase::Ready);
+        }
+    }
+
+    #[test]
+    fn snapshot_performs_no_process_io() {
+        struct ExplodingProcess(PathBuf);
+        impl ProcessBackend for ExplodingProcess {
+            fn binary_present(&self) -> bool {
+                panic!("snapshot must not touch the filesystem");
+            }
+            fn binary_path(&self) -> &Path {
+                &self.0
+            }
+            fn spawn(&self, _spec: &LaunchSpec) -> Result<u32, String> {
+                panic!("snapshot must not spawn");
+            }
+            fn is_running(&self, _pid: u32) -> bool {
+                panic!("snapshot must not probe the process");
+            }
+            fn kill(&self, _pid: u32) -> Result<(), String> {
+                panic!("snapshot must not kill");
+            }
+        }
+
+        struct ExplodingHealth;
+        impl HealthProbe for ExplodingHealth {
+            fn poll(&self, _endpoint: &str) -> HealthOutcome {
+                panic!("snapshot must not issue a health request");
+            }
+        }
+
+        // `new` is allowed one probe; after that the backend refuses everything.
+        let manager = LocalAiRuntimeManager {
+            config: RuntimeConfig::loopback(),
+            process: Box::new(ExplodingProcess(PathBuf::from("/fake/llama-server"))),
+            health: Box::new(ExplodingHealth),
+            clock: Box::new(SystemClock),
+            binary_path: "/fake/llama-server".to_string(),
+            state: Mutex::new(RuntimeInner {
+                phase: RuntimePhase::Stopped,
+                pid: None,
+                started_at: None,
+                last_error: None,
+                binary_present: true,
+            }),
+            operation: Mutex::new(()),
+        };
+
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.state, RuntimePhase::Stopped);
+        assert!(snapshot.binary_present, "the cached value is reported");
+    }
+
+    #[test]
     fn non_loopback_hosts_are_rejected() {
-        for host in ["0.0.0.0", "192.168.1.10", "localhost", "::1", ""] {
+        for host in [
+            "0.0.0.0",
+            "192.168.1.10",
+            "10.0.0.5",
+            "::",
+            "::1",
+            "localhost",
+            "127.0.0.2",
+            "",
+        ] {
             let error = RuntimeConfig::new(host, 8081, DEFAULT_STARTUP_TIMEOUT_MS)
                 .expect_err("non-loopback host must be refused");
             assert!(error.contains("only bind"), "unexpected error: {error}");
@@ -1039,6 +1460,18 @@ mod tests {
     }
 
     #[test]
+    fn launch_spec_is_always_loopback_and_agrees_with_the_config() {
+        let config = RuntimeConfig::new(LOOPBACK_HOST, 9099, DEFAULT_STARTUP_TIMEOUT_MS).unwrap();
+        let spec = config.launch_spec();
+
+        assert_eq!(spec.host(), LOOPBACK_HOST);
+        assert_eq!(spec.port(), 9099);
+        assert_eq!(spec.endpoint(), "http://127.0.0.1:9099/health");
+        assert_eq!(spec.endpoint(), config.endpoint());
+        assert_eq!(spec, RuntimeConfig::new(LOOPBACK_HOST, 9099, 1).unwrap().launch_spec());
+    }
+
+    #[test]
     fn last_error_is_populated_on_failure_and_cleared_on_success() {
         let manager = manager_with(
             Arc::new(FakeProcess::present()),
@@ -1051,6 +1484,7 @@ mod tests {
         assert_eq!(failed.state, RuntimePhase::Failed);
         assert!(failed.last_error.is_some());
 
+        manager.stop();
         manager.start().expect("restart should succeed");
         let recovered = manager.poll();
         assert_eq!(recovered.state, RuntimePhase::Ready);
@@ -1069,6 +1503,7 @@ mod tests {
         for key in [
             "state",
             "binaryPresent",
+            "binaryPath",
             "pid",
             "startedAt",
             "lastError",
@@ -1087,7 +1522,7 @@ mod tests {
         let backend = SystemProcessBackend::new(PathBuf::from("/definitely/not/here/llama-server"));
         assert!(!backend.binary_present());
         let error = backend
-            .spawn(LOOPBACK_HOST, DEFAULT_PORT)
+            .spawn(&RuntimeConfig::loopback().launch_spec())
             .expect_err("a missing binary must not spawn");
         assert!(error.contains("not found"));
     }
@@ -1113,14 +1548,18 @@ mod tests {
             .collect();
 
         for handle in handles {
-            assert_eq!(handle.join().expect("thread must not panic"), RuntimePhase::Unavailable);
+            assert_eq!(
+                handle.join().expect("thread must not panic"),
+                RuntimePhase::Unavailable
+            );
         }
     }
 
     #[test]
     fn concurrent_starts_produce_exactly_one_running_instance() {
+        let process = Arc::new(FakeProcess::present());
         let manager = Arc::new(manager_with(
-            Arc::new(FakeProcess::present()),
+            process.clone(),
             vec![HealthOutcome::Ready],
             Arc::new(FakeClock::new()),
         ));
@@ -1140,5 +1579,50 @@ mod tests {
 
         assert_eq!(successes, 1, "only one start may win the race");
         assert_eq!(manager.snapshot().state, RuntimePhase::Starting);
+    }
+
+    #[test]
+    fn concurrent_start_and_stop_never_orphan_a_process() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = Arc::new(manager_with(
+            process.clone(),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        ));
+
+        let handles: Vec<_> = (0..12)
+            .map(|index| {
+                let manager = manager.clone();
+                std::thread::spawn(move || {
+                    if index % 2 == 0 {
+                        let _ = manager.start();
+                    } else {
+                        let _ = manager.stop();
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("thread must not panic");
+        }
+
+        // Whatever order the operations landed in, the runtime must end up
+        // either owning exactly one process or owning none — never in a state
+        // that claims a PID it has released, or vice versa.
+        let snapshot = manager.snapshot();
+        match snapshot.state {
+            RuntimePhase::Starting | RuntimePhase::Loading | RuntimePhase::Ready => {
+                assert!(snapshot.pid.is_some(), "an active runtime must own its process");
+            }
+            RuntimePhase::Stopped | RuntimePhase::Unavailable => {
+                assert_eq!(snapshot.pid, None, "an idle runtime must own nothing");
+            }
+            RuntimePhase::Failed | RuntimePhase::Stopping => {}
+        }
+
+        // A final stop must always converge, retrying until the child is reaped.
+        assert_eq!(manager.stop().state, RuntimePhase::Stopped);
+        assert_eq!(manager.snapshot().pid, None);
     }
 }

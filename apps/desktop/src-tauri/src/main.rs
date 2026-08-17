@@ -415,14 +415,12 @@ type LocalAiRuntimeState = Arc<LocalAiRuntimeManager>;
 
 /// Current runtime status.
 ///
-/// This advances the state machine by one `/health` observation before
-/// answering, so the UI drives progress simply by refreshing. While the runtime
-/// is idle — the whole of P0.3-A, since no sidecar is installed — it is a pure
-/// read. P0.3-B may replace this with a background watcher once there is a real
-/// process to watch.
+/// A pure read: it never advances the state machine and performs no filesystem
+/// or network access, so the UI may poll it freely. Driving the machine forward
+/// is the job of P0.3-B's background watcher.
 #[tauri::command]
 fn get_local_ai_runtime_status(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRuntimeSnapshot {
-    runtime.poll()
+    runtime.snapshot()
 }
 
 #[tauri::command]
