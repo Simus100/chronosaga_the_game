@@ -188,7 +188,9 @@ Fonte prevalente per la produzione grafica procedurale/AI-assisted:
 
 ---
 
-# File operativi root/config
+# File operativi root/config/status
+
+Questi file fanno parte del sistema operativo/documentale del progetto ma NON introducono una nuova fonte di precedenza rispetto ai 12 documenti Knowledge sopra elencati.
 
 ## `/AGENTS.md`
 Regole obbligatorie per agenti di coding/operations:
@@ -201,8 +203,17 @@ Regole obbligatorie per agenti di coding/operations:
 - validation gates;
 - ruolo dell'agente come esecutore, non product director.
 
+## `/CLAUDE.md`
+Bridge operativo per Claude Code. Importa `@AGENTS.md` e non ridefinisce autonomamente la Knowledge.
+
 ## `config/runtime-assets.example.json`
 Esempio architetturale development-only del contratto External Asset Store. Non certifica che modelli o pack siano installati/approvati e non contiene model weights.
+
+## `LOCAL_WORKSPACE_SETUP_CHECKLIST_v0.1.md`
+Checklist operativa per inizializzare una macchina di sviluppo prima del P0.3. Deriva da `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md`; in caso di conflitto prevale quest'ultimo.
+
+## `REPOSITORY_BOOTSTRAP_STATUS.md`
+Snapshot informativo dello stato corrente del repository e dei gate completati/pending. Non è una specifica architetturale e non ha precedenza sulla Knowledge; deve essere mantenuto aggiornato per evitare che agenti o sviluppatori assumano uno stato storico come corrente.
 
 ---
 
@@ -224,7 +235,7 @@ In caso di conflitto:
 12. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md` prevale sugli aspetti generali di packaging/distribuzione non ridefiniti da documenti più specifici/recenti;
 13. `TECHNICAL_ROADMAP_v0.1.md` resta riferimento storico e non prevale su v0.2.
 
-`AGENTS.md` rende operative queste regole per gli agenti ma non può ridefinire autonomamente Product Vision o Knowledge specifica.
+`AGENTS.md`, `CLAUDE.md`, le checklist e i file status rendono operative o descrivono queste regole ma non possono ridefinire autonomamente Product Vision o Knowledge specifica.
 
 Le formule, soglie hardware o scelte marcate `PROVISIONAL` possono essere sostituite dopo playtest, benchmark o prototype review senza modificare la Product Vision.
 
