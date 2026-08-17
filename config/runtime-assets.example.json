@@ -5,13 +5,20 @@
   "workspaceRootEnv": "CHRONOSAGA_WORKSPACE_ROOT",
   "notes": [
     "This file describes the intended external-asset layout for development tooling.",
-    "It does not prove that any model or asset pack is installed, licensed, benchmarked or approved for release.",
+    "It does not prove that any model, runtime binary or asset pack is installed, licensed, benchmarked or approved for release.",
+    "A store listed here describes where a payload belongs on a machine that has one, not that this machine has it.",
     "Heavy runtime files must not be committed to the normal Git repository."
   ],
   "stores": {
     "models": {
       "external": true,
       "relativeToWorkspaceRoot": "runtime-assets/models"
+    },
+    "runtime": {
+      "external": true,
+      "relativeToWorkspaceRoot": "runtime-assets/runtime",
+      "holds": "inference runtime binaries such as llama.cpp releases, one directory per locked release and platform",
+      "provenanceLock": "config/local-ai-runtime.lock.json"
     },
     "visualSource": {
       "external": true,

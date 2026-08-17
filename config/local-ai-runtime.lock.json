@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "status": "VERIFIED_DEVELOPMENT_CANDIDATE",
+  "notes": [
+    "Provenance lock for the llama.cpp runtime candidate of P0.3.",
+    "The hashes below were verified on a Windows development machine against the digest published by the GitHub Release API; they are not copied from documentation.",
+    "This file records WHICH runtime is locked, not that its bytes are present: the payload lives in the external workspace and is never committed.",
+    "Packaging must fail loudly if the local payload does not match these hashes, and must never substitute a different release silently."
+  ],
+  "provider": "llama.cpp",
+  "repository": "ggml-org/llama.cpp",
+  "releaseTag": "b10343",
+  "upstreamCommit": "e23e9440eb0c625c30d6c40266e9335071a4debc",
+  "releasePublishedAt": "2026-08-10T15:18:04Z",
+  "releaseUrl": "https://github.com/ggml-org/llama.cpp/releases/tag/b10343",
+  "platform": "windows-x64",
+  "variant": "cpu",
+  "assetName": "llama-b10343-bin-win-cpu-x64.zip",
+  "assetUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b10343/llama-b10343-bin-win-cpu-x64.zip",
+  "archiveSizeBytes": 18404711,
+  "archiveSha256": "49cacb116b1047b907022f61a8f697505fb2bf9538789383da8d6b59405772ab",
+  "expectedExecutableName": "llama-server.exe",
+  "executableSha256": "7a110e56e47fab319791c1f450321ecb77449a372e4c75db68d69069e7cd531e",
+  "license": "MIT",
+  "licenseSourceUrl": "https://raw.githubusercontent.com/ggml-org/llama.cpp/e23e9440eb0c625c30d6c40266e9335071a4debc/LICENSE",
+  "licenseCopyRelativeToWorkspaceRoot": "runtime-assets/licenses/llama.cpp-MIT-b10343.txt",
+  "licenseSha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+  "attributionRequired": true,
+  "externalPathRelativeToWorkspaceRoot": "runtime-assets/runtime/llama.cpp/b10343/win-cpu-x64",
+  "archivePathRelativeToWorkspaceRoot": "runtime-assets/runtime/llama.cpp/b10343/llama-b10343-bin-win-cpu-x64.zip",
+  "distributionFileCount": 51,
+  "distributionSizeMb": 44.9,
+  "verified": true,
+  "verifiedAt": "2026-08-18",
+  "verification": {
+    "archiveDigestMatchedOfficialRelease": true,
+    "digestSource": "GitHub Release API asset digest",
+    "licenseVerifiedMit": true,
+    "loopbackOnlyBindingObserved": true,
+    "startStopCyclesPassed": 2,
+    "orphanProcessesAfterStop": 0,
+    "evidenceRelativeToWorkspaceRoot": "benchmarks/p0.3-b0"
+  },
+  "observedRouterMode": {
+    "launchArguments": ["--host", "127.0.0.1", "--port", "8081"],
+    "modelArgumentProvided": false,
+    "healthStatus": 200,
+    "healthBody": "{\"status\":\"ok\"}",
+    "loadedModels": 0,
+    "warning": "Router mode answers /health with HTTP 200 and zero models loaded. HTTP 200 therefore means 'the HTTP router is up', NOT 'inference is available'. The P0.3-A state machine maps 200 to Ready, so wiring the real probe unchanged would report Ready with no model. Resolving this belongs to P0.3-B."
+  }
+}
