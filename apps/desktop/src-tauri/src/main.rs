@@ -1,14 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod local_ai_runtime;
+mod runtime_lock;
+mod runtime_watcher;
+
+/// Opt-in lifecycle test against the real llama-server payload.
+#[cfg(test)]
+mod runtime_e2e;
 
 use local_ai_runtime::{system_manager, LocalAiRuntimeManager, LocalAiRuntimeSnapshot};
+use runtime_watcher::RuntimeWatcher;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Disks, System};
@@ -189,10 +196,10 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
     Ok(connection)
 }
 
-/// Where the bundled `llama-server` sidecar is expected once P0.3-B packages it.
+/// Where the legacy `get_runtime_status` probe expects a bundled sidecar.
 ///
-/// Resolving it in one place keeps the legacy `get_runtime_status` probe and the
-/// lifecycle manager pointed at the same path.
+/// P0.3-B2A runs the runtime from the external development workspace instead,
+/// so this stays as the packaging-time location that P0.3-B2B will fill.
 fn llama_server_path(app: &AppHandle) -> Result<PathBuf, String> {
     let resource_dir = app
         .path()
@@ -204,6 +211,14 @@ fn llama_server_path(app: &AppHandle) -> Result<PathBuf, String> {
     } else {
         "llama-server"
     }))
+}
+
+/// Diagnostic log for the sidecar, next to the save database.
+///
+/// Kept out of the save file and out of Git: it exists to explain a crash or a
+/// failed start, nothing more.
+fn sidecar_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_local_data_dir(app)?.join("local-ai-runtime.log"))
 }
 
 fn manifest_path(app: &AppHandle) -> PathBuf {
@@ -438,8 +453,34 @@ fn stop_local_ai_runtime(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRunt
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let binary_path = llama_server_path(app.handle())?;
-            app.manage::<LocalAiRuntimeState>(Arc::new(system_manager(binary_path)));
+            let handle = app.handle();
+            let log_path = sidecar_log_path(handle)?;
+
+            // Resolve the locked runtime from the external workspace. A failure
+            // is not fatal: the manager simply reports Unavailable and gameplay
+            // keeps its procedural fallback.
+            let manager = match runtime_lock::resolve(handle) {
+                Ok(runtime) => {
+                    eprintln!(
+                        "local AI runtime resolved: llama.cpp {} at {}",
+                        runtime.release_tag,
+                        runtime.executable.display()
+                    );
+                    Arc::new(system_manager(runtime.directory, runtime.executable, log_path))
+                }
+                Err(reason) => {
+                    eprintln!("local AI runtime unavailable: {reason}");
+                    let fallback = llama_server_path(handle)?;
+                    Arc::new(system_manager(
+                        fallback.parent().map(PathBuf::from).unwrap_or_default(),
+                        fallback,
+                        log_path,
+                    ))
+                }
+            };
+
+            app.manage::<LocalAiRuntimeState>(manager.clone());
+            app.manage(Mutex::new(RuntimeWatcher::spawn(manager)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -458,8 +499,23 @@ fn main() {
             // Never leave a sidecar behind. Stop is idempotent, so this is a
             // no-op when nothing was ever started.
             if matches!(event, tauri::RunEvent::Exit) {
+                // Order matters: silence the observer first, then reap the
+                // child. Stop is idempotent, so this is a no-op when nothing
+                // was ever started.
+                if let Some(watcher) = app_handle.try_state::<Mutex<RuntimeWatcher>>() {
+                    watcher
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .stop();
+                }
                 if let Some(runtime) = app_handle.try_state::<LocalAiRuntimeState>() {
-                    runtime.stop();
+                    let snapshot = runtime.stop();
+                    if let Some(pid) = snapshot.pid {
+                        eprintln!(
+                            "local AI runtime process {pid} survived shutdown: {}",
+                            snapshot.last_error.unwrap_or_default()
+                        );
+                    }
                 }
             }
         });

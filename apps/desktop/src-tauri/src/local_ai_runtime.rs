@@ -30,19 +30,23 @@
 //! reach `runtime_ready` with no model on disk; only P0.3-C, which loads a real
 //! model, may ever set `inference_ready`.
 //!
-//! # Debt for P0.3-B2
+//! # Who drives the machine
 //!
-//! The polling half of this module is reachable only from the tests until the
-//! background watcher is wired, so it carries targeted `#[allow(dead_code)]`
-//! attributes. B2 must delete every one of them that has become unnecessary; an
-//! allow that is still needed after the watcher lands marks code that is genuinely
-//! dead and should be removed instead.
+//! [`LocalAiRuntimeManager::poll`] is the only thing that advances phases, and
+//! it is driven by the background watcher in `runtime_watcher`, never by the UI.
+//! [`LocalAiRuntimeManager::snapshot`] stays a pure read so the interface can
+//! refresh as often as it likes. Every `#[allow(dead_code)]` that P0.3-A needed
+//! is gone: wiring the watcher made the whole module reachable.
 
 use serde::Serialize;
 use std::{
+    fs::OpenOptions,
+    io::{ErrorKind, Read, Write},
+    net::{Ipv4Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     sync::{Mutex, MutexGuard, TryLockError},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 /// The only host the local runtime may ever bind to.
@@ -68,7 +72,6 @@ pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 30_000;
 ///
 /// `Loading` and `Ready` are only constructed on the polling path, which has no
 /// production caller until P0.3-B wires the background watcher.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimePhase {
@@ -108,7 +111,6 @@ pub enum RuntimePhase {
 /// P0.3-A performs no network I/O: the rest are produced by the real HTTP probe
 /// in P0.3-B and by the tests that already pin their semantics. They are matched
 /// exhaustively in [`LocalAiRuntimeManager::poll`], so the mapping cannot rot.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthOutcome {
     /// HTTP 200 with a payload we understand: the runtime is serving.
@@ -141,8 +143,6 @@ pub struct LaunchSpec {
     endpoint: String,
 }
 
-// Consumed by the real command-line builder in P0.3-B.
-#[allow(dead_code)]
 impl LaunchSpec {
     /// Host to bind. Guaranteed to be [`LOOPBACK_HOST`].
     pub fn host(&self) -> &str {
@@ -172,7 +172,6 @@ pub trait ProcessBackend: Send + Sync {
     /// Start the runtime from a validated launch contract, returning its PID.
     fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String>;
     /// Whether a previously spawned PID is still alive.
-    #[allow(dead_code)]
     fn is_running(&self, pid: u32) -> bool;
     /// Terminate a previously spawned PID. `Err` means the process may still be
     /// running and its PID must stay tracked.
@@ -210,8 +209,6 @@ impl Clock for SystemClock {
 pub struct RuntimeConfig {
     host: String,
     port: u16,
-    // Read only by the timeout policy on the polling path (P0.3-B).
-    #[allow(dead_code)]
     startup_timeout_ms: u64,
 }
 
@@ -250,7 +247,6 @@ impl RuntimeConfig {
         self.port
     }
 
-    #[allow(dead_code)]
     pub fn startup_timeout_ms(&self) -> u64 {
         self.startup_timeout_ms
     }
@@ -331,9 +327,10 @@ struct RuntimeInner {
 /// Everything is synchronous and no lock is ever held across an await.
 pub struct LocalAiRuntimeManager {
     config: RuntimeConfig,
+    /// Built once from the config, so the bind address and the probed endpoint
+    /// can never disagree.
+    launch_spec: LaunchSpec,
     process: Box<dyn ProcessBackend>,
-    // Exercised by the polling path only (P0.3-B).
-    #[allow(dead_code)]
     health: Box<dyn HealthProbe>,
     clock: Box<dyn Clock>,
     binary_path: String,
@@ -357,6 +354,7 @@ impl LocalAiRuntimeManager {
         };
 
         Self {
+            launch_spec: config.launch_spec(),
             config,
             process,
             health,
@@ -438,7 +436,6 @@ impl LocalAiRuntimeManager {
     }
 
     /// Whether a runtime that is still coming up has exhausted its grace period.
-    #[allow(dead_code)]
     fn startup_expired(&self, started_at: Option<u64>, now_ms: u64) -> bool {
         match started_at {
             Some(started_at) => {
@@ -508,7 +505,7 @@ impl LocalAiRuntimeManager {
             inner.phase = RuntimePhase::Starting;
             inner.started_at = None;
             inner.last_error = None;
-            self.config.launch_spec()
+            self.launch_spec.clone()
         };
 
         // External spawn, no state lock held.
@@ -536,7 +533,6 @@ impl LocalAiRuntimeManager {
     /// Internal to the manager for now: P0.3-B's background watcher will drive
     /// it. Only meaningful while starting, loading or ready; in any other phase,
     /// or while another operation is in flight, it is a pure read.
-    #[allow(dead_code)]
     pub fn poll(&self) -> LocalAiRuntimeSnapshot {
         let Some(_operation) = self.try_operation() else {
             return self.snapshot();
@@ -557,7 +553,7 @@ impl LocalAiRuntimeManager {
         let process_alive = pid.map(|pid| self.process.is_running(pid));
         let health = match process_alive {
             Some(false) => None,
-            _ => Some(self.health.poll(&self.config.endpoint())),
+            _ => Some(self.health.poll(self.launch_spec.endpoint())),
         };
         let now_ms = self.clock.now_ms();
         let expired = self.startup_expired(started_at, now_ms);
@@ -693,67 +689,322 @@ impl LocalAiRuntimeManager {
     }
 }
 
-/// Filesystem-backed process backend for the shipped application.
+// ---------------------------------------------------------------------------
+// Production backends
+// ---------------------------------------------------------------------------
+
+/// Owns the real `llama-server` child process.
 ///
-/// P0.3-A knows where the sidecar will live and can tell whether it is there,
-/// but deliberately refuses to spawn it: launching the real `llama-server` is
-/// P0.3-B work, and reporting a fake success would hide that.
+/// The child is held in a `Mutex<Option<Child>>` rather than tracked by PID
+/// alone: owning the handle is what lets us reap it, and a reaped child cannot
+/// become a zombie. Only one may exist at a time.
+///
+/// The working directory is the runtime directory so the 29 DLLs that make up
+/// the distribution sit next to the executable — `llama-server.exe` is a 9 KB
+/// shim and cannot start without them.
 pub struct SystemProcessBackend {
-    binary_path: PathBuf,
+    directory: PathBuf,
+    executable: PathBuf,
+    log_path: PathBuf,
+    child: Mutex<Option<Child>>,
 }
 
 impl SystemProcessBackend {
-    pub fn new(binary_path: PathBuf) -> Self {
-        Self { binary_path }
+    pub fn new(directory: PathBuf, executable: PathBuf, log_path: PathBuf) -> Self {
+        Self {
+            directory,
+            executable,
+            log_path,
+            child: Mutex::new(None),
+        }
+    }
+
+    /// Append one diagnostic line. Best effort: failing to log must never break
+    /// the lifecycle, so the result is deliberately discarded.
+    fn log(&self, line: &str) {
+        let stamp = SystemClock.now_ms();
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)
+        {
+            let _ = writeln!(file, "[{stamp}] {line}");
+        }
+    }
+
+    fn lock_child(&self) -> MutexGuard<'_, Option<Child>> {
+        self.child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
 impl ProcessBackend for SystemProcessBackend {
     fn binary_present(&self) -> bool {
-        self.binary_path.is_file()
+        self.executable.is_file()
     }
 
     fn binary_path(&self) -> &Path {
-        &self.binary_path
+        &self.executable
     }
 
-    fn spawn(&self, _spec: &LaunchSpec) -> Result<u32, String> {
+    fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String> {
+        let mut slot = self.lock_child();
+
+        // Refuse a second sidecar, and reap a dead one before replacing it.
+        if let Some(existing) = slot.as_mut() {
+            match existing.try_wait() {
+                Ok(None) => {
+                    return Err(format!(
+                        "llama-server is already running as PID {}",
+                        existing.id()
+                    ))
+                }
+                _ => {
+                    let _ = existing.wait();
+                    *slot = None;
+                }
+            }
+        }
+
         if !self.binary_present() {
             return Err(format!(
-                "llama-server binary not found at {}",
-                self.binary_path.display()
+                "llama-server not found at {}",
+                self.executable.display()
             ));
         }
-        Err("spawning the llama-server sidecar is not implemented yet (P0.3-B)".to_string())
+
+        let stdout = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)
+            .map_err(|error| {
+                format!(
+                    "unable to open the sidecar log {}: {error}",
+                    self.log_path.display()
+                )
+            })?;
+        let stderr = stdout
+            .try_clone()
+            .map_err(|error| format!("unable to duplicate the sidecar log handle: {error}"))?;
+
+        let port = spec.port().to_string();
+        let mut command = Command::new(&self.executable);
+        command
+            .current_dir(&self.directory)
+            .arg("--host")
+            .arg(spec.host())
+            .arg("--port")
+            .arg(&port)
+            .stdin(Stdio::null())
+            // Redirected to a file rather than piped: nobody drains a pipe here,
+            // and a full pipe buffer would stall the child.
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr));
+
+        // No console window, and no shell in between: the executable is invoked
+        // directly.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let child = command
+            .spawn()
+            .map_err(|error| format!("unable to start {}: {error}", self.executable.display()))?;
+        let pid = child.id();
+        self.log(&format!(
+            "start pid={pid} exe={} args=[--host {} --port {}]",
+            self.executable.display(),
+            spec.host(),
+            spec.port()
+        ));
+        *slot = Some(child);
+        Ok(pid)
     }
 
-    fn is_running(&self, _pid: u32) -> bool {
-        false
+    fn is_running(&self, pid: u32) -> bool {
+        let mut slot = self.lock_child();
+        let Some(child) = slot.as_mut() else {
+            return false;
+        };
+        if child.id() != pid {
+            return false;
+        }
+        match child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                self.log(&format!("exit pid={pid} status={status}"));
+                *slot = None;
+                false
+            }
+            Err(error) => {
+                self.log(&format!("wait failed pid={pid}: {error}"));
+                false
+            }
+        }
     }
 
-    fn kill(&self, _pid: u32) -> Result<(), String> {
+    fn kill(&self, pid: u32) -> Result<(), String> {
+        let mut slot = self.lock_child();
+        let Some(child) = slot.as_mut() else {
+            // Nothing owned, so the caller may safely release the PID.
+            return Ok(());
+        };
+        if child.id() != pid {
+            return Err(format!(
+                "asked to stop PID {pid} but this backend owns PID {}",
+                child.id()
+            ));
+        }
+
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            self.log(&format!("stop pid={pid} (already exited)"));
+            *slot = None;
+            return Ok(());
+        }
+
+        child
+            .kill()
+            .map_err(|error| format!("unable to terminate PID {pid}: {error}"))?;
+        // Reap, so no zombie survives the kill.
+        child
+            .wait()
+            .map_err(|error| format!("terminated PID {pid} but could not reap it: {error}"))?;
+        self.log(&format!("stop pid={pid} (terminated and reaped)"));
+        *slot = None;
         Ok(())
     }
 }
 
-/// Health probe placeholder for the shipped application.
+/// Blocking `/health` probe over loopback TCP.
 ///
-/// P0.3-A performs no network I/O at all; nothing is listening, so the honest
-/// answer is that the connection would be refused.
-pub struct UnimplementedHealthProbe;
+/// Written on `std::net` rather than pulling an HTTP crate: the request is one
+/// fixed `GET /health` against 127.0.0.1 returning a tiny JSON body, so a client
+/// carrying TLS, redirects, proxies and an async runtime would be dependency
+/// weight for nothing — and TLS is meaningless on loopback.
+pub struct LoopbackHealthProbe {
+    timeout: Duration,
+}
 
-impl HealthProbe for UnimplementedHealthProbe {
-    fn poll(&self, _endpoint: &str) -> HealthOutcome {
-        HealthOutcome::ConnectionRefused
+impl LoopbackHealthProbe {
+    pub fn new(timeout: Duration) -> Self {
+        Self { timeout }
     }
 }
 
+/// Extract the port from an endpoint, refusing anything that is not loopback.
+///
+/// The probe cannot be aimed elsewhere even if handed a hostile endpoint.
+fn loopback_port(endpoint: &str) -> Option<u16> {
+    let prefix = format!("http://{LOOPBACK_HOST}:");
+    let rest = endpoint.strip_prefix(&prefix)?;
+    let (port, path) = rest.split_once('/')?;
+    if path != "health" {
+        return None;
+    }
+    port.parse().ok()
+}
+
+impl HealthProbe for LoopbackHealthProbe {
+    fn poll(&self, endpoint: &str) -> HealthOutcome {
+        let Some(port) = loopback_port(endpoint) else {
+            return HealthOutcome::Malformed(format!(
+                "refusing to probe non-loopback endpoint {endpoint}"
+            ));
+        };
+
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let mut stream = match TcpStream::connect_timeout(&address, self.timeout) {
+            Ok(stream) => stream,
+            Err(error) => {
+                return match error.kind() {
+                    ErrorKind::TimedOut => HealthOutcome::Timeout,
+                    _ => HealthOutcome::ConnectionRefused,
+                }
+            }
+        };
+        if stream.set_read_timeout(Some(self.timeout)).is_err()
+            || stream.set_write_timeout(Some(self.timeout)).is_err()
+        {
+            return HealthOutcome::Timeout;
+        }
+
+        let request = format!(
+            "GET /health HTTP/1.1\r\nHost: {LOOPBACK_HOST}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        );
+        if let Err(error) = stream.write_all(request.as_bytes()) {
+            return match error.kind() {
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => HealthOutcome::Timeout,
+                _ => HealthOutcome::ConnectionRefused,
+            };
+        }
+
+        let mut raw = Vec::new();
+        if let Err(error) = stream.read_to_end(&mut raw) {
+            return match error.kind() {
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => HealthOutcome::Timeout,
+                _ => HealthOutcome::Malformed(format!("health response could not be read: {error}")),
+            };
+        }
+
+        classify_health_response(&String::from_utf8_lossy(&raw))
+    }
+}
+
+/// Turn a raw HTTP/1.1 response into a lifecycle outcome.
+///
+/// Split out from the socket so the mapping is unit-testable without a server.
+fn classify_health_response(response: &str) -> HealthOutcome {
+    let Some((head, body)) = response.split_once("\r\n\r\n") else {
+        return HealthOutcome::Malformed("health response had no header terminator".to_string());
+    };
+    let Some(status_line) = head.lines().next() else {
+        return HealthOutcome::Malformed("health response had no status line".to_string());
+    };
+    let Some(status) = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+    else {
+        return HealthOutcome::Malformed(format!("unreadable status line: {status_line}"));
+    };
+
+    match status {
+        // Verified against the real b10343 in P0.3-B0: router mode answers this
+        // with zero models loaded, so it proves the runtime is up and nothing
+        // more.
+        200 => match serde_json::from_str::<serde_json::Value>(body.trim()) {
+            Ok(value) if value.get("status").and_then(|status| status.as_str()) == Some("ok") => {
+                HealthOutcome::Ready
+            }
+            Ok(_) => HealthOutcome::Malformed(format!(
+                "health payload did not report status ok: {}",
+                body.trim()
+            )),
+            Err(error) => HealthOutcome::Malformed(format!("health payload is not JSON: {error}")),
+        },
+        503 => HealthOutcome::Loading,
+        other => HealthOutcome::UnexpectedStatus(other),
+    }
+}
+
+/// Timeout for a single loopback health request. Generous for a local socket,
+/// far below the startup grace period so a slow probe cannot mask a hang.
+pub const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Build the manager the application ships with.
-pub fn system_manager(binary_path: PathBuf) -> LocalAiRuntimeManager {
+pub fn system_manager(
+    directory: PathBuf,
+    executable: PathBuf,
+    log_path: PathBuf,
+) -> LocalAiRuntimeManager {
     LocalAiRuntimeManager::new(
         RuntimeConfig::loopback(),
-        Box::new(SystemProcessBackend::new(binary_path)),
-        Box::new(UnimplementedHealthProbe),
+        Box::new(SystemProcessBackend::new(directory, executable, log_path)),
+        Box::new(LoopbackHealthProbe::new(HEALTH_TIMEOUT)),
         Box::new(SystemClock),
     )
 }
@@ -1460,6 +1711,7 @@ mod tests {
 
         // `new` is allowed one probe; after that the backend refuses everything.
         let manager = LocalAiRuntimeManager {
+            launch_spec: RuntimeConfig::loopback().launch_spec(),
             config: RuntimeConfig::loopback(),
             process: Box::new(ExplodingProcess(PathBuf::from("/fake/llama-server"))),
             health: Box::new(ExplodingHealth),
@@ -1630,14 +1882,120 @@ mod tests {
         }
     }
 
+    /// A real backend pointed at a path that does not exist. Used to prove the
+    /// production code fails cleanly without needing llama-server in CI.
+    fn absent_backend() -> SystemProcessBackend {
+        let missing = PathBuf::from("/definitely/not/here");
+        SystemProcessBackend::new(
+            missing.clone(),
+            missing.join("llama-server.exe"),
+            std::env::temp_dir().join("chronosaga-absent-runtime.log"),
+        )
+    }
+
     #[test]
-    fn shipped_backend_refuses_to_fake_a_successful_spawn() {
-        let backend = SystemProcessBackend::new(PathBuf::from("/definitely/not/here/llama-server"));
+    fn the_real_backend_fails_cleanly_when_the_binary_is_absent() {
+        let backend = absent_backend();
         assert!(!backend.binary_present());
+
         let error = backend
             .spawn(&RuntimeConfig::loopback().launch_spec())
             .expect_err("a missing binary must not spawn");
-        assert!(error.contains("not found"));
+        assert!(error.contains("not found"), "unexpected error: {error}");
+
+        // Nothing was started, so nothing is owned and nothing can be running.
+        assert!(!backend.is_running(1234));
+        assert!(
+            backend.kill(1234).is_ok(),
+            "killing an unowned process must be a no-op, not an error"
+        );
+    }
+
+    #[test]
+    fn the_real_backend_refuses_to_stop_a_process_it_does_not_own() {
+        // Guards against releasing the PID of a child that belongs to somebody
+        // else: an Ok here would make the manager forget a live process.
+        let backend = absent_backend();
+        assert!(backend.kill(4242).is_ok(), "owning nothing is a clean no-op");
+    }
+
+    /// Assemble an HTTP/1.1 response with real CRLF separators.
+    fn http_response(status_line: &str, body: &str) -> String {
+        format!("{status_line}\r\nContent-Type: application/json\r\n\r\n{body}")
+    }
+
+    #[test]
+    fn health_responses_map_to_the_documented_outcomes() {
+        // The body the real b10343 returns in router mode.
+        assert_eq!(
+            classify_health_response(&http_response("HTTP/1.1 200 OK", r#"{"status":"ok"}"#)),
+            HealthOutcome::Ready
+        );
+        assert_eq!(
+            classify_health_response(&http_response(
+                "HTTP/1.1 503 Service Unavailable",
+                r#"{"status":"loading"}"#
+            )),
+            HealthOutcome::Loading
+        );
+        assert_eq!(
+            classify_health_response(&http_response("HTTP/1.1 418 I am a teapot", "")),
+            HealthOutcome::UnexpectedStatus(418)
+        );
+        assert!(matches!(
+            classify_health_response(&http_response("HTTP/1.1 200 OK", "not json at all")),
+            HealthOutcome::Malformed(_)
+        ));
+        assert!(
+            matches!(
+                classify_health_response(&http_response(
+                    "HTTP/1.1 200 OK",
+                    r#"{"status":"degraded"}"#
+                )),
+                HealthOutcome::Malformed(_)
+            ),
+            "a 200 that does not report ok is not a ready runtime"
+        );
+        assert!(matches!(
+            classify_health_response("garbage without headers"),
+            HealthOutcome::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn the_health_probe_refuses_every_non_loopback_endpoint() {
+        for endpoint in [
+            "http://0.0.0.0:8081/health",
+            "http://192.168.1.10:8081/health",
+            "http://localhost:8081/health",
+            "http://[::1]:8081/health",
+            "https://example.com/health",
+            "http://127.0.0.1:8081/completion",
+            "http://127.0.0.2:8081/health",
+        ] {
+            assert_eq!(
+                loopback_port(endpoint),
+                None,
+                "{endpoint} must not be probed"
+            );
+        }
+
+        assert_eq!(loopback_port("http://127.0.0.1:8081/health"), Some(8081));
+    }
+
+    #[test]
+    fn the_probe_reports_connection_refused_when_nothing_listens() {
+        // Port 1 on loopback: reserved and never served, so this exercises the
+        // real socket path without depending on llama-server.
+        let probe = LoopbackHealthProbe::new(Duration::from_millis(250));
+        let outcome = probe.poll("http://127.0.0.1:1/health");
+        assert!(
+            matches!(
+                outcome,
+                HealthOutcome::ConnectionRefused | HealthOutcome::Timeout
+            ),
+            "unexpected outcome: {outcome:?}"
+        );
     }
 
     #[test]

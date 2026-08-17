@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getDatabaseStatus,
+  getLocalAiRuntimeStatus,
   getRuntimeStatus,
   getSystemInfo,
   loadSmokeCampaign,
   saveSmokeCampaign,
+  startLocalAiRuntime,
+  stopLocalAiRuntime,
   type P0DatabaseStatus,
+  type P0LocalAiRuntimeSnapshot,
   type P0RuntimeStatus,
   type P0SmokeCampaign,
   type P0SystemInfo,
@@ -31,6 +35,45 @@ export function DesktopP0Screen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("P0 diagnostics not executed yet.");
   const [error, setError] = useState<string | null>(null);
+
+  const [ai, setAi] = useState<P0LocalAiRuntimeSnapshot | null>(null);
+  const aiTimer = useRef<number | null>(null);
+
+  // A pure read on the Rust side: the background watcher is what advances the
+  // state machine, this only mirrors it.
+  async function refreshAi() {
+    try {
+      setAi(await getLocalAiRuntimeStatus());
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
+  async function startAi() {
+    setBusy(true);
+    try {
+      setAi(await startLocalAiRuntime());
+      setMessage("Local AI runtime starting; the watcher will report readiness.");
+    } catch (cause) {
+      setError(String(cause));
+      setMessage("Local AI runtime failed to start.");
+      void refreshAi();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stopAi() {
+    setBusy(true);
+    try {
+      setAi(await stopLocalAiRuntime());
+      setMessage("Local AI runtime stopped.");
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function runDiagnostics() {
     setBusy(true);
@@ -95,6 +138,11 @@ export function DesktopP0Screen() {
 
   useEffect(() => {
     void runDiagnostics();
+    void refreshAi();
+    aiTimer.current = window.setInterval(() => void refreshAi(), 500);
+    return () => {
+      if (aiTimer.current !== null) window.clearInterval(aiTimer.current);
+    };
   }, []);
 
   const runtimeChecks = useMemo(
@@ -184,6 +232,33 @@ export function DesktopP0Screen() {
           ))}
           <p className="p0-path">DATA // {system?.appLocalDataDir ?? "—"}</p>
           <p className="p0-path">DB // {database?.path ?? "—"}</p>
+        </article>
+
+        <article className="p0-panel p0-checks">
+          <h2>LOCAL AI RUNTIME</h2>
+          <div className="p0-check"><span>STATE</span>
+            <b className={ai?.runtimeReady ? "ok" : "pending"}>{ai?.state.toUpperCase() ?? "—"}</b></div>
+          <div className="p0-check"><span>BINARY PRESENT</span>
+            <b className={ai?.binaryPresent ? "ok" : "pending"}>{ai?.binaryPresent ? "YES" : "NO"}</b></div>
+          <div className="p0-check"><span>PID</span>
+            <b className="pending">{ai?.pid ?? "—"}</b></div>
+          <div className="p0-check"><span>RUNTIME READY</span>
+            <b className={ai?.runtimeReady ? "ok" : "pending"}>{ai?.runtimeReady ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>INFERENCE READY</span>
+            <b className={ai?.inferenceReady ? "ok" : "pending"}>{ai?.inferenceReady ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>HOST</span><b className="pending">{ai?.host ?? "—"}</b></div>
+          <div className="p0-check"><span>PORT</span><b className="pending">{ai?.port ?? "—"}</b></div>
+          <div className="p0-actions">
+            <button disabled={busy} onClick={() => void startAi()}>START LOCAL AI</button>
+            <button disabled={busy} onClick={() => void stopAi()}>STOP LOCAL AI</button>
+            <button disabled={busy} onClick={() => void refreshAi()}>REFRESH STATUS</button>
+          </div>
+          {ai?.lastError && <p className="p0-path">ERROR // {ai.lastError}</p>}
+          <small>
+            RUNTIME READY significa che llama-server risponde su /health. Non significa che
+            l&apos;inferenza sia disponibile: senza modello caricato INFERENCE READY resta FALSE
+            fino a P0.3-C.
+          </small>
         </article>
 
         <article className="p0-panel p0-save">

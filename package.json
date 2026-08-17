@@ -8,6 +8,7 @@
     "dev:web": "pnpm --filter @paa/web dev",
     "dev:server": "pnpm --filter @paa/server dev",
     "dev:desktop": "pnpm --filter @paa/desktop dev",
+    "dev:desktop:ai": "pnpm verify:local-ai-runtime && pnpm dev:desktop",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter @paa/game-core test && pnpm --filter @paa/ai-contracts test",
