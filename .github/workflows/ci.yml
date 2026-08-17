@@ -28,3 +28,26 @@ jobs:
           name: chronosaga-source-${{ github.sha }}
           path: chronosaga_the_game-source-${{ github.sha }}.zip
           retention-days: 30
+
+  desktop-windows-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Select current stable Rust
+        shell: pwsh
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc --version
+          cargo --version
+      - run: pnpm install --no-frozen-lockfile
+      - name: Build shared React frontend
+        run: pnpm --filter @paa/web build
+      - name: Check Tauri Windows runtime
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml

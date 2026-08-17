@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GameEvent, WorldState } from "@paa/game-types";
+import { DesktopP0Screen } from "./components/DesktopP0Screen";
+import { isChronosagaDesktop } from "./platform/desktop";
 
 type Resolution = {
   state: WorldState;
@@ -7,6 +9,11 @@ type Resolution = {
 };
 
 export function App() {
+  if (isChronosagaDesktop()) return <DesktopP0Screen />;
+  return <WebSimulationScreen />;
+}
+
+function WebSimulationScreen() {
   const [state, setState] = useState<WorldState | null>(null);
   const [event, setEvent] = useState<GameEvent | null>(null);
   const [narration, setNarration] = useState("SYSTEM READY // Awaiting first directive.");
