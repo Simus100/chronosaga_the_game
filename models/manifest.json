@@ -1,12 +1,93 @@
 {
-  "id": "dm-lite",
-  "version": "0.0-unselected",
-  "family": "TBD_AFTER_P0_BENCHMARK",
-  "file": "dungeon-master-default.gguf",
-  "sha256": null,
-  "quantization": "TBD",
-  "license": "TBD",
-  "contextTarget": 4096,
-  "minRamMb": null,
-  "recommendedRamMb": null
+  "schemaVersion": 3,
+  "status": "candidate-profiles-before-p0-benchmark",
+  "selection": {
+    "defaultMode": "auto",
+    "allowUserOverride": true,
+    "loadOneModelAtATime": true,
+    "fallbackOrder": ["selected", "lite", "procedural"]
+  },
+  "profiles": [
+    {
+      "id": "lite",
+      "label": "Lite ~1.7B",
+      "parameterClass": "~1.7B",
+      "candidateFamily": "Qwen3-1.7B",
+      "candidateOnly": true,
+      "bundledWindowsFullOffline": true,
+      "file": "dungeon-master-lite.gguf",
+      "sha256": null,
+      "quantization": "TBD_AFTER_P0_Q4_OR_Q5",
+      "license": "VERIFY_EXACT_RELEASE_AND_QUANTIZATION",
+      "contextTarget": 4096,
+      "planning": {
+        "modelSizeMb": {
+          "min": 1024,
+          "max": 1536
+        },
+        "minRamMb": 8192,
+        "recommendedRamMb": 16384,
+        "minLogicalCores": 4,
+        "gpuRequired": false,
+        "usefulVramMb": 4096
+      },
+      "intendedUse": [
+        "lower-end PCs",
+        "short dialogue",
+        "minor NPC narration",
+        "structured JSON",
+        "future browser WebGPU first target"
+      ]
+    },
+    {
+      "id": "standard",
+      "label": "Standard ~3B",
+      "parameterClass": "~3B",
+      "candidateFamily": "SmolLM3-3B",
+      "candidateOnly": true,
+      "bundledWindowsFullOffline": true,
+      "file": "dungeon-master-standard.gguf",
+      "sha256": null,
+      "quantization": "TBD_AFTER_P0_Q4_OR_Q5",
+      "license": "VERIFY_EXACT_RELEASE_AND_QUANTIZATION",
+      "contextTarget": 8192,
+      "planning": {
+        "modelSizeMb": {
+          "min": 1843,
+          "max": 2560
+        },
+        "minRamMb": 16384,
+        "recommendedRamMb": 24576,
+        "minLogicalCores": 6,
+        "gpuRequired": false,
+        "usefulVramMb": 6144
+      },
+      "intendedUse": [
+        "recommended offline experience",
+        "important dialogue",
+        "multi-actor scenes",
+        "political and social events",
+        "richer narrative generation"
+      ]
+    }
+  ],
+  "proceduralFallback": {
+    "id": "procedural",
+    "alwaysAvailable": true,
+    "requiresModel": false
+  },
+  "browser": {
+    "priority": "later-after-windows-and-hosted-web",
+    "localWebGpu": "optional-on-demand",
+    "automaticModelDownload": false,
+    "firstTargetProfile": "lite",
+    "standardProfile": "hardware-dependent",
+    "fallbackModes": ["server-ai", "procedural"]
+  },
+  "notes": [
+    "All hardware values are provisional until P0 benchmark.",
+    "Exact GGUF builds, licenses, hashes and quantizations are not selected yet.",
+    "The Simulation Core remains authoritative regardless of selected AI profile.",
+    "The TypeScript profile selector consumes configured thresholds; final hardware limits must not be hard-coded in UI components."
+  ]
 }
