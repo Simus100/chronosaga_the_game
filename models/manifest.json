@@ -1,16 +1,16 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "status": "candidate-profiles-before-p0-benchmark",
   "selection": {
     "defaultMode": "auto",
     "allowUserOverride": true,
     "loadOneModelAtATime": true,
-    "fallbackOrder": ["selected", "lite-1.7b", "procedural"]
+    "fallbackOrder": ["selected", "lite", "procedural"]
   },
   "profiles": [
     {
-      "id": "lite-1.7b",
-      "label": "Lite",
+      "id": "lite",
+      "label": "Lite ~1.7B",
       "parameterClass": "~1.7B",
       "candidateFamily": "Qwen3-1.7B",
       "candidateOnly": true,
@@ -21,26 +21,27 @@
       "license": "VERIFY_EXACT_RELEASE_AND_QUANTIZATION",
       "contextTarget": 4096,
       "planning": {
-        "modelSizeGb": {
-          "min": 1.0,
-          "max": 1.5
+        "modelSizeMb": {
+          "min": 1024,
+          "max": 1536
         },
         "minRamMb": 8192,
         "recommendedRamMb": 16384,
+        "minLogicalCores": 4,
         "gpuRequired": false,
-        "recommendedVramMb": 4096
+        "usefulVramMb": 4096
       },
       "intendedUse": [
         "lower-end PCs",
         "short dialogue",
         "minor NPC narration",
         "structured JSON",
-        "browser WebGPU first target"
+        "future browser WebGPU first target"
       ]
     },
     {
-      "id": "standard-3b",
-      "label": "Standard",
+      "id": "standard",
+      "label": "Standard ~3B",
       "parameterClass": "~3B",
       "candidateFamily": "SmolLM3-3B",
       "candidateOnly": true,
@@ -51,14 +52,15 @@
       "license": "VERIFY_EXACT_RELEASE_AND_QUANTIZATION",
       "contextTarget": 8192,
       "planning": {
-        "modelSizeGb": {
-          "min": 1.8,
-          "max": 2.5
+        "modelSizeMb": {
+          "min": 1843,
+          "max": 2560
         },
         "minRamMb": 16384,
         "recommendedRamMb": 24576,
+        "minLogicalCores": 6,
         "gpuRequired": false,
-        "recommendedVramMb": 6144
+        "usefulVramMb": 6144
       },
       "intendedUse": [
         "recommended offline experience",
@@ -75,15 +77,17 @@
     "requiresModel": false
   },
   "browser": {
+    "priority": "later-after-windows-and-hosted-web",
     "localWebGpu": "optional-on-demand",
     "automaticModelDownload": false,
-    "firstTargetProfile": "lite-1.7b",
+    "firstTargetProfile": "lite",
     "standardProfile": "hardware-dependent",
     "fallbackModes": ["server-ai", "procedural"]
   },
   "notes": [
     "All hardware values are provisional until P0 benchmark.",
     "Exact GGUF builds, licenses, hashes and quantizations are not selected yet.",
-    "The Simulation Core remains authoritative regardless of selected AI profile."
+    "The Simulation Core remains authoritative regardless of selected AI profile.",
+    "The TypeScript profile selector consumes configured thresholds; final hardware limits must not be hard-coded in UI components."
   ]
 }
