@@ -19,6 +19,24 @@
 //! The Simulation Core stays authoritative regardless of what happens here: a
 //! runtime that never reaches [`RuntimePhase::Ready`] must degrade to the
 //! procedural fallback, never block gameplay.
+//!
+//! # Runtime ready is not inference ready
+//!
+//! P0.3-B0 ran the locked llama-server b10343 for real. Started in router mode
+//! with no model, `/health` answers `200 {"status":"ok"}` while reporting zero
+//! loaded models. HTTP 200 therefore proves the HTTP runtime is up, not that
+//! anything can be generated. The snapshot exposes both facts separately:
+//! `runtime_ready` for the former, `inference_ready` for the latter. P0.3-B may
+//! reach `runtime_ready` with no model on disk; only P0.3-C, which loads a real
+//! model, may ever set `inference_ready`.
+//!
+//! # Debt for P0.3-B2
+//!
+//! The polling half of this module is reachable only from the tests until the
+//! background watcher is wired, so it carries targeted `#[allow(dead_code)]`
+//! attributes. B2 must delete every one of them that has become unnecessary; an
+//! allow that is still needed after the watcher lands marks code that is genuinely
+//! dead and should be removed instead.
 
 use serde::Serialize;
 use std::{
@@ -63,7 +81,13 @@ pub enum RuntimePhase {
     Starting,
     /// The runtime answered but is still loading the model (HTTP 503).
     Loading,
-    /// The runtime answered healthy (HTTP 200) and can serve requests.
+    /// The runtime answered healthy (HTTP 200).
+    ///
+    /// This means the HTTP runtime is up, NOT that inference is available.
+    /// Verified against the real llama-server b10343 in P0.3-B0: started in
+    /// router mode with no model, `/health` answers `200 {"status":"ok"}` with
+    /// zero models loaded. Read `inference_ready` on the snapshot before
+    /// sending anything that needs a model.
     Ready,
     /// A stop was requested and is being carried out.
     Stopping,
@@ -87,7 +111,9 @@ pub enum RuntimePhase {
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthOutcome {
-    /// HTTP 200 with a payload we understand.
+    /// HTTP 200 with a payload we understand: the runtime is serving.
+    ///
+    /// Says nothing about loaded models — see [`RuntimePhase::Ready`].
     Ready,
     /// HTTP 503: alive but still loading the model.
     Loading,
@@ -262,6 +288,22 @@ pub struct LocalAiRuntimeSnapshot {
     pub host: String,
     pub port: u16,
     pub endpoint: String,
+    /// The HTTP runtime is up and answering `/health`.
+    ///
+    /// True in [`RuntimePhase::Ready`] and nowhere else. P0.3-B can reach this
+    /// without any model on disk.
+    pub runtime_ready: bool,
+    /// Inference can actually be served: the runtime is up **and** it has a
+    /// model loaded.
+    ///
+    /// Always false until P0.3-C loads a real model. Gameplay must read this,
+    /// not `runtime_ready`, before choosing the local AI over the procedural
+    /// fallback — a router with zero models answers 200 and generates nothing.
+    pub inference_ready: bool,
+    /// Models the runtime reports as loaded, or `None` while unobserved.
+    ///
+    /// P0.3-B1 never observes it; P0.3-C is responsible for populating it.
+    pub loaded_models: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -271,6 +313,8 @@ struct RuntimeInner {
     started_at: Option<u64>,
     last_error: Option<String>,
     binary_present: bool,
+    /// Populated by P0.3-C once the runtime is asked what it has loaded.
+    loaded_models: Option<u32>,
 }
 
 /// Owns the lifecycle of the local AI runtime.
@@ -324,6 +368,7 @@ impl LocalAiRuntimeManager {
                 started_at: None,
                 last_error: None,
                 binary_present,
+                loaded_models: None,
             }),
             operation: Mutex::new(()),
         }
@@ -356,6 +401,7 @@ impl LocalAiRuntimeManager {
     }
 
     fn build_snapshot(&self, inner: &RuntimeInner) -> LocalAiRuntimeSnapshot {
+        let runtime_ready = inner.phase == RuntimePhase::Ready;
         LocalAiRuntimeSnapshot {
             state: inner.phase,
             binary_present: inner.binary_present,
@@ -366,6 +412,11 @@ impl LocalAiRuntimeManager {
             host: self.config.host().to_string(),
             port: self.config.port(),
             endpoint: self.config.endpoint(),
+            runtime_ready,
+            // Deliberately conjunctive: a runtime that is up but holds no model
+            // must never claim it can generate.
+            inference_ready: runtime_ready && inner.loaded_models.unwrap_or(0) > 0,
+            loaded_models: inner.loaded_models,
         }
     }
 
@@ -1420,6 +1471,7 @@ mod tests {
                 started_at: None,
                 last_error: None,
                 binary_present: true,
+                loaded_models: None,
             }),
             operation: Mutex::new(()),
         };
@@ -1510,11 +1562,72 @@ mod tests {
             "host",
             "port",
             "endpoint",
+            "runtimeReady",
+            "inferenceReady",
+            "loadedModels",
         ] {
             assert!(json.get(key).is_some(), "snapshot is missing '{key}'");
         }
         assert_eq!(json["state"], "unavailable");
         assert_eq!(json["host"], LOOPBACK_HOST);
+        assert_eq!(json["runtimeReady"], false);
+        assert_eq!(json["inferenceReady"], false);
+    }
+
+    #[test]
+    fn a_ready_runtime_is_not_an_inference_ready_runtime() {
+        // The real llama-server b10343 answers 200 in router mode with zero
+        // models loaded (measured in P0.3-B0), so reaching Ready must not imply
+        // that anything can be generated.
+        let manager = ready_manager(Arc::new(FakeProcess::present()), Arc::new(FakeClock::new()));
+        let snapshot = manager.snapshot();
+
+        assert_eq!(snapshot.state, RuntimePhase::Ready);
+        assert!(snapshot.runtime_ready, "the HTTP runtime is up");
+        assert!(
+            !snapshot.inference_ready,
+            "no model is loaded, so inference must not be advertised"
+        );
+        assert_eq!(snapshot.loaded_models, None, "P0.3-C observes this, not B1");
+    }
+
+    #[test]
+    fn inference_ready_requires_both_a_ready_runtime_and_a_loaded_model() {
+        let manager = ready_manager(Arc::new(FakeProcess::present()), Arc::new(FakeClock::new()));
+
+        // Simulate what P0.3-C will observe: the runtime reports a loaded model.
+        manager.lock().loaded_models = Some(1);
+        let serving = manager.snapshot();
+        assert!(serving.runtime_ready && serving.inference_ready);
+
+        // A runtime that drops back out of Ready cannot stay inference ready,
+        // even while it still remembers a model.
+        manager.stop();
+        let stopped = manager.snapshot();
+        assert!(!stopped.runtime_ready);
+        assert!(
+            !stopped.inference_ready,
+            "a stopped runtime serves nothing, whatever it last had loaded"
+        );
+    }
+
+    #[test]
+    fn no_idle_or_failed_phase_ever_claims_readiness() {
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Malformed("boom".to_string())],
+            Arc::new(FakeClock::new()),
+        );
+
+        for snapshot in [
+            manager.snapshot(),                       // Stopped
+            manager.start().expect("start"),          // Starting
+            manager.poll(),                           // Failed
+            manager.stop(),                           // Stopped again
+        ] {
+            assert!(!snapshot.runtime_ready, "{:?} must not be runtime ready", snapshot.state);
+            assert!(!snapshot.inference_ready, "{:?} must not be inference ready", snapshot.state);
+        }
     }
 
     #[test]
