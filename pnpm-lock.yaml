@@ -9,19 +9,19 @@ importers:
   .:
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
 
   apps/desktop:
     devDependencies:
       '@tauri-apps/cli':
-        specifier: latest
+        specifier: 2.11.4
         version: 2.11.4
 
   apps/server:
     dependencies:
       '@fastify/cors':
-        specifier: latest
+        specifier: 11.3.0
         version: 11.3.0
       '@paa/ai-contracts':
         specifier: workspace:*
@@ -39,20 +39,20 @@ importers:
         specifier: workspace:*
         version: link:../../packages/procedural-narrator
       fastify:
-        specifier: latest
+        specifier: 5.12.0
         version: 5.12.0
       zod:
-        specifier: latest
+        specifier: 4.4.3
         version: 4.4.3
     devDependencies:
       '@types/node':
-        specifier: latest
+        specifier: 26.2.0
         version: 26.2.0
       tsx:
-        specifier: latest
+        specifier: 4.23.12
         version: 4.23.12
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
 
   apps/web:
@@ -64,35 +64,35 @@ importers:
         specifier: ^2.11.0
         version: 2.11.1
       react:
-        specifier: latest
+        specifier: 19.2.8
         version: 19.2.8
       react-dom:
-        specifier: latest
+        specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
     devDependencies:
       '@types/react':
-        specifier: latest
+        specifier: 19.2.18
         version: 19.2.18
       '@types/react-dom':
-        specifier: latest
+        specifier: 19.2.4
         version: 19.2.4(@types/react@19.2.18)
       '@vitejs/plugin-react':
-        specifier: latest
+        specifier: 6.0.5
         version: 6.0.5(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(tsx@4.23.12))
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
       vite:
-        specifier: latest
+        specifier: 8.2.1
         version: 8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(tsx@4.23.12)
 
   packages/ai-contracts:
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
       vitest:
-        specifier: latest
+        specifier: 4.1.10
         version: 4.1.10(@types/node@26.2.0)(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(tsx@4.23.12))
 
   packages/game-core:
@@ -102,10 +102,10 @@ importers:
         version: link:../game-types
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
       vitest:
-        specifier: latest
+        specifier: 4.1.10
         version: 4.1.10(@types/node@26.2.0)(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(tsx@4.23.12))
 
   packages/game-data:
@@ -115,13 +115,13 @@ importers:
         version: link:../game-types
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
 
   packages/game-types:
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
 
   packages/persistence-contracts:
@@ -131,7 +131,7 @@ importers:
         version: link:../game-types
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
 
   packages/procedural-narrator:
@@ -141,13 +141,13 @@ importers:
         version: link:../ai-contracts
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
 
   packages/ui-system:
     devDependencies:
       typescript:
-        specifier: latest
+        specifier: 7.0.2
         version: 7.0.2
 
 packages:

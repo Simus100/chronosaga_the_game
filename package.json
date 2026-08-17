@@ -2,6 +2,7 @@
   "name": "chronosaga-the-game",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "pnpm --parallel --filter @paa/web --filter @paa/server dev",
     "dev:web": "pnpm --filter @paa/web dev",
@@ -13,6 +14,6 @@
     "lint": "pnpm -r lint --if-present"
   },
   "devDependencies": {
-    "typescript": "latest"
+    "typescript": "7.0.2"
   }
 }

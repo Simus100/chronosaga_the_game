@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
@@ -46,11 +46,11 @@ jobs:
           rustup default stable
           rustc --version
           cargo --version
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - name: Build shared React frontend
         run: pnpm --filter @paa/web build
       - name: Check Tauri Windows runtime
-        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+        run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Build Windows P0 NSIS installer
         run: pnpm --dir apps/desktop tauri build --bundles nsis
       - name: Upload Windows P0 installer

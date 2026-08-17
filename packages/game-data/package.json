@@ -10,5 +10,5 @@
   "dependencies": {
     "@paa/game-types": "workspace:*"
   },
-  "devDependencies": { "typescript": "latest" }
+  "devDependencies": { "typescript": "7.0.2" }
 }
