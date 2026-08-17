@@ -1,14 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod local_ai_runtime;
+
+use local_ai_runtime::{system_manager, LocalAiRuntimeManager, LocalAiRuntimeSnapshot};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Disks, System};
-use tauri::{path::BaseDirectory, AppHandle, Manager};
+use tauri::{path::BaseDirectory, AppHandle, Manager, State};
 
 const DATABASE_SCHEMA_VERSION: u32 = 1;
 const DATABASE_FILE_NAME: &str = "chronosaga-p0.sqlite3";
@@ -185,6 +189,23 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
     Ok(connection)
 }
 
+/// Where the bundled `llama-server` sidecar is expected once P0.3-B packages it.
+///
+/// Resolving it in one place keeps the legacy `get_runtime_status` probe and the
+/// lifecycle manager pointed at the same path.
+fn llama_server_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
+
+    Ok(resource_dir.join("bin").join(if cfg!(target_os = "windows") {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    }))
+}
+
 fn manifest_path(app: &AppHandle) -> PathBuf {
     let bundled = app
         .path()
@@ -286,13 +307,7 @@ fn get_runtime_status(app: AppHandle) -> Result<RuntimeStatus, String> {
         .path()
         .resource_dir()
         .map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
-    let llama_server_path = resource_dir
-        .join("bin")
-        .join(if cfg!(target_os = "windows") {
-            "llama-server.exe"
-        } else {
-            "llama-server"
-        });
+    let llama_server_path = llama_server_path(&app)?;
 
     let fallback_manifest_path = manifest_path(&app);
     let manifest = load_manifest(&app)?;
@@ -395,15 +410,59 @@ fn load_smoke_campaign(app: AppHandle, campaign_id: String) -> Result<Option<Smo
         .transpose()
 }
 
+/// Shared handle to the local AI runtime lifecycle manager.
+type LocalAiRuntimeState = Arc<LocalAiRuntimeManager>;
+
+/// Current runtime status.
+///
+/// This advances the state machine by one `/health` observation before
+/// answering, so the UI drives progress simply by refreshing. While the runtime
+/// is idle — the whole of P0.3-A, since no sidecar is installed — it is a pure
+/// read. P0.3-B may replace this with a background watcher once there is a real
+/// process to watch.
+#[tauri::command]
+fn get_local_ai_runtime_status(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRuntimeSnapshot {
+    runtime.poll()
+}
+
+#[tauri::command]
+fn start_local_ai_runtime(
+    runtime: State<'_, LocalAiRuntimeState>,
+) -> Result<LocalAiRuntimeSnapshot, String> {
+    runtime.start()
+}
+
+#[tauri::command]
+fn stop_local_ai_runtime(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRuntimeSnapshot {
+    runtime.stop()
+}
+
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            let binary_path = llama_server_path(app.handle())?;
+            app.manage::<LocalAiRuntimeState>(Arc::new(system_manager(binary_path)));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_system_info,
             get_runtime_status,
             get_database_status,
             save_smoke_campaign,
-            load_smoke_campaign
+            load_smoke_campaign,
+            get_local_ai_runtime_status,
+            start_local_ai_runtime,
+            stop_local_ai_runtime
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Chronosaga: The Game");
+        .build(tauri::generate_context!())
+        .expect("error while building Chronosaga: The Game")
+        .run(|app_handle, event| {
+            // Never leave a sidecar behind. Stop is idempotent, so this is a
+            // no-op when nothing was ever started.
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(runtime) = app_handle.try_state::<LocalAiRuntimeState>() {
+                    runtime.stop();
+                }
+            }
+        });
 }
