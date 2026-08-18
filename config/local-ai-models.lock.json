@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "status": "P0_BENCHMARK_CANDIDATES",
+  "notes": [
+    "Provenance lock for the local AI model payloads. Separate from config/local-ai-runtime.lock.json, which locks the llama.cpp runtime.",
+    "Every profile here is a P0 BENCHMARK CANDIDATE. None has passed the P0.5 quality suite and none is approved for release.",
+    "Hashes were verified against the provider metadata at the pinned revision and against the bytes on a Windows development machine.",
+    "Model weights never enter Git. The bytes live in the external workspace; this file records which bytes are expected.",
+    "Packaging must fail loudly when a payload does not match, and must never substitute a different model or quantization."
+  ],
+  "profiles": {
+    "lite": {
+      "profileId": "lite",
+      "status": "P0_BENCHMARK_CANDIDATE",
+      "releaseApproved": false,
+      "family": "Qwen3-1.7B",
+      "parameterClass": "~1.7B",
+      "baseModel": "Qwen/Qwen3-1.7B",
+      "artifactRepository": "ggml-org/Qwen3-1.7B-GGUF",
+      "artifactRepositoryUrl": "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF",
+      "artifactRevision": "daeb8e2d528a760970442092f6bf1e55c3b659eb",
+      "artifactFilename": "Qwen3-1.7B-Q4_K_M.gguf",
+      "quantization": "Q4_K_M",
+      "sizeBytes": 1282439264,
+      "sha256": "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+      "license": "Apache-2.0",
+      "licenseSourceUrl": "https://huggingface.co/Qwen/Qwen3-1.7B/resolve/main/LICENSE",
+      "licenseCopyRelativeToWorkspaceRoot": "runtime-assets/licenses/Qwen3-1.7B-Apache-2.0.txt",
+      "licenseSha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      "attribution": "Qwen3-1.7B by Qwen (Alibaba Cloud), Apache-2.0. GGUF quantization published by ggml-org. Both the base model and the quantized repository declare apache-2.0 at the pinned revision.",
+      "externalPathRelativeToWorkspaceRoot": "runtime-assets/models/lite/qwen3-1.7b-q4-k-m",
+      "contextTarget": 4096,
+      "verified": true,
+      "verifiedAt": "2026-08-18",
+      "verification": {
+        "digestSource": "Hugging Face model API, siblings[].lfs.sha256 at the pinned revision",
+        "sizeMatchedProvider": true,
+        "digestMatchedProvider": true,
+        "licenseVerifiedApache2": true,
+        "downloadedFromPinnedRevision": true,
+        "gatedRepository": false
+      }
+    }
+  },
+  "pending": {
+    "standard": "Not selected. P0.3-C implements Lite only; Standard is added to this same schema when its candidate is locked."
+  }
+}
