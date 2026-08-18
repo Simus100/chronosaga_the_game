@@ -9,9 +9,10 @@ Read, in this order:
 1. `docs/KNOWLEDGE_INDEX_v1.md`
 2. `docs/PRODUCT_VISION_LOCKED_v1.md`
 3. `docs/TECHNICAL_ROADMAP_v0.2.md`
-4. the most specific document for the task being executed
-5. `docs/LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` for local/heavy assets
-6. `docs/VISUAL_ASSET_PIPELINE_v0.1.md` for portraits/sprites/visual content
+4. `docs/AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md` for local-AI role, normal profiles, fallback semantics and Full Offline model distribution
+5. the most specific document for the task being executed
+6. `docs/LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` for local/heavy assets
+7. `docs/VISUAL_ASSET_PIPELINE_v0.1.md` for portraits/sprites/visual content
 
 Do not reinterpret a LOCKED product or architecture decision unless the task explicitly asks for a design review.
 
@@ -30,8 +31,12 @@ Do not reinterpret a LOCKED product or architecture decision unless the task exp
 - VPS/public hosting is later work.
 - `packages/game-core` is authoritative and deterministic.
 - The LLM is never the game engine and never owns authoritative state.
+- Local AI is nevertheless a central part of the intended normal Chronosaga experience: `AUTO / LITE / STANDARD` are the normal AI profile choices.
 - AI output must pass through contracts/validation before affecting player-facing systems.
-- Gameplay must continue through procedural fallback if local AI is unavailable.
+- `SAFE / PROCEDURAL` is a degraded continuity/recovery path, not an experience equivalent to Lite or Standard.
+- Gameplay/state integrity must continue through Safe/Procedural fallback if local AI is unavailable, without implying equal narrative quality.
+- Windows Full Offline must include both Lite and Standard model payloads once exact P0-approved GGUFs are locked; the physical multi-GB packaging format remains provisional until benchmark/installer validation.
+- Only one local LLM should normally be resident at a time.
 - Platform-specific behavior belongs behind adapters/boundaries.
 - Do not create a second independent Windows/Web game implementation.
 
@@ -100,7 +105,9 @@ Before an agent downloads or packages a model:
 5. keep the model outside Git;
 6. never assume candidate model names in planning documents are final release locks;
 7. only one local LLM should normally be resident at a time;
-8. preserve `STANDARD → LITE → PROCEDURAL` fallback behavior.
+8. preserve `STANDARD → LITE → SAFE/PROCEDURAL` fallback behavior;
+9. treat Safe/Procedural as degraded recovery, not a peer quality mode;
+10. for Windows Full Offline, plan for both P0-approved Lite and Standard payloads to be distributed locally without requiring a later Internet download.
 
 Do not add model weights merely to make a CI build appear complete.
 
@@ -134,17 +141,19 @@ Character visuals must preserve persistent identity through stable component IDs
 - Never expose `llama-server` publicly; P0 desktop binding is loopback-only.
 - Never log secrets or private tokens.
 - Do not add telemetry/network dependencies to the offline build without an explicit product decision.
+- Do not turn Safe/Procedural fallback into the main product experience to avoid solving local-AI quality/runtime problems.
 
 ## 9. Validation before PR/merge
 
 As applicable, run or preserve CI coverage for:
 
 ```text
-pnpm install
+pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
 pnpm build
-cargo check (desktop changes)
+cargo test --locked (desktop changes)
+cargo check --locked (desktop changes)
 Windows Tauri packaging smoke (desktop changes)
 ```
 
