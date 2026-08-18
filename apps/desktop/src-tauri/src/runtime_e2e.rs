@@ -14,7 +14,8 @@
 #![cfg(test)]
 
 use crate::local_ai_runtime::{
-    system_manager, LocalAiRuntimeManager, RuntimePhase, DEFAULT_PORT, LOOPBACK_HOST,
+    system_manager_with_config, LocalAiRuntimeManager, RuntimeConfig, RuntimePhase,
+    DEFAULT_PORT, LOOPBACK_HOST,
 };
 use crate::runtime_watcher::RuntimeWatcher;
 use std::{
@@ -50,7 +51,84 @@ fn resolve_from_lock() -> Option<(PathBuf, PathBuf)> {
 fn manager() -> Option<Arc<LocalAiRuntimeManager>> {
     let (directory, executable) = resolve_from_lock()?;
     let log_path = env::temp_dir().join("chronosaga-e2e-local-ai.log");
-    Some(Arc::new(system_manager(directory, executable, log_path)))
+    Some(Arc::new(system_manager_with_config(
+        RuntimeConfig::loopback(),
+        directory,
+        executable,
+        log_path,
+    )))
+}
+
+/// Resolve the locked Lite model straight from the model lock, the way the
+/// application does, so the E2E run loads the same artifact.
+fn resolve_model_from_lock() -> Option<crate::model_lock::ResolvedModel> {
+    if env::var(E2E_ENV).ok().as_deref() != Some("1") {
+        return None;
+    }
+    let workspace = env::var(WORKSPACE_ENV).ok()?;
+    let lock_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../config/local-ai-models.lock.json");
+    let lock: crate::model_lock::ModelLock =
+        serde_json::from_str(&fs::read_to_string(lock_path).ok()?).ok()?;
+    crate::model_lock::resolve_profile(&lock, "lite", Some(&workspace)).ok()
+}
+
+/// A manager configured exactly like the shipped application: real runtime, real
+/// locked model, single-model mode.
+fn manager_with_model() -> Option<Arc<LocalAiRuntimeManager>> {
+    let (directory, executable) = resolve_from_lock()?;
+    let model = resolve_model_from_lock()?;
+    let log_path = env::temp_dir().join("chronosaga-e2e-lite.log");
+    Some(Arc::new(system_manager_with_config(
+        RuntimeConfig::loopback().with_model(&model),
+        directory,
+        executable,
+        log_path,
+    )))
+}
+
+/// Shutdown with a model loaded must leave nothing behind.
+///
+/// This is exactly what `main.rs` does on `RunEvent::Exit`: stop the watcher,
+/// then stop the runtime. Loading a 1.28 GB model first makes it the realistic
+/// case rather than the empty-router one.
+#[test]
+fn shutdown_with_a_loaded_model_leaves_no_process() {
+    let Some(manager) = manager_with_model() else {
+        eprintln!("skipped: set {WORKSPACE_ENV} and {E2E_ENV}=1 to run against the real model");
+        return;
+    };
+
+    let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start");
+    let started = manager.start().expect("start should succeed");
+    let pid = started.pid.expect("a real spawn must report a PID");
+    eprintln!("model-loaded run: spawned PID {pid}");
+
+    wait_until("the model to be serving", Duration::from_secs(120), || {
+        manager.snapshot().state == RuntimePhase::Ready
+    });
+
+    let ready = manager.snapshot();
+    assert!(ready.runtime_ready);
+    assert_eq!(ready.model_profile_id.as_deref(), Some("lite"));
+    assert_eq!(ready.model_context_size, Some(4096));
+    eprintln!(
+        "model-loaded run: ready with {} at context {}",
+        ready.model_label.unwrap_or_default(),
+        ready.model_context_size.unwrap_or_default()
+    );
+
+    // Shutdown while the model is resident.
+    watcher.stop();
+    let final_snapshot = manager.stop();
+    assert_eq!(final_snapshot.state, RuntimePhase::Stopped);
+    assert_eq!(final_snapshot.pid, None);
+    assert!(!final_snapshot.inference_ready);
+
+    wait_until("the port to close", Duration::from_secs(15), || {
+        !port_is_listening()
+    });
+    eprintln!("model-loaded run: reaped PID {pid}, port released");
 }
 
 fn port_is_listening() -> bool {
