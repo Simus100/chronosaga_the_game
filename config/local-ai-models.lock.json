@@ -6,7 +6,8 @@
     "Every profile here is a P0 BENCHMARK CANDIDATE. None has passed the P0.5 quality suite and none is approved for release.",
     "Hashes were verified against the provider metadata at the pinned revision and against the bytes on a Windows development machine.",
     "Model weights never enter Git. The bytes live in the external workspace; this file records which bytes are expected.",
-    "Packaging must fail loudly when a payload does not match, and must never substitute a different model or quantization."
+    "Packaging must fail loudly when a payload does not match, and must never substitute a different model or quantization.",
+    "P0.3-C proved this Lite candidate runs real grounded inference on Windows CPU: 6-9 s per short answer, 18-20 tok/s, ~2.2 GB resident. That is a feasibility result, not a quality verdict; the 50-case suite and the hardware matrix belong to P0.5."
   ],
   "profiles": {
     "lite": {
