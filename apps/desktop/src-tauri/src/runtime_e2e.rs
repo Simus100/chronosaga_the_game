@@ -61,7 +61,7 @@ fn manager() -> Option<Arc<LocalAiRuntimeManager>> {
 
 /// Resolve the locked Lite model straight from the model lock, the way the
 /// application does, so the E2E run loads the same artifact.
-fn resolve_model_from_lock() -> Option<crate::model_lock::ResolvedModel> {
+fn resolve_model_from_lock() -> Option<crate::model_lock::VerifiedModel> {
     if env::var(E2E_ENV).ok().as_deref() != Some("1") {
         return None;
     }
@@ -70,7 +70,30 @@ fn resolve_model_from_lock() -> Option<crate::model_lock::ResolvedModel> {
         .join("../../../config/local-ai-models.lock.json");
     let lock: crate::model_lock::ModelLock =
         serde_json::from_str(&fs::read_to_string(lock_path).ok()?).ok()?;
-    crate::model_lock::resolve_profile(&lock, "lite", Some(&workspace)).ok()
+    let resolved = crate::model_lock::resolve_profile(&lock, "lite", Some(&workspace)).ok()?;
+
+    // The real digest over 1.28 GB, which is also how the E2E run measures it.
+    let started = Instant::now();
+    match resolved.verify_integrity() {
+        Ok(verified) => {
+            eprintln!(
+                "model integrity verified in {} ms ({} ms measured inside)",
+                started.elapsed().as_millis(),
+                verified.verification_ms()
+            );
+            Some(verified)
+        }
+        Err(error) => {
+            // Distinct from "no environment": the artifact is there and wrong.
+            // Saying so out loud stops a failed integrity check from looking
+            // like a skipped test.
+            eprintln!("REFUSED: model integrity check failed: {}", error.message);
+            if let Some(found) = error.found {
+                eprintln!("  expected {} but found {found}", error.expected);
+            }
+            None
+        }
+    }
 }
 
 /// A manager configured exactly like the shipped application: real runtime, real
@@ -85,6 +108,68 @@ fn manager_with_model() -> Option<Arc<LocalAiRuntimeManager>> {
         executable,
         log_path,
     )))
+}
+
+/// Real generations through the real validator, to measure how often the Lite
+/// candidate actually satisfies the strict contract.
+#[test]
+fn lite_generations_pass_the_application_validator() {
+    let Some(manager) = manager_with_model() else {
+        eprintln!("skipped: set {WORKSPACE_ENV} and {E2E_ENV}=1 to run against the real model");
+        return;
+    };
+
+    let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start");
+    manager.start().expect("start should succeed");
+    wait_until("the model to be serving", Duration::from_secs(120), || {
+        manager.snapshot().state == RuntimePhase::Ready
+    });
+
+    let spec = manager.launch_spec();
+    let provider = crate::inference::LocalModelProvider::new(
+        spec.base_url(),
+        spec.api_key().to_string(),
+    )
+    .expect("the provider must accept its own loopback endpoint");
+
+    // The identity check the probe performs.
+    let runtime = tauri::async_runtime::block_on(provider.serves_model("lite"))
+        .expect("the model probe must answer");
+    assert!(runtime, "the runtime must report serving the expected alias");
+
+    let attempts = 5;
+    let mut accepted = 0;
+    let mut total_ms = 0u64;
+    for attempt in 1..=attempts {
+        let outcome = tauri::async_runtime::block_on(provider.generate_smoke())
+            .unwrap_or_else(|error| panic!("attempt {attempt} failed to reach the model: {error}"));
+        total_ms += outcome.duration_ms;
+        if outcome.accepted {
+            accepted += 1;
+            eprintln!(
+                "attempt {attempt}: ACCEPTED in {} ms, {} tok",
+                outcome.duration_ms,
+                outcome.completion_tokens.unwrap_or(0)
+            );
+        } else {
+            eprintln!(
+                "attempt {attempt}: REJECTED in {} ms - {}",
+                outcome.duration_ms,
+                outcome.validation_error.as_deref().unwrap_or("unknown")
+            );
+        }
+    }
+    eprintln!(
+        "validator acceptance: {accepted}/{attempts}, mean {} ms",
+        total_ms / attempts
+    );
+
+    watcher.stop();
+    manager.stop();
+    assert!(
+        accepted >= 1,
+        "the Lite candidate must satisfy the contract at least once in {attempts} attempts"
+    );
 }
 
 /// Shutdown with a model loaded must leave nothing behind.

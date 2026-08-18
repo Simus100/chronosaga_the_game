@@ -23,6 +23,7 @@
 //! Nothing here may mutate authoritative state. A rejected generation costs a
 //! diagnostic message and nothing else.
 
+use crate::local_ai_runtime::LOOPBACK_HOST;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -53,9 +54,11 @@ pub struct StructuredNarration {
     pub narration: String,
     pub dialogue: Vec<DialogueLine>,
     pub tone_tags: Vec<String>,
-    #[serde(default)]
+    /// Required and required to be empty in P0.3-C. No `serde(default)`: a model
+    /// that omits the field has not followed the contract, and accepting the
+    /// omission would let a sloppy generation look compliant.
     pub event_proposals: Vec<serde_json::Value>,
-    #[serde(default)]
+    /// Same contract as `event_proposals`.
     pub memory_suggestions: Vec<serde_json::Value>,
 }
 
@@ -268,6 +271,10 @@ impl SmokeScenario {
 pub struct InferenceOutcome {
     pub accepted: bool,
     pub duration_ms: u64,
+    /// Unvalidated model text. Kept for Rust-side diagnostics and benchmark
+    /// evidence, never serialised to the interface: rejected output has not
+    /// passed the contract and must not cross into the UI trust boundary.
+    #[serde(skip)]
     pub raw: String,
     pub narration: Option<String>,
     pub dialogue: Vec<DialogueLine>,
@@ -277,6 +284,45 @@ pub struct InferenceOutcome {
     pub completion_tokens: Option<u64>,
     pub tokens_per_second: Option<f64>,
     pub model: Option<String>,
+}
+
+/// Structurally validate an inference base URL.
+///
+/// Parsed rather than prefix-matched: `http://127.0.0.1.evil.com/`,
+/// `http://user@127.0.0.1:8081@evil.com/` and similar shapes all start with the
+/// right characters while pointing somewhere else entirely.
+///
+/// Accepts only `http`, host exactly 127.0.0.1, an explicit port, no
+/// credentials, and no path.
+pub fn validate_loopback_url(base_url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(base_url)
+        .map_err(|error| format!("refusing an unparseable inference endpoint {base_url}: {error}"))?;
+
+    if parsed.scheme() != "http" {
+        return Err(format!(
+            "refusing scheme '{}': the local runtime is plain HTTP on loopback",
+            parsed.scheme()
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!("refusing an endpoint carrying credentials: {base_url}"));
+    }
+    match parsed.host_str() {
+        Some(host) if host == LOOPBACK_HOST => {}
+        Some(host) => {
+            return Err(format!(
+                "refusing host '{host}': the inference endpoint may only be {LOOPBACK_HOST}"
+            ))
+        }
+        None => return Err(format!("refusing an endpoint with no host: {base_url}")),
+    }
+    if parsed.port().is_none() {
+        return Err(format!("refusing an endpoint without an explicit port: {base_url}"));
+    }
+    if parsed.path() != "/" && !parsed.path().is_empty() {
+        return Err(format!("refusing an endpoint carrying a path: {base_url}"));
+    }
+    Ok(())
 }
 
 /// Talks to the local OpenAI-compatible endpoint.
@@ -291,9 +337,7 @@ pub struct LocalModelProvider {
 
 impl LocalModelProvider {
     pub fn new(base_url: String, api_key: String) -> Result<Self, String> {
-        if !base_url.starts_with("http://127.0.0.1:") {
-            return Err(format!("refusing a non-loopback inference endpoint: {base_url}"));
-        }
+        validate_loopback_url(&base_url)?;
         if api_key.is_empty() {
             return Err("refusing to call the local runtime without a session key".to_string());
         }
@@ -308,6 +352,19 @@ impl LocalModelProvider {
             api_key,
             client,
         })
+    }
+
+    /// Whether the runtime is serving the model we expect.
+    ///
+    /// Stronger than "some model exists": the launch contract passes
+    /// `--alias lite`, so the expected identity is known and can be required.
+    /// A runtime serving something else is not a runtime Chronosaga may use.
+    pub async fn serves_model(&self, expected_alias: &str) -> Result<bool, String> {
+        Ok(self
+            .loaded_models()
+            .await?
+            .iter()
+            .any(|id| id == expected_alias))
     }
 
     /// Ask the runtime which models it has loaded.
@@ -429,6 +486,20 @@ impl LocalModelProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unwrap the error side with a message naming the case under test.
+    trait ExpectRejected {
+        fn unwrap_err_or_panic(self, case: &str) -> ValidationError;
+    }
+
+    impl ExpectRejected for Result<StructuredNarration, ValidationError> {
+        fn unwrap_err_or_panic(self, case: &str) -> ValidationError {
+            match self {
+                Err(error) => error,
+                Ok(_) => panic!("{case} should have been rejected"),
+            }
+        }
+    }
 
     fn valid_payload() -> String {
         serde_json::json!({
@@ -614,6 +685,90 @@ mod tests {
         .to_string();
         let error = validate(&payload, &SmokeScenario::contract()).unwrap_err();
         assert!(matches!(error, ValidationError::Malformed(_)));
+    }
+
+    #[test]
+    fn every_required_field_is_mandatory() {
+        // Omitting any of the five must fail: a model that leaves a field out
+        // has not followed the contract, whatever the rest looks like.
+        for omitted in [
+            "narration",
+            "dialogue",
+            "tone_tags",
+            "event_proposals",
+            "memory_suggestions",
+        ] {
+            let mut payload = serde_json::json!({
+                "narration": "ok",
+                "dialogue": [{ "speakerId": "npc_test_01", "text": "ciao" }],
+                "tone_tags": ["teso"],
+                "event_proposals": [],
+                "memory_suggestions": []
+            });
+            payload.as_object_mut().unwrap().remove(omitted);
+
+            let error = validate(&payload.to_string(), &SmokeScenario::contract())
+                .unwrap_err_or_panic(omitted);
+            assert!(
+                matches!(error, ValidationError::Malformed(ref d) if d.contains(omitted)),
+                "omitting {omitted} must be rejected, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_pseudo_loopback_urls_are_refused() {
+        for url in [
+            // Passes a naive starts_with check, resolves elsewhere.
+            "http://127.0.0.1.evil.com:8081",
+            "http://127.0.0.1:8081@evil.com",
+            "http://user:pass@127.0.0.1:8081",
+            // Not loopback.
+            "http://0.0.0.0:8081",
+            "http://192.168.1.10:8081",
+            "http://localhost:8081",
+            "http://[::1]:8081",
+            "http://127.0.0.2:8081",
+            // Wrong scheme, or no port, or carrying a path.
+            "https://127.0.0.1:8081",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8081/v1",
+            "file:///etc/passwd",
+            "not a url at all",
+            "",
+        ] {
+            assert!(
+                validate_loopback_url(url).is_err(),
+                "{url} must be refused"
+            );
+        }
+
+        assert!(validate_loopback_url("http://127.0.0.1:8081").is_ok());
+        assert!(validate_loopback_url("http://127.0.0.1:8081/").is_ok());
+    }
+
+    #[test]
+    fn rejected_model_text_never_crosses_into_the_interface() {
+        let outcome = InferenceOutcome {
+            accepted: false,
+            duration_ms: 10,
+            raw: "SECRET-UNVALIDATED-MODEL-TEXT".to_string(),
+            narration: None,
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            validation_error: Some("rejected".to_string()),
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+
+        assert!(
+            !json.contains("SECRET-UNVALIDATED-MODEL-TEXT"),
+            "unvalidated text must not be serialised to the UI: {json}"
+        );
+        assert!(json.contains("validationError"), "the reason still reaches the UI");
     }
 
     #[test]

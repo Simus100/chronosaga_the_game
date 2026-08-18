@@ -382,16 +382,18 @@ impl RuntimeConfig {
         })
     }
 
-    /// Attach a resolved model, turning this into a single-model launch.
+    /// Attach a model that has passed its integrity check.
     ///
-    /// Takes an already-resolved [`crate::model_lock::ResolvedModel`], so a
-    /// caller cannot invent a path: the value can only come from the model lock.
-    pub fn with_model(mut self, model: &crate::model_lock::ResolvedModel) -> Self {
+    /// The parameter type is the guarantee: a [`VerifiedModel`] can only be
+    /// produced by hashing an artifact resolved from the committed lock, so an
+    /// arbitrary path cannot reach a launch contract even by mistake.
+    pub fn with_model(mut self, verified: &crate::model_lock::VerifiedModel) -> Self {
+        let model = verified.model();
         self.model = Some(LaunchModel {
-            path: model.path.clone(),
-            profile_id: model.profile_id.clone(),
+            path: model.path().to_path_buf(),
+            profile_id: model.profile_id().to_string(),
             label: model.label(),
-            context_size: model.context_target,
+            context_size: model.context_target(),
         });
         self
     }
@@ -2226,20 +2228,13 @@ mod tests {
 
     #[test]
     fn the_command_line_carries_the_locked_model_and_closes_the_runtime_down() {
-        let model = crate::model_lock::ResolvedModel {
-            profile_id: "lite".to_string(),
-            path: PathBuf::from("D:/models/Qwen3-1.7B-Q4_K_M.gguf"),
-            family: "Qwen3-1.7B".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            size_bytes: 1_282_439_264,
-            sha256: "d2387ca2".to_string(),
-            license: "Apache-2.0".to_string(),
-            context_target: 4096,
-            release_approved: false,
-            status: "P0_BENCHMARK_CANDIDATE".to_string(),
-            artifact_repository: "ggml-org/Qwen3-1.7B-GGUF".to_string(),
-            artifact_revision: "daeb8e2d".to_string(),
-        };
+        let model = crate::model_lock::VerifiedModel::for_test(
+            crate::model_lock::ResolvedModel::for_test(
+                "lite",
+                PathBuf::from("D:/models/Qwen3-1.7B-Q4_K_M.gguf"),
+                4096,
+            ),
+        );
         let config = RuntimeConfig::loopback().with_model(&model);
         let spec = config.launch_spec();
         let args = spec.command_arguments();
@@ -2385,20 +2380,13 @@ mod tests {
 
     #[test]
     fn the_snapshot_reports_the_model_the_runtime_was_launched_with() {
-        let model = crate::model_lock::ResolvedModel {
-            profile_id: "lite".to_string(),
-            path: PathBuf::from("D:/models/Qwen3-1.7B-Q4_K_M.gguf"),
-            family: "Qwen3-1.7B".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            size_bytes: 1,
-            sha256: "d2387ca2".to_string(),
-            license: "Apache-2.0".to_string(),
-            context_target: 4096,
-            release_approved: false,
-            status: "P0_BENCHMARK_CANDIDATE".to_string(),
-            artifact_repository: "ggml-org/Qwen3-1.7B-GGUF".to_string(),
-            artifact_revision: "daeb8e2d".to_string(),
-        };
+        let model = crate::model_lock::VerifiedModel::for_test(
+            crate::model_lock::ResolvedModel::for_test(
+                "lite",
+                PathBuf::from("D:/models/Qwen3-1.7B-Q4_K_M.gguf"),
+                4096,
+            ),
+        );
         let manager = LocalAiRuntimeManager::new(
             RuntimeConfig::loopback().with_model(&model),
             Box::new(SharedProcess(Arc::new(FakeProcess::present()))),

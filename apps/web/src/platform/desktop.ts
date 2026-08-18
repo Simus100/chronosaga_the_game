@@ -140,6 +140,11 @@ export interface P0LocalAiModelStatus {
   license: string;
   contextSize: number;
   releaseApproved: boolean;
+  /** The artifact was hashed and matches the locked SHA-256. */
+  integrityVerified: boolean;
+  verificationMs?: number | null;
+  sizeBytes: number;
+  expectedSha256: string;
   status: string;
   artifactRepository: string;
   artifactRevision: string;
@@ -155,7 +160,6 @@ export interface P0DialogueLine {
 export interface P0InferenceOutcome {
   accepted: boolean;
   durationMs: number;
-  raw: string;
   narration?: string | null;
   dialogue: P0DialogueLine[];
   toneTags: string[];

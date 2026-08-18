@@ -456,11 +456,21 @@ fn stop_local_ai_runtime(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRunt
 struct LocalAiModelStatus {
     profile_id: String,
     label: String,
+    /// The artifact was found at the exact locked path, name and size.
+    /// A location claim only: it says nothing about the bytes.
     resolved: bool,
+    /// The artifact was hashed and matches the locked SHA-256. Only this may be
+    /// shown to a player as "verified".
+    integrity_verified: bool,
+    /// How long the digest took, when it was computed.
+    verification_ms: Option<u64>,
     path: String,
     license: String,
     context_size: u32,
     release_approved: bool,
+    /// Artifact size and the digest the lock expects, for provenance.
+    size_bytes: u64,
+    expected_sha256: String,
     /// Candidate status from the lock, e.g. `P0_BENCHMARK_CANDIDATE`.
     status: String,
     /// Where the artifact came from, so provenance is visible in diagnostics.
@@ -470,35 +480,81 @@ struct LocalAiModelStatus {
     problem: Option<String>,
 }
 
+/// Outcome of the once-per-session model integrity check, kept in Tauri state.
+///
+/// Held so the 1.28 GB digest is computed once at startup and never again on a
+/// status refresh.
+struct VerifiedModelState(Option<model_lock::VerifiedModel>, Option<String>);
+
 #[tauri::command]
-fn get_local_ai_model_status(app: AppHandle) -> LocalAiModelStatus {
-    match model_lock::resolve_lite(&app) {
-        Ok(model) => LocalAiModelStatus {
-            profile_id: model.profile_id.clone(),
+fn get_local_ai_model_status(
+    app: AppHandle,
+    verified: State<'_, VerifiedModelState>,
+) -> LocalAiModelStatus {
+    let fallback = |problem: String| LocalAiModelStatus {
+        profile_id: model_lock::LITE_PROFILE_ID.to_string(),
+        label: "Qwen3-1.7B Q4_K_M".to_string(),
+        resolved: false,
+        integrity_verified: false,
+        verification_ms: None,
+        path: String::new(),
+        license: "Apache-2.0".to_string(),
+        context_size: 0,
+        release_approved: false,
+        size_bytes: 0,
+        expected_sha256: String::new(),
+        status: "UNRESOLVED".to_string(),
+        artifact_repository: String::new(),
+        artifact_revision: String::new(),
+        problem: Some(problem),
+    };
+
+    // The verified model from startup is authoritative when present.
+    if let Some(verified_model) = &verified.0 {
+        let model = verified_model.model();
+        return LocalAiModelStatus {
+            profile_id: model.profile_id().to_string(),
             label: model.label(),
             resolved: true,
-            path: as_string(&model.path),
-            license: model.license.clone(),
-            context_size: model.context_target,
-            release_approved: model.release_approved,
-            status: model.status.clone(),
-            artifact_repository: model.artifact_repository.clone(),
-            artifact_revision: model.artifact_revision.clone(),
+            integrity_verified: true,
+            verification_ms: Some(verified_model.verification_ms()),
+            path: as_string(model.path()),
+            license: model.license().to_string(),
+            context_size: model.context_target(),
+            release_approved: model.release_approved(),
+            size_bytes: model.size_bytes(),
+            expected_sha256: model.expected_sha256().to_string(),
+            status: model.status().to_string(),
+            artifact_repository: model.artifact_repository().to_string(),
+            artifact_revision: model.artifact_revision().to_string(),
             problem: None,
+        };
+    }
+
+    // Otherwise report what resolution alone could establish, and why the model
+    // is not usable.
+    match model_lock::resolve_lite(&app) {
+        Ok(model) => LocalAiModelStatus {
+            profile_id: model.profile_id().to_string(),
+            label: model.label(),
+            resolved: true,
+            integrity_verified: false,
+            verification_ms: None,
+            path: as_string(model.path()),
+            license: model.license().to_string(),
+            context_size: model.context_target(),
+            release_approved: model.release_approved(),
+            size_bytes: model.size_bytes(),
+            expected_sha256: model.expected_sha256().to_string(),
+            status: model.status().to_string(),
+            artifact_repository: model.artifact_repository().to_string(),
+            artifact_revision: model.artifact_revision().to_string(),
+            problem: verified
+                .1
+                .clone()
+                .or_else(|| Some("model integrity has not been verified".to_string())),
         },
-        Err(error) => LocalAiModelStatus {
-            profile_id: model_lock::LITE_PROFILE_ID.to_string(),
-            label: "Qwen3-1.7B Q4_K_M".to_string(),
-            resolved: false,
-            path: String::new(),
-            license: "Apache-2.0".to_string(),
-            context_size: 0,
-            release_approved: false,
-            status: "UNRESOLVED".to_string(),
-            artifact_repository: String::new(),
-            artifact_revision: String::new(),
-            problem: Some(error.message().to_string()),
-        },
+        Err(error) => fallback(error.message().to_string()),
     }
 }
 
@@ -525,7 +581,18 @@ async fn run_local_ai_smoke_inference(
         ));
     }
     let provider = provider_for(&runtime)?;
-    provider.generate_smoke().await
+    let outcome = provider.generate_smoke().await?;
+
+    // Rejected output stays here: enough to diagnose the refusal without letting
+    // unvalidated model text cross into the interface.
+    if !outcome.accepted {
+        let preview: String = outcome.raw.chars().take(400).collect();
+        eprintln!(
+            "local AI generation rejected ({}): {preview}",
+            outcome.validation_error.as_deref().unwrap_or("unknown reason")
+        );
+    }
+    Ok(outcome)
 }
 
 /// Background model-aware probe.
@@ -548,8 +615,18 @@ fn spawn_model_probe(app: &AppHandle) {
             let Ok(provider) = provider_for(&runtime) else {
                 continue;
             };
-            if let Ok(models) = provider.loaded_models().await {
-                runtime.record_loaded_models(models.len() as u32);
+            // Require the expected identity, not merely "a model exists": the
+            // launch contract names the profile with --alias, so a runtime
+            // serving something else must not turn inference on.
+            let expected = runtime
+                .launch_spec()
+                .model()
+                .map(|model| model.profile_id().to_string());
+            let Some(expected) = expected else {
+                continue;
+            };
+            if let Ok(serving) = provider.serves_model(&expected).await {
+                runtime.record_loaded_models(u32::from(serving));
             }
         }
     });
@@ -576,22 +653,35 @@ fn main() {
             // keeps its procedural fallback.
             // Resolve the locked Lite model. Its absence is not fatal: the
             // runtime simply starts model-less and inference stays unavailable.
-            let model = match model_lock::resolve_lite(handle) {
-                Ok(model) => {
-                    eprintln!(
-                        "local AI model resolved: {} ({}) at {}",
-                        model.label(),
-                        model.license,
-                        model.path.display()
-                    );
-                    Some(model)
+            // Resolve, then hash once. Only a verified artifact may be
+            // attached to the launch contract; a same-size impostor is refused
+            // here rather than handed to llama-server.
+            let (model, model_problem) = match model_lock::resolve_lite(handle) {
+                Ok(resolved) => {
+                    let label = resolved.label();
+                    let path = resolved.path().to_path_buf();
+                    match resolved.verify_integrity() {
+                        Ok(verified) => {
+                            eprintln!(
+                                "local AI model verified: {label} at {} (sha256 in {} ms)",
+                                path.display(),
+                                verified.verification_ms()
+                            );
+                            (Some(verified), None)
+                        }
+                        Err(error) => {
+                            eprintln!("local AI model integrity check failed: {}", error.message);
+                            (None, Some(error.message))
+                        }
+                    }
                 }
                 Err(error) => {
                     eprintln!("local AI model unavailable: {}", error.message());
-                    None
+                    (None, Some(error.message().to_string()))
                 }
             };
 
+            let model_state = model.clone();
             let manager = match runtime_lock::resolve(handle) {
                 Ok(runtime) => {
                     eprintln!(
@@ -601,8 +691,8 @@ fn main() {
                         runtime.executable.display()
                     );
                     let mut config = RuntimeConfig::loopback();
-                    if let Some(model) = &model {
-                        config = config.with_model(model);
+                    if let Some(verified) = &model {
+                        config = config.with_model(verified);
                     }
                     Arc::new(system_manager_with_config(
                         config,
@@ -624,6 +714,7 @@ fn main() {
                 }
             };
 
+            app.manage(VerifiedModelState(model_state, model_problem));
             app.manage::<LocalAiRuntimeState>(manager.clone());
 
             // An observer we cannot start is a degraded local AI, not a dead

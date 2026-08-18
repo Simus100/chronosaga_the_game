@@ -12,10 +12,14 @@
 //! Standard slots in later without a redesign.
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
+    time::Instant,
 };
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 
@@ -52,30 +56,198 @@ pub struct LockedModel {
     pub context_target: u32,
 }
 
-/// A model that exists on disk and matches its lock entry well enough to launch.
+/// A model found on disk at the exact path, name and size the lock declares.
+///
+/// "Resolved" is a location claim, not an integrity claim: the bytes have not
+/// been read. Fields are private and there is no public constructor, so the only
+/// way to obtain one is [`resolve_profile`] reading the committed lock. Nothing
+/// else in the crate can invent a model pointing at an arbitrary path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedModel {
-    pub profile_id: String,
-    pub path: PathBuf,
-    pub family: String,
-    pub quantization: String,
-    pub size_bytes: u64,
-    pub sha256: String,
-    pub license: String,
-    pub context_target: u32,
-    pub release_approved: bool,
-    /// Candidate status carried through from the lock, so diagnostics can show
-    /// that this is not an approved release model.
-    pub status: String,
-    pub artifact_repository: String,
-    pub artifact_revision: String,
+    profile_id: String,
+    path: PathBuf,
+    family: String,
+    quantization: String,
+    size_bytes: u64,
+    sha256: String,
+    license: String,
+    context_target: u32,
+    release_approved: bool,
+    status: String,
+    artifact_repository: String,
+    artifact_revision: String,
 }
 
 impl ResolvedModel {
+    pub fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+    /// The digest the lock expects. Not proof that the file matches it.
+    pub fn expected_sha256(&self) -> &str {
+        &self.sha256
+    }
+    pub fn license(&self) -> &str {
+        &self.license
+    }
+    pub fn context_target(&self) -> u32 {
+        self.context_target
+    }
+    pub fn release_approved(&self) -> bool {
+        self.release_approved
+    }
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+    pub fn artifact_repository(&self) -> &str {
+        &self.artifact_repository
+    }
+    pub fn artifact_revision(&self) -> &str {
+        &self.artifact_revision
+    }
+
     /// Short label for diagnostics, e.g. `Qwen3-1.7B Q4_K_M`.
     pub fn label(&self) -> String {
         format!("{} {}", self.family, self.quantization)
     }
+
+    /// Test-only constructor. Never compiled into the shipped binary, so the
+    /// production path still has no way to build a model from an arbitrary path.
+    #[cfg(test)]
+    pub fn for_test(profile_id: &str, path: PathBuf, context_target: u32) -> Self {
+        Self::for_test_with(
+            profile_id,
+            path,
+            context_target,
+            1_282_439_264,
+            "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+        )
+    }
+
+    /// Test-only constructor with explicit size and digest, for integrity tests
+    /// that use a small fixture instead of the 1.28 GB artifact.
+    #[cfg(test)]
+    pub fn for_test_with(
+        profile_id: &str,
+        path: PathBuf,
+        context_target: u32,
+        size_bytes: u64,
+        sha256: &str,
+    ) -> Self {
+        Self {
+            profile_id: profile_id.to_string(),
+            path,
+            family: "Qwen3-1.7B".to_string(),
+            quantization: "Q4_K_M".to_string(),
+            size_bytes,
+            sha256: sha256.to_string(),
+            license: "Apache-2.0".to_string(),
+            context_target,
+            release_approved: false,
+            status: "P0_BENCHMARK_CANDIDATE".to_string(),
+            artifact_repository: "ggml-org/Qwen3-1.7B-GGUF".to_string(),
+            artifact_revision: "daeb8e2d".to_string(),
+        }
+    }
+
+    /// Hash the artifact and compare it with the locked digest.
+    ///
+    /// Streams the file in 1 MiB chunks: the Lite artifact is 1.28 GB and must
+    /// never be read into memory to be hashed. Intended to run once per
+    /// application session, not on every status refresh.
+    pub fn verify_integrity(self) -> Result<VerifiedModel, ModelIntegrityError> {
+        let started = Instant::now();
+        let digest = stream_sha256(&self.path).map_err(|error| ModelIntegrityError {
+            expected: self.sha256.clone(),
+            found: None,
+            message: format!("unable to read {} for hashing: {error}", self.path.display()),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        })?;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        if digest != self.sha256 {
+            return Err(ModelIntegrityError {
+                expected: self.sha256.clone(),
+                found: Some(digest),
+                message: format!(
+                    "{} does not match the locked digest; refusing to load an unverified model",
+                    self.path.display()
+                ),
+                elapsed_ms,
+            });
+        }
+
+        Ok(VerifiedModel {
+            model: self,
+            elapsed_ms,
+        })
+    }
+}
+
+/// A model whose bytes have been hashed and match the lock.
+///
+/// The only way to build one outside tests is [`ResolvedModel::verify_integrity`],
+/// which makes the type itself the proof. `RuntimeConfig::with_model` takes this
+/// and not `ResolvedModel`, so an unverified artifact cannot reach a launch
+/// contract even by mistake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedModel {
+    model: ResolvedModel,
+    elapsed_ms: u64,
+}
+
+impl VerifiedModel {
+    pub fn model(&self) -> &ResolvedModel {
+        &self.model
+    }
+
+    /// How long the digest took, for diagnostics.
+    pub fn verification_ms(&self) -> u64 {
+        self.elapsed_ms
+    }
+
+    /// Test-only shortcut, so unit tests need no 1.28 GB artifact. Never
+    /// compiled into the shipped binary.
+    #[cfg(test)]
+    pub fn for_test(model: ResolvedModel) -> Self {
+        Self {
+            model,
+            elapsed_ms: 0,
+        }
+    }
+}
+
+/// Why an artifact failed its integrity check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelIntegrityError {
+    pub expected: String,
+    pub found: Option<String>,
+    pub message: String,
+    pub elapsed_ms: u64,
+}
+
+/// Stream a file through SHA-256 without holding it in memory.
+fn stream_sha256(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// Why a locked model could not be used.
@@ -112,11 +284,10 @@ fn file_size(path: &Path) -> Option<u64> {
 /// Pure apart from the filesystem, and independent of Tauri, so the decision
 /// table is testable without a 1.28 GB artifact.
 ///
-/// Deliberately checks size and not the digest: hashing 1.28 GB on every app
-/// start would add seconds to launch for no extra safety that
-/// `pnpm verify:local-ai-models` does not already provide before the model is
-/// installed. Size catches the realistic local accidents — truncated copy, wrong
-/// quantization, empty placeholder — and the digest stays the packaging gate.
+/// Checks the path, the exact locked filename and the size. It deliberately does
+/// NOT hash: resolution is a location claim. The digest is checked once per
+/// session by [`ResolvedModel::verify_integrity`], and only the resulting
+/// [`VerifiedModel`] may be attached to a launch contract.
 pub fn resolve_profile(
     lock: &ModelLock,
     profile_id: &str,
@@ -322,6 +493,80 @@ mod tests {
             .expect_err("standard is not locked yet");
         assert!(matches!(error, ModelResolutionError::UnknownProfile(_)));
         assert!(error.message().contains("standard"));
+    }
+
+    /// Digest of a fixture, computed the same way the verifier does.
+    fn digest_of(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn an_artifact_matching_the_locked_digest_is_verified() {
+        let directory = std::env::temp_dir().join("chronosaga-integrity-ok");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("model.gguf");
+        let bytes = b"pretend this is a gguf".to_vec();
+        fs::write(&path, &bytes).unwrap();
+
+        let resolved = ResolvedModel::for_test_with(
+            "lite",
+            path,
+            4096,
+            bytes.len() as u64,
+            &digest_of(&bytes),
+        );
+        let verified = resolved.verify_integrity().expect("the digest matches");
+        assert_eq!(verified.model().profile_id(), "lite");
+    }
+
+    #[test]
+    fn a_same_size_artifact_with_the_wrong_digest_is_refused() {
+        // The case size checking alone cannot catch: identical length, different
+        // bytes. Nothing may launch from this.
+        let directory = std::env::temp_dir().join("chronosaga-integrity-swap");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("model.gguf");
+
+        let genuine = b"the real weights......".to_vec();
+        let impostor = b"a different payload!!!".to_vec();
+        assert_eq!(genuine.len(), impostor.len(), "the fixture must be same-size");
+        fs::write(&path, &impostor).unwrap();
+
+        let resolved = ResolvedModel::for_test_with(
+            "lite",
+            path,
+            4096,
+            genuine.len() as u64,
+            &digest_of(&genuine),
+        );
+        let error = match resolved.verify_integrity() {
+            Err(error) => error,
+            Ok(_) => panic!("a same-size impostor must never verify"),
+        };
+        assert_eq!(error.expected, digest_of(&genuine));
+        assert_eq!(error.found, Some(digest_of(&impostor)));
+        assert!(error.message.contains("refusing to load an unverified model"));
+    }
+
+    #[test]
+    fn a_missing_artifact_fails_verification_rather_than_panicking() {
+        let resolved = ResolvedModel::for_test_with(
+            "lite",
+            PathBuf::from("/definitely/not/here/model.gguf"),
+            4096,
+            10,
+            &digest_of(b"whatever"),
+        );
+        let error = match resolved.verify_integrity() {
+            Err(error) => error,
+            Ok(_) => panic!("a missing artifact cannot verify"),
+        };
+        assert!(error.found.is_none());
+        assert!(error.message.contains("unable to read"));
     }
 
     #[test]

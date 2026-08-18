@@ -306,10 +306,10 @@ export function DesktopP0Screen() {
           {ai?.lastError && <p className="p0-path">ERROR // {ai.lastError}</p>}
           <small>
             RUNTIME READY significa che llama-server risponde su /health. Non significa che
-            l&apos;inferenza sia disponibile: senza modello caricato INFERENCE READY resta FALSE
-            fino a P0.3-C. I profili normali sono AUTO / LITE / STANDARD; SAFE MODE (nessuna AI
-            locale) e&apos; un percorso di recupero a narrativa ridotta, non un quarto profilo
-            equivalente.
+            l&apos;inferenza sia disponibile: INFERENCE READY diventa TRUE solo quando il runtime
+            dichiara di servire il modello atteso. I profili normali sono AUTO / LITE / STANDARD;
+            SAFE MODE (nessuna AI locale) e&apos; un percorso di recupero a narrativa ridotta, non
+            un quarto profilo equivalente.
           </small>
         </article>
 
@@ -319,8 +319,16 @@ export function DesktopP0Screen() {
             <b className="ok">LITE</b></div>
           <div className="p0-check"><span>MODEL</span>
             <b className={model?.resolved ? "ok" : "pending"}>{model?.label ?? "—"}</b></div>
-          <div className="p0-check"><span>MODEL VERIFIED</span>
+          <div className="p0-check"><span>MODEL RESOLVED</span>
             <b className={model?.resolved ? "ok" : "pending"}>{model?.resolved ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>MODEL VERIFIED</span>
+            <b className={model?.integrityVerified ? "ok" : "pending"}>
+              {model?.integrityVerified ? "TRUE" : "FALSE"}
+            </b></div>
+          <div className="p0-check"><span>SHA-256 CHECK</span>
+            <b className="pending">
+              {model?.verificationMs != null ? `${model.verificationMs} ms` : "—"}
+            </b></div>
           <div className="p0-check"><span>CANDIDATE STATUS</span>
             <b className="pending">{model?.status ?? "—"}</b></div>
           <div className="p0-check"><span>CONTEXT</span>
@@ -364,8 +372,10 @@ export function DesktopP0Screen() {
             <p className="p0-path">REJECTED // {inference.validationError}</p>
           )}
           <small>
-            Il modello e un candidato di benchmark P0, non il modello di release. La generazione
-            resta locale su 127.0.0.1 e passa dal validatore applicativo prima di essere mostrata.
+            Il modello e un candidato di benchmark P0, non il modello di release. MODEL VERIFIED
+            significa che lo SHA-256 dell&apos;artefatto corrisponde al lock. La generazione resta
+            locale su 127.0.0.1 e passa dal validatore applicativo prima di essere mostrata; un
+            output respinto non viene esposto alla UI.
           </small>
         </article>
 
