@@ -8,5 +8,5 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": { "@paa/game-types": "workspace:*" },
-  "devDependencies": { "typescript": "latest" }
+  "devDependencies": { "typescript": "7.0.2" }
 }

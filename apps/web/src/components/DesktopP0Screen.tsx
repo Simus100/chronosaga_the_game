@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getDatabaseStatus,
+  getLocalAiRuntimeStatus,
   getRuntimeStatus,
   getSystemInfo,
   loadSmokeCampaign,
   saveSmokeCampaign,
+  startLocalAiRuntime,
+  stopLocalAiRuntime,
   type P0DatabaseStatus,
+  type P0LocalAiRuntimeSnapshot,
   type P0RuntimeStatus,
   type P0SmokeCampaign,
   type P0SystemInfo,
@@ -16,6 +20,17 @@ const SMOKE_CAMPAIGN_ID = "p0-smoke-local";
 function gbFromMb(value?: number | null): string {
   if (value === undefined || value === null) return "UNKNOWN";
   return `${(value / 1024).toFixed(value >= 10240 ? 0 : 1)} GB`;
+}
+
+/**
+ * Player-facing label for an AI profile id.
+ *
+ * AUTO / LITE / STANDARD are the normal profiles. `procedural` stays the
+ * internal id everywhere — save, manifest, contracts — but must never be shown
+ * as a fourth equivalent choice: it is the degraded recovery path.
+ */
+function aiProfileLabel(value?: string): string {
+  return value === "procedural" ? "SAFE MODE (NO LOCAL AI)" : (value ?? "auto").toUpperCase();
 }
 
 function normalizeProfile(value?: string): P0SmokeCampaign["aiProfile"] {
@@ -31,6 +46,45 @@ export function DesktopP0Screen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("P0 diagnostics not executed yet.");
   const [error, setError] = useState<string | null>(null);
+
+  const [ai, setAi] = useState<P0LocalAiRuntimeSnapshot | null>(null);
+  const aiTimer = useRef<number | null>(null);
+
+  // A pure read on the Rust side: the background watcher is what advances the
+  // state machine, this only mirrors it.
+  async function refreshAi() {
+    try {
+      setAi(await getLocalAiRuntimeStatus());
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
+  async function startAi() {
+    setBusy(true);
+    try {
+      setAi(await startLocalAiRuntime());
+      setMessage("Local AI runtime starting; the watcher will report readiness.");
+    } catch (cause) {
+      setError(String(cause));
+      setMessage("Local AI runtime failed to start.");
+      void refreshAi();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stopAi() {
+    setBusy(true);
+    try {
+      setAi(await stopLocalAiRuntime());
+      setMessage("Local AI runtime stopped.");
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function runDiagnostics() {
     setBusy(true);
@@ -95,6 +149,11 @@ export function DesktopP0Screen() {
 
   useEffect(() => {
     void runDiagnostics();
+    void refreshAi();
+    aiTimer.current = window.setInterval(() => void refreshAi(), 500);
+    return () => {
+      if (aiTimer.current !== null) window.clearInterval(aiTimer.current);
+    };
   }, []);
 
   const runtimeChecks = useMemo(
@@ -186,13 +245,42 @@ export function DesktopP0Screen() {
           <p className="p0-path">DB // {database?.path ?? "—"}</p>
         </article>
 
+        <article className="p0-panel p0-checks">
+          <h2>LOCAL AI RUNTIME</h2>
+          <div className="p0-check"><span>STATE</span>
+            <b className={ai?.runtimeReady ? "ok" : "pending"}>{ai?.state.toUpperCase() ?? "—"}</b></div>
+          <div className="p0-check"><span>BINARY PRESENT</span>
+            <b className={ai?.binaryPresent ? "ok" : "pending"}>{ai?.binaryPresent ? "YES" : "NO"}</b></div>
+          <div className="p0-check"><span>PID</span>
+            <b className="pending">{ai?.pid ?? "—"}</b></div>
+          <div className="p0-check"><span>RUNTIME READY</span>
+            <b className={ai?.runtimeReady ? "ok" : "pending"}>{ai?.runtimeReady ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>INFERENCE READY</span>
+            <b className={ai?.inferenceReady ? "ok" : "pending"}>{ai?.inferenceReady ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>HOST</span><b className="pending">{ai?.host ?? "—"}</b></div>
+          <div className="p0-check"><span>PORT</span><b className="pending">{ai?.port ?? "—"}</b></div>
+          <div className="p0-actions">
+            <button disabled={busy} onClick={() => void startAi()}>START LOCAL AI</button>
+            <button disabled={busy} onClick={() => void stopAi()}>STOP LOCAL AI</button>
+            <button disabled={busy} onClick={() => void refreshAi()}>REFRESH STATUS</button>
+          </div>
+          {ai?.lastError && <p className="p0-path">ERROR // {ai.lastError}</p>}
+          <small>
+            RUNTIME READY significa che llama-server risponde su /health. Non significa che
+            l&apos;inferenza sia disponibile: senza modello caricato INFERENCE READY resta FALSE
+            fino a P0.3-C. I profili normali sono AUTO / LITE / STANDARD; SAFE MODE (nessuna AI
+            locale) e&apos; un percorso di recupero a narrativa ridotta, non un quarto profilo
+            equivalente.
+          </small>
+        </article>
+
         <article className="p0-panel p0-save">
           <h2>SQLITE PERSISTENCE SMOKE TEST</h2>
           <div className="p0-save-state">
             <span>CAMPAIGN</span><b>{loaded?.campaignId ?? SMOKE_CAMPAIGN_ID}</b>
             <span>SEED</span><b>{loaded?.seed ?? 7419}</b>
             <span>TURN</span><b>{loaded?.turn ?? "NOT LOADED"}</b>
-            <span>AI PROFILE</span><b>{loaded?.aiProfile?.toUpperCase() ?? "AUTO"}</b>
+            <span>AI PROFILE</span><b>{aiProfileLabel(loaded?.aiProfile)}</b>
             <span>SCHEMA</span><b>{database?.schemaVersion ?? "—"}</b>
           </div>
           <div className="p0-actions">

@@ -1,14 +1,25 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod local_ai_runtime;
+mod runtime_lock;
+mod runtime_watcher;
+
+/// Opt-in lifecycle test against the real llama-server payload.
+#[cfg(test)]
+mod runtime_e2e;
+
+use local_ai_runtime::{system_manager, LocalAiRuntimeManager, LocalAiRuntimeSnapshot};
+use runtime_watcher::RuntimeWatcher;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Disks, System};
-use tauri::{path::BaseDirectory, AppHandle, Manager};
+use tauri::{path::BaseDirectory, AppHandle, Manager, State};
 
 const DATABASE_SCHEMA_VERSION: u32 = 1;
 const DATABASE_FILE_NAME: &str = "chronosaga-p0.sqlite3";
@@ -112,6 +123,8 @@ struct RuntimeStatus {
     model_manifest_present: bool,
     llama_server_path: String,
     llama_server_present: bool,
+    /// Where the runtime was resolved from, or why it could not be.
+    llama_server_source: String,
     recommended_ai_profile: String,
     profiles: Vec<ModelProfileSummary>,
 }
@@ -183,6 +196,14 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
         .map_err(|error| format!("Unable to store SQLite schema version: {error}"))?;
 
     Ok(connection)
+}
+
+/// Diagnostic log for the sidecar, next to the save database.
+///
+/// Kept out of the save file and out of Git: it exists to explain a crash or a
+/// failed start, nothing more.
+fn sidecar_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_local_data_dir(app)?.join("local-ai-runtime.log"))
 }
 
 fn manifest_path(app: &AppHandle) -> PathBuf {
@@ -286,13 +307,16 @@ fn get_runtime_status(app: AppHandle) -> Result<RuntimeStatus, String> {
         .path()
         .resource_dir()
         .map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
-    let llama_server_path = resource_dir
-        .join("bin")
-        .join(if cfg!(target_os = "windows") {
-            "llama-server.exe"
-        } else {
-            "llama-server"
-        });
+    // One source of truth: exactly what the lifecycle manager resolves.
+    let (llama_server_path, llama_server_present, llama_server_source) =
+        match runtime_lock::resolve(&app) {
+            Ok(runtime) => (
+                as_string(&runtime.executable),
+                true,
+                runtime.source.label().to_string(),
+            ),
+            Err(reason) => (String::new(), false, reason),
+        };
 
     let fallback_manifest_path = manifest_path(&app);
     let manifest = load_manifest(&app)?;
@@ -313,8 +337,9 @@ fn get_runtime_status(app: AppHandle) -> Result<RuntimeStatus, String> {
         resource_dir: as_string(&resource_dir),
         model_manifest_present: manifest_path.exists(),
         model_manifest_path: as_string(&manifest_path),
-        llama_server_present: llama_server_path.exists(),
-        llama_server_path: as_string(&llama_server_path),
+        llama_server_present,
+        llama_server_path,
+        llama_server_source,
         recommended_ai_profile,
         profiles,
     })
@@ -395,15 +420,107 @@ fn load_smoke_campaign(app: AppHandle, campaign_id: String) -> Result<Option<Smo
         .transpose()
 }
 
+/// Shared handle to the local AI runtime lifecycle manager.
+type LocalAiRuntimeState = Arc<LocalAiRuntimeManager>;
+
+/// Current runtime status.
+///
+/// A pure read: it never advances the state machine and performs no filesystem
+/// or network access, so the UI may poll it freely. Driving the machine forward
+/// is the job of P0.3-B's background watcher.
+#[tauri::command]
+fn get_local_ai_runtime_status(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRuntimeSnapshot {
+    runtime.snapshot()
+}
+
+#[tauri::command]
+fn start_local_ai_runtime(
+    runtime: State<'_, LocalAiRuntimeState>,
+) -> Result<LocalAiRuntimeSnapshot, String> {
+    runtime.start()
+}
+
+#[tauri::command]
+fn stop_local_ai_runtime(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRuntimeSnapshot {
+    runtime.stop()
+}
+
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            let handle = app.handle();
+            let log_path = sidecar_log_path(handle)?;
+
+            // Resolve the locked runtime from the external workspace. A failure
+            // is not fatal: the manager simply reports Unavailable and gameplay
+            // keeps its procedural fallback.
+            let manager = match runtime_lock::resolve(handle) {
+                Ok(runtime) => {
+                    eprintln!(
+                        "local AI runtime resolved ({}): llama.cpp {} at {}",
+                        runtime.source.label(),
+                        runtime.release_tag,
+                        runtime.executable.display()
+                    );
+                    Arc::new(system_manager(runtime.directory, runtime.executable, log_path))
+                }
+                Err(reason) => {
+                    // Report Unavailable honestly rather than pointing the
+                    // manager at a path nobody verified.
+                    eprintln!("local AI runtime unavailable: {reason}");
+                    Arc::new(system_manager(PathBuf::new(), PathBuf::from(&reason), log_path))
+                }
+            };
+
+            app.manage::<LocalAiRuntimeState>(manager.clone());
+
+            // An observer we cannot start is a degraded local AI, not a dead
+            // application: the Simulation Core and the Safe/Procedural path do
+            // not depend on it.
+            match RuntimeWatcher::spawn(manager) {
+                Ok(watcher) => {
+                    app.manage(Mutex::new(watcher));
+                }
+                Err(reason) => eprintln!(
+                    "local AI watcher unavailable, runtime will not advance on its own: {reason}"
+                ),
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_system_info,
             get_runtime_status,
             get_database_status,
             save_smoke_campaign,
-            load_smoke_campaign
+            load_smoke_campaign,
+            get_local_ai_runtime_status,
+            start_local_ai_runtime,
+            stop_local_ai_runtime
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Chronosaga: The Game");
+        .build(tauri::generate_context!())
+        .expect("error while building Chronosaga: The Game")
+        .run(|app_handle, event| {
+            // Never leave a sidecar behind. Stop is idempotent, so this is a
+            // no-op when nothing was ever started.
+            if matches!(event, tauri::RunEvent::Exit) {
+                // Order matters: silence the observer first, then reap the
+                // child. Stop is idempotent, so this is a no-op when nothing
+                // was ever started.
+                if let Some(watcher) = app_handle.try_state::<Mutex<RuntimeWatcher>>() {
+                    watcher
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .stop();
+                }
+                if let Some(runtime) = app_handle.try_state::<LocalAiRuntimeState>() {
+                    let snapshot = runtime.stop();
+                    if let Some(pid) = snapshot.pid {
+                        eprintln!(
+                            "local AI runtime process {pid} survived shutdown: {}",
+                            snapshot.last_error.unwrap_or_default()
+                        );
+                    }
+                }
+            }
+        });
 }

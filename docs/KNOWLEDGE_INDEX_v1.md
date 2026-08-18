@@ -1,7 +1,7 @@
 # KNOWLEDGE INDEX v1
 ## Chronosaga: The Game
 
-**Data:** 2026-08-17
+**Data:** 2026-08-18
 
 I documenti seguenti costituiscono la Knowledge di progetto.
 
@@ -114,18 +114,17 @@ Brief operativo per Lovable:
 **Sequencing corrente:** il brief può essere revisionato/preparato subito, ma la produzione Lovable avanzata segue il P0 Windows/local-AI.
 
 ## 8. `LOCAL_AI_MODEL_PROFILES_v0.1.md`
-Fonte prevalente per la strategia dual-model locale:
+Fonte per i dettagli tecnici/provisori della strategia dual-model locale:
 - profilo Lite ~1.7B;
 - profilo Standard ~3B;
-- selezione `AUTO / LITE / STANDARD / PROCEDURAL`;
 - hardware probe;
 - requisiti RAM/VRAM/storage PROVISIONAL;
-- fallback Standard → Lite → Procedural;
-- packaging Windows con due modelli;
+- fallback tecnico Standard → Lite → Procedural;
 - modello WebGPU on-demand nel browser;
 - benchmark Lite/Standard;
-- UI requirements del model selector;
 - candidate families e gate di licenza.
+
+Per il **ruolo di prodotto** dei profili, la distinzione fra modalità normale e Safe/Procedural e il requisito che il Windows Full Offline includa entrambi i modelli, prevale `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`.
 
 ## 9. `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md`
 Fonte operativa prevalente per il gate tecnico immediato:
@@ -138,11 +137,11 @@ Fonte operativa prevalente per il gate tecnico immediato:
 - 50-case AI quality suite;
 - schema validation/retry/fallback;
 - model selector funzionale;
-- Full vs Compact packaging experiment;
+- packaging experiment;
 - Web compatibility checks durante Windows-first;
 - exit criteria `GO / GO WITH LIMITS / NO-GO`.
 
-**Stato verificato 2026-08-17:** P0.1 Desktop runtime e P0.2 SQLite persistence sono stati validati sul PC Windows target. P0.3 local AI sidecar è il prossimo gate operativo.
+**Stato review 2026-08-18:** P0.1 Desktop runtime e P0.2 SQLite persistence sono stati validati sul PC Windows target. Sul branch `feature/p0-local-ai-runtime-v0.1` il P0.3 include lifecycle reale llama.cpp, watcher, verifier/provenance e preparazione packaging; restano acceptance/hardening finale del packaging AI e il primo GGUF reale prima di chiudere il gate local-AI completo.
 
 ## 10. `IMPLEMENTATION_BACKLOG_v0.1.md`
 Backlog operativo aggiornato internamente a v0.2.
@@ -168,7 +167,7 @@ Fonte prevalente per la separazione fra repository e payload pesanti:
 - struttura consigliata `D:\Chronosaga`;
 - convenzione configurabile `CHRONOSAGA_WORKSPACE_ROOT`;
 - manifest/checksum/licenze;
-- packaging Full/Compact;
+- packaging source dei payload;
 - ruolo e limiti dell'agente locale;
 - backup source separato da heavy-asset backup.
 
@@ -186,11 +185,27 @@ Fonte prevalente per la produzione grafica procedurale/AI-assisted:
 - grandi librerie e raw AI fuori dal normale Git;
 - 4 vs 8 directions e risoluzioni finali ancora OPEN.
 
+## 13. `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`
+Fonte specifica e prevalente per:
+- AI locale come componente centrale dell'esperienza ma non autorevole sullo stato;
+- Simulation Core come fonte dei fatti e delle conseguenze;
+- uso dell'AI per dialoghi, reazioni, narrativa, sintesi e interpretazione grounded;
+- profili normali `AUTO / LITE / STANDARD`;
+- `SAFE MODE / PROCEDURAL` come fallback degradato e non esperienza equivalente;
+- fallback `STANDARD → LITE → SAFE/PROCEDURAL`;
+- requisito Windows Full Offline con **Lite + Standard entrambi inclusi**;
+- un solo modello residente alla volta;
+- nessuna API cloud obbligatoria per Windows Full Offline;
+- single-model `llama-server --model ...` come direzione semplice iniziale;
+- forma fisica del packaging multi-GB PROVISIONAL, purché la distribuzione resti completamente offline dopo il download/installazione iniziale.
+
+Questo documento raffina le formulazioni precedenti sul ruolo dell'AI e sulla distribuzione dual-model e prevale in quei punti perché più specifico e più recente.
+
 ---
 
 # File operativi root/config/status
 
-Questi file fanno parte del sistema operativo/documentale del progetto ma NON introducono una nuova fonte di precedenza rispetto ai 12 documenti Knowledge sopra elencati.
+Questi file fanno parte del sistema operativo/documentale del progetto ma NON introducono una nuova fonte di precedenza rispetto ai 13 documenti Knowledge sopra elencati.
 
 ## `/AGENTS.md`
 Regole obbligatorie per agenti di coding/operations:
@@ -212,8 +227,19 @@ Esempio architetturale development-only del contratto External Asset Store. Non 
 ## `LOCAL_WORKSPACE_SETUP_CHECKLIST_v0.1.md`
 Checklist operativa per inizializzare una macchina di sviluppo prima del P0.3. Deriva da `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md`; in caso di conflitto prevale quest'ultimo.
 
-## `REPOSITORY_BOOTSTRAP_STATUS.md`
-Snapshot informativo dello stato corrente del repository e dei gate completati/pending. Non è una specifica architetturale e non ha precedenza sulla Knowledge; deve essere mantenuto aggiornato per evitare che agenti o sviluppatori assumano uno stato storico come corrente.
+## `ARCHITECTURE_STATE_REVIEW_2026-08-18.md`
+Snapshot informativo della review tecnica svolta il 18 agosto 2026:
+- valutazione di fattibilità;
+- scelte architetturali confermate;
+- stato P0 osservato;
+- rischi aperti;
+- piccoli debiti tecnici suggeriti;
+- sequenza raccomandata.
+
+Non è una specifica normativa e non prevale sulla Knowledge. Le decisioni di prodotto emerse dalla review sono state separate nel documento normativo `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`.
+
+## `REPOSITORY_BOOTSTRAP_STATUS.md` — se presente
+Snapshot informativo dello stato corrente del repository e dei gate completati/pending. Non è una specifica architetturale e non ha precedenza sulla Knowledge; deve essere mantenuto aggiornato se utilizzato nel workspace/repository.
 
 ---
 
@@ -223,19 +249,20 @@ In caso di conflitto:
 
 1. documento più specifico;
 2. documento con versione/data più recente;
-3. `PRODUCT_VISION_LOCKED_v1.md` prevale sulle preferenze generali di prodotto;
-4. `GAME_SYSTEMS_SCHEMA_v0.1.md` prevale sui dettagli di gameplay e simulazione;
-5. `UI_VISUAL_SYSTEM_v0.1.md` prevale su UI/UX e linguaggio visuale generale;
-6. `VISUAL_ASSET_PIPELINE_v0.1.md` prevale su pipeline portrait/sprite/visual asset e identità visuale persistente;
-7. `LOCAL_AI_MODEL_PROFILES_v0.1.md` prevale sui profili locali, selezione modello e fallback dual-model;
-8. `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md` prevale sull'esecuzione del gate P0;
-9. `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` prevale su workspace locale, heavy asset storage, model-weight Git policy e packaging source dei payload;
-10. `TECHNICAL_ROADMAP_v0.2.md` prevale sulla sequenza di delivery e sulle priorità tecniche;
-11. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md` governa l'esecuzione Lovable ma non può contraddire Product Vision, Game Systems, UI Visual System, Visual Asset Pipeline, Local AI Model Profiles, P0 Plan, External Asset architecture o Roadmap v0.2;
-12. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md` prevale sugli aspetti generali di packaging/distribuzione non ridefiniti da documenti più specifici/recenti;
-13. `TECHNICAL_ROADMAP_v0.1.md` resta riferimento storico e non prevale su v0.2.
+3. `PRODUCT_VISION_LOCKED_v1.md` prevale sulle preferenze generali di prodotto, salvo decisioni successive più specifiche registrate nella Knowledge;
+4. `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md` prevale sul ruolo dell'AI nell'esperienza, sulla classificazione Safe/Procedural e sul requisito dual-model Windows Full Offline;
+5. `GAME_SYSTEMS_SCHEMA_v0.1.md` prevale sui dettagli di gameplay e simulazione;
+6. `UI_VISUAL_SYSTEM_v0.1.md` prevale su UI/UX e linguaggio visuale generale, salvo il product positioning dei profili AI definito al punto 4;
+7. `VISUAL_ASSET_PIPELINE_v0.1.md` prevale su pipeline portrait/sprite/visual asset e identità visuale persistente;
+8. `LOCAL_AI_MODEL_PROFILES_v0.1.md` prevale sui dettagli tecnici/provisori dei profili locali, candidate families, soglie e selezione modello non ridefiniti dal documento AI Product Role;
+9. `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md` prevale sull'esecuzione del gate P0;
+10. `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` prevale su workspace locale, heavy asset storage, model-weight Git policy e packaging source dei payload;
+11. `TECHNICAL_ROADMAP_v0.2.md` prevale sulla sequenza di delivery e sulle priorità tecniche;
+12. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md` governa l'esecuzione Lovable ma non può contraddire Product Vision, AI Product Role, Game Systems, UI Visual System, Visual Asset Pipeline, Local AI Model Profiles, P0 Plan, External Asset architecture o Roadmap v0.2;
+13. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md` prevale sugli aspetti generali di packaging/distribuzione non ridefiniti da documenti più specifici/recenti;
+14. `TECHNICAL_ROADMAP_v0.1.md` resta riferimento storico e non prevale su v0.2.
 
-`AGENTS.md`, `CLAUDE.md`, le checklist e i file status rendono operative o descrivono queste regole ma non possono ridefinire autonomamente Product Vision o Knowledge specifica.
+`AGENTS.md`, `CLAUDE.md`, le checklist, review e file status rendono operative o descrivono queste regole ma non possono ridefinire autonomamente Product Vision o Knowledge specifica.
 
 Le formule, soglie hardware o scelte marcate `PROVISIONAL` possono essere sostituite dopo playtest, benchmark o prototype review senza modificare la Product Vision.
 
@@ -244,19 +271,26 @@ Le formule, soglie hardware o scelte marcate `PROVISIONAL` possono essere sostit
 # Decisioni di delivery/asset correnti
 
 ```text
-WINDOWS-FIRST                       LOCKED
-WEB-COMPATIBLE                      LOCKED
-VPS-LATER                           LOCKED
-DUAL LOCAL AI                       LOCKED ARCHITECTURE
-MODEL WEIGHTS OUTSIDE NORMAL GIT    LOCKED
-RAW AI VISUAL BATCHES OUTSIDE GIT   LOCKED
-AI VISUAL LIBRARY AUTHORING         APPROVED
-RUNTIME IMAGE GENERATOR V1          NOT REQUIRED / DEFERRED
-PERSISTENT VISUAL IDENTITY          LOCKED PRINCIPLE
-LOCAL AGENT EXECUTION ARM           APPROVED
-1.7B / 3B MODEL NAMES               PROVISIONAL
-HARDWARE REQUIREMENTS               PROVISIONAL UNTIL P0
-WEBGPU LOCAL AI                     OPTIONAL / LATER
+WINDOWS-FIRST                         LOCKED
+WEB-COMPATIBLE                        LOCKED
+VPS-LATER                             LOCKED
+AI CENTRAL / CORE AUTHORITATIVE       LOCKED
+NORMAL AI MODES AUTO/LITE/STANDARD    LOCKED
+SAFE/PROCEDURAL = DEGRADED FALLBACK   LOCKED
+FULL OFFLINE INCLUDES LITE+STANDARD   LOCKED PRODUCT REQUIREMENT
+ONE LOCAL MODEL RESIDENT AT A TIME    LOCKED
+DUAL LOCAL AI                         LOCKED ARCHITECTURE
+MODEL WEIGHTS OUTSIDE NORMAL GIT      LOCKED
+RAW AI VISUAL BATCHES OUTSIDE GIT     LOCKED
+AI VISUAL LIBRARY AUTHORING           APPROVED
+RUNTIME IMAGE GENERATOR V1            NOT REQUIRED / DEFERRED
+PERSISTENT VISUAL IDENTITY            LOCKED PRINCIPLE
+LOCAL AGENT EXECUTION ARM             APPROVED
+1.7B / 3B MODEL NAMES                 PROVISIONAL
+EXACT GGUF / QUANTIZATION             PROVISIONAL UNTIL P0
+PHYSICAL MULTI-GB PACKAGE FORMAT      PROVISIONAL UNTIL P0
+HARDWARE REQUIREMENTS                 PROVISIONAL UNTIL P0
+WEBGPU LOCAL AI                       OPTIONAL / LATER
 ```
 
 ---
@@ -268,7 +302,7 @@ Priorità consigliata dopo/parallelamente al P0:
 1. `AI_DM_PROTOCOL_v0.1.md`
 2. `DATA_SCHEMA_v0.1.md`
 3. test fixtures per la 50-case AI quality suite
-4. report risultati P0 desktop
+4. report risultati P0 desktop/local AI
 5. asset-pack manifest/schema definitivo dopo il primo visual prototype
 6. benchmark VPS in una fase successiva
 

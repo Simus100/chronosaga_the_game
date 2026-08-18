@@ -38,6 +38,8 @@ export interface P0RuntimeStatus {
   modelManifestPresent: boolean;
   llamaServerPath: string;
   llamaServerPresent: boolean;
+  /** "packaged", "development workspace", or why resolution failed. */
+  llamaServerSource: string;
   recommendedAiProfile: string;
   profiles: P0ModelProfile[];
 }
@@ -79,4 +81,48 @@ export function saveSmokeCampaign(campaign: P0SmokeCampaign): Promise<P0SmokeCam
 
 export function loadSmokeCampaign(campaignId: string): Promise<P0SmokeCampaign | null> {
   return invoke<P0SmokeCampaign | null>("load_smoke_campaign", { campaignId });
+}
+
+/** Lifecycle phase of the local AI sidecar, mirrored from the Rust enum. */
+export type P0LocalAiRuntimePhase =
+  | "unavailable"
+  | "stopped"
+  | "starting"
+  | "loading"
+  | "ready"
+  | "stopping"
+  | "failed";
+
+export interface P0LocalAiRuntimeSnapshot {
+  state: P0LocalAiRuntimePhase;
+  binaryPresent: boolean;
+  binaryPath: string;
+  pid?: number | null;
+  startedAt?: number | null;
+  lastError?: string | null;
+  host: string;
+  port: number;
+  endpoint: string;
+  /** The HTTP runtime answers /health. Reachable with no model installed. */
+  runtimeReady: boolean;
+  /** A model is loaded and inference can be served. False until P0.3-C. */
+  inferenceReady: boolean;
+  loadedModels?: number | null;
+}
+
+/**
+ * Read the runtime status. A pure read on the Rust side: it never advances the
+ * state machine, so calling it on a timer is safe. The background watcher is
+ * what drives STARTING to READY.
+ */
+export function getLocalAiRuntimeStatus(): Promise<P0LocalAiRuntimeSnapshot> {
+  return invoke<P0LocalAiRuntimeSnapshot>("get_local_ai_runtime_status");
+}
+
+export function startLocalAiRuntime(): Promise<P0LocalAiRuntimeSnapshot> {
+  return invoke<P0LocalAiRuntimeSnapshot>("start_local_ai_runtime");
+}
+
+export function stopLocalAiRuntime(): Promise<P0LocalAiRuntimeSnapshot> {
+  return invoke<P0LocalAiRuntimeSnapshot>("stop_local_ai_runtime");
 }
