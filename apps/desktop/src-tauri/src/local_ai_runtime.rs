@@ -789,16 +789,21 @@ impl ProcessBackend for SystemProcessBackend {
 
         // Refuse a second sidecar, and reap a dead one before replacing it.
         if let Some(existing) = slot.as_mut() {
-            match existing.try_wait() {
-                Ok(None) => {
-                    return Err(format!(
-                        "llama-server is already running as PID {}",
-                        existing.id()
-                    ))
-                }
-                _ => {
-                    let _ = existing.wait();
+            let pid = existing.id();
+            let observation = existing
+                .try_wait()
+                .map(|status| status.map(|status| status.to_string()))
+                .map_err(|error| error.to_string());
+
+            match classify_pre_spawn(pid, observation) {
+                PreSpawnDecision::RefuseRunning(message) => return Err(message),
+                PreSpawnDecision::ReplaceExited(note) => {
+                    self.log(&note);
                     *slot = None;
+                }
+                PreSpawnDecision::RefuseUnknown(message) => {
+                    self.log(&format!("pre-spawn {message}"));
+                    return Err(message);
                 }
             }
         }
@@ -944,6 +949,40 @@ fn rotate_log_if_needed(path: &Path, max_bytes: u64) {
     let previous = PathBuf::from(previous);
     // Overwrites the older generation: two is all we keep.
     let _ = std::fs::rename(path, &previous);
+}
+
+/// What to do about a child that is already owned when a start is requested.
+#[derive(Debug, PartialEq, Eq)]
+enum PreSpawnDecision {
+    /// The child is confirmed alive: keep it and refuse the duplicate.
+    RefuseRunning(String),
+    /// The child is confirmed gone and already reaped: the slot is free.
+    ReplaceExited(String),
+    /// We could not tell: keep owning it and refuse to start another.
+    RefuseUnknown(String),
+}
+
+/// Decide what an already-owned child means for a new spawn request.
+///
+/// Split out from `spawn` so the three cases can be tested directly; inducing a
+/// real `try_wait()` failure would mean corrupting an OS handle.
+///
+/// The error case is deliberately not folded in with "exited". Doing so would
+/// abandon a child that may still be running, and would call the blocking
+/// `wait()` on a process whose status we just failed to read — which can hang
+/// forever.
+fn classify_pre_spawn(pid: u32, observation: Result<Option<String>, String>) -> PreSpawnDecision {
+    match observation {
+        Ok(None) => PreSpawnDecision::RefuseRunning(format!(
+            "llama-server is already running as PID {pid}"
+        )),
+        Ok(Some(status)) => {
+            PreSpawnDecision::ReplaceExited(format!("exit pid={pid} status={status}"))
+        }
+        Err(error) => PreSpawnDecision::RefuseUnknown(format!(
+            "cannot determine whether llama-server PID {pid} is still running ({error});              stop it before starting a new one"
+        )),
+    }
 }
 
 /// Blocking `/health` probe over loopback TCP.
@@ -2085,6 +2124,56 @@ mod tests {
             missing.join("llama-server.exe"),
             std::env::temp_dir().join("chronosaga-absent-runtime.log"),
         )
+    }
+
+    #[test]
+    fn a_pre_spawn_observation_error_refuses_the_start_and_keeps_ownership() {
+        let decision = classify_pre_spawn(4242, Err("handle is invalid".to_string()));
+
+        match decision {
+            PreSpawnDecision::RefuseUnknown(message) => {
+                assert!(message.contains("4242"), "the PID must be named: {message}");
+                assert!(
+                    message.contains("cannot determine"),
+                    "the message must say we could not tell, not that it exited: {message}"
+                );
+                assert!(message.contains("stop it"), "it must say how to recover: {message}");
+            }
+            other => panic!("an observation error must never allow a replacement: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_confirmed_running_child_refuses_a_duplicate_spawn() {
+        match classify_pre_spawn(77, Ok(None)) {
+            PreSpawnDecision::RefuseRunning(message) => assert!(message.contains("77")),
+            other => panic!("a live child must block a second spawn: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_confirmed_exited_child_frees_the_slot() {
+        match classify_pre_spawn(77, Ok(Some("exit code: 0".to_string()))) {
+            PreSpawnDecision::ReplaceExited(note) => {
+                assert!(note.contains("77") && note.contains("exit code: 0"));
+            }
+            other => panic!("a reaped child must free the slot: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_confirmed_exit_ever_frees_the_slot() {
+        // The whole point of the three-way split: exactly one of the outcomes
+        // may release ownership.
+        let frees = |observation| {
+            matches!(
+                classify_pre_spawn(1, observation),
+                PreSpawnDecision::ReplaceExited(_)
+            )
+        };
+        assert!(!frees(Ok(None)), "running must not free the slot");
+        assert!(frees(Ok(Some("exit code: 1".to_string()))), "exited frees it");
+        assert!(!frees(Err("io error".to_string())), "unknown must not free it");
     }
 
     #[test]
