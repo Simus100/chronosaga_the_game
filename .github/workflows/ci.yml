@@ -49,6 +49,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build shared React frontend
         run: pnpm --filter @paa/web build
+      # Unit tests before the type check: a compiling runtime that mishandles
+      # process ownership is worse than one that fails to compile. The
+      # real-runtime E2E tests self-skip without CHRONOSAGA_RUNTIME_E2E, so this
+      # stays independent of the external llama.cpp payload.
+      - name: Test Tauri Windows runtime
+        run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Check Tauri Windows runtime
         run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
       # Deliberately the AI-free installer: hosted runners have no verified

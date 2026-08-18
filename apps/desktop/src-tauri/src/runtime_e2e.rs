@@ -85,7 +85,7 @@ fn real_llama_server_completes_two_start_stop_cycles() {
         "port {DEFAULT_PORT} is already in use before the test starts"
     );
 
-    let mut watcher = RuntimeWatcher::spawn(manager.clone());
+    let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start");
     let mut pids = Vec::new();
 
     for cycle in 1..=2 {
@@ -147,7 +147,7 @@ fn shutdown_without_an_explicit_stop_leaves_no_process() {
         return;
     };
 
-    let mut watcher = RuntimeWatcher::spawn(manager.clone());
+    let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start");
     let started = manager.start().expect("start should succeed");
     let pid = started.pid.expect("a real spawn must report a PID");
     wait_until("ready", Duration::from_secs(30), || {

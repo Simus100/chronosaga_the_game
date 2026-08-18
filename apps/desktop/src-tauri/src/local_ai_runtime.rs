@@ -129,6 +129,22 @@ pub enum HealthOutcome {
     UnexpectedStatus(u16),
 }
 
+/// What we could learn about a child process when we asked.
+///
+/// The third variant is the point of the type: failing to observe a process is
+/// not evidence that it died. Treating an observation error as death would make
+/// the manager release a PID whose child may still be running and holding the
+/// port, which is exactly the ownership leak the lifecycle must prevent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessObservation {
+    /// The process is alive.
+    Running,
+    /// The process is confirmed gone; its PID may be released.
+    Exited,
+    /// We could not tell. Ownership must be retained.
+    Unknown(String),
+}
+
 /// Validated launch contract handed to the process backend.
 ///
 /// The fields are private and there is no public constructor: the only way to
@@ -171,8 +187,11 @@ pub trait ProcessBackend: Send + Sync {
     fn binary_path(&self) -> &Path;
     /// Start the runtime from a validated launch contract, returning its PID.
     fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String>;
-    /// Whether a previously spawned PID is still alive.
-    fn is_running(&self, pid: u32) -> bool;
+    /// Ask whether a previously spawned PID is still alive.
+    ///
+    /// Return [`ProcessObservation::Unknown`] rather than guessing when the
+    /// question cannot be answered.
+    fn observe(&self, pid: u32) -> ProcessObservation;
     /// Terminate a previously spawned PID. `Err` means the process may still be
     /// running and its PID must stay tracked.
     fn kill(&self, pid: u32) -> Result<(), String>;
@@ -550,9 +569,11 @@ impl LocalAiRuntimeManager {
         };
 
         // External observations, no state lock held.
-        let process_alive = pid.map(|pid| self.process.is_running(pid));
-        let health = match process_alive {
-            Some(false) => None,
+        let observation = pid.map(|pid| self.process.observe(pid));
+        // Probing health is pointless once the process is known to be gone, and
+        // misleading when we could not observe it at all.
+        let health = match observation {
+            Some(ProcessObservation::Exited) | Some(ProcessObservation::Unknown(_)) => None,
             _ => Some(self.health.poll(self.launch_spec.endpoint())),
         };
         let now_ms = self.clock.now_ms();
@@ -566,13 +587,27 @@ impl LocalAiRuntimeManager {
             return self.build_snapshot(&inner);
         }
 
-        if process_alive == Some(false) {
-            let pid = pid.unwrap_or_default();
-            Self::fail_process_gone(
-                &mut inner,
-                format!("local AI runtime process {pid} exited unexpectedly"),
-            );
-            return self.build_snapshot(&inner);
+        match observation {
+            // Confirmed dead: nothing left to own.
+            Some(ProcessObservation::Exited) => {
+                let pid = pid.unwrap_or_default();
+                Self::fail_process_gone(
+                    &mut inner,
+                    format!("local AI runtime process {pid} exited unexpectedly"),
+                );
+                return self.build_snapshot(&inner);
+            }
+            // We could not tell. Fail loudly but keep the child: a later stop
+            // must still be able to terminate it.
+            Some(ProcessObservation::Unknown(reason)) => {
+                let pid = pid.unwrap_or_default();
+                Self::fail_retaining_process(
+                    &mut inner,
+                    format!("cannot determine whether process {pid} is alive: {reason}"),
+                );
+                return self.build_snapshot(&inner);
+            }
+            Some(ProcessObservation::Running) | None => {}
         }
 
         let was_ready = phase == RuntimePhase::Ready;
@@ -826,24 +861,30 @@ impl ProcessBackend for SystemProcessBackend {
         Ok(pid)
     }
 
-    fn is_running(&self, pid: u32) -> bool {
+    fn observe(&self, pid: u32) -> ProcessObservation {
         let mut slot = self.lock_child();
         let Some(child) = slot.as_mut() else {
-            return false;
+            // We own nothing, so there is nothing of ours left running.
+            return ProcessObservation::Exited;
         };
         if child.id() != pid {
-            return false;
+            return ProcessObservation::Unknown(format!(
+                "this backend owns PID {}, not {pid}",
+                child.id()
+            ));
         }
         match child.try_wait() {
-            Ok(None) => true,
+            Ok(None) => ProcessObservation::Running,
             Ok(Some(status)) => {
                 self.log(&format!("exit pid={pid} status={status}"));
                 *slot = None;
-                false
+                ProcessObservation::Exited
             }
+            // An error here says the question failed, not that the child died:
+            // keep owning it so stop() can still reach it.
             Err(error) => {
-                self.log(&format!("wait failed pid={pid}: {error}"));
-                false
+                self.log(&format!("observation failed pid={pid}: {error}"));
+                ProcessObservation::Unknown(error.to_string())
             }
         }
     }
@@ -1050,6 +1091,7 @@ mod tests {
         spawn_error: StdMutex<Option<String>>,
         kill_error: StdMutex<Option<String>>,
         kill_calls: StdMutex<u32>,
+        observe_error: StdMutex<Option<String>>,
     }
 
     impl FakeProcess {
@@ -1062,6 +1104,7 @@ mod tests {
                 spawn_error: StdMutex::new(None),
                 kill_error: StdMutex::new(None),
                 kill_calls: StdMutex::new(0),
+                observe_error: StdMutex::new(None),
             }
         }
 
@@ -1081,6 +1124,15 @@ mod tests {
 
         fn allow_kill(&self) {
             *self.kill_error.lock().unwrap() = None;
+        }
+
+        /// Make observation fail, without saying anything about the child.
+        fn fail_observation_with(&self, error: &str) {
+            *self.observe_error.lock().unwrap() = Some(error.to_string());
+        }
+
+        fn allow_observation(&self) {
+            *self.observe_error.lock().unwrap() = None;
         }
 
         fn kill_calls(&self) -> u32 {
@@ -1109,8 +1161,15 @@ mod tests {
             Ok(*self.next_pid.lock().unwrap())
         }
 
-        fn is_running(&self, _pid: u32) -> bool {
-            *self.running.lock().unwrap()
+        fn observe(&self, _pid: u32) -> ProcessObservation {
+            if let Some(error) = self.observe_error.lock().unwrap().clone() {
+                return ProcessObservation::Unknown(error);
+            }
+            if *self.running.lock().unwrap() {
+                ProcessObservation::Running
+            } else {
+                ProcessObservation::Exited
+            }
         }
 
         fn kill(&self, _pid: u32) -> Result<(), String> {
@@ -1189,8 +1248,8 @@ mod tests {
         fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String> {
             self.0.spawn(spec)
         }
-        fn is_running(&self, pid: u32) -> bool {
-            self.0.is_running(pid)
+        fn observe(&self, pid: u32) -> ProcessObservation {
+            self.0.observe(pid)
         }
         fn kill(&self, pid: u32) -> Result<(), String> {
             self.0.kill(pid)
@@ -1502,6 +1561,115 @@ mod tests {
     }
 
     #[test]
+    fn an_observation_error_never_counts_as_a_confirmed_exit() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = manager_with(
+            process.clone(),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager.start().expect("start should succeed");
+        assert_eq!(manager.poll().state, RuntimePhase::Ready);
+
+        // The operating system stops answering the question. That says nothing
+        // about whether the child is alive.
+        process.fail_observation_with("access is denied");
+
+        let snapshot = manager.poll();
+        assert_eq!(snapshot.state, RuntimePhase::Failed);
+        assert_eq!(
+            snapshot.pid,
+            Some(4242),
+            "an unobservable process must stay owned, not be declared dead"
+        );
+        assert!(snapshot.started_at.is_some());
+        assert!(
+            snapshot.last_error.unwrap().contains("cannot determine"),
+            "the error must say we could not tell, not that it exited"
+        );
+    }
+
+    #[test]
+    fn a_runtime_we_cannot_observe_can_still_be_stopped() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = manager_with(
+            process.clone(),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager.start().expect("start should succeed");
+        manager.poll();
+        process.fail_observation_with("handle is invalid");
+        assert_eq!(manager.poll().pid, Some(4242));
+
+        // A failing kill must not release it either.
+        process.fail_kill_with("access denied");
+        let still_owned = manager.stop();
+        assert_eq!(still_owned.state, RuntimePhase::Failed);
+        assert_eq!(still_owned.pid, Some(4242));
+
+        // Once termination works, ownership is released properly.
+        process.allow_kill();
+        let stopped = manager.stop();
+        assert_eq!(stopped.state, RuntimePhase::Stopped);
+        assert_eq!(stopped.pid, None);
+        assert_eq!(process.kill_calls(), 2, "the stop was retried, not skipped");
+    }
+
+    #[test]
+    fn an_unobservable_runtime_refuses_to_start_a_second_process() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = manager_with(
+            process.clone(),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager.start().expect("start should succeed");
+        process.fail_observation_with("observation failed");
+        manager.poll();
+
+        let error = manager
+            .start()
+            .expect_err("a possibly-live child must block a new spawn");
+        assert!(error.contains("still tracked"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn an_unobservable_runtime_is_released_only_through_stop() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = manager_with(
+            process.clone(),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager.start().expect("start should succeed");
+        process.fail_observation_with("transient failure");
+        assert_eq!(manager.poll().state, RuntimePhase::Failed);
+
+        // Failed is terminal for the polling path: the watcher does not keep
+        // probing a runtime it has given up on, so the PID stays owned however
+        // many times it is polled. That is the safe direction to err in.
+        process.allow_observation();
+        process.crash();
+        for _ in 0..3 {
+            assert_eq!(
+                manager.poll().pid,
+                Some(4242),
+                "polling must not silently release a process it never confirmed dead"
+            );
+        }
+
+        // stop() is the way out, and it succeeds even though the child already
+        // died on its own.
+        let stopped = manager.stop();
+        assert_eq!(stopped.state, RuntimePhase::Stopped);
+        assert_eq!(stopped.pid, None);
+        manager
+            .start()
+            .expect("a released runtime can be started again");
+    }
+
+    #[test]
     fn pid_is_not_lost_until_cleanup_succeeds() {
         let process = Arc::new(FakeProcess::present());
         let manager = failed_but_alive(
@@ -1720,7 +1888,7 @@ mod tests {
             fn spawn(&self, _spec: &LaunchSpec) -> Result<u32, String> {
                 panic!("snapshot must not spawn");
             }
-            fn is_running(&self, _pid: u32) -> bool {
+            fn observe(&self, _pid: u32) -> ProcessObservation {
                 panic!("snapshot must not probe the process");
             }
             fn kill(&self, _pid: u32) -> Result<(), String> {
@@ -1930,7 +2098,11 @@ mod tests {
         assert!(error.contains("not found"), "unexpected error: {error}");
 
         // Nothing was started, so nothing is owned and nothing can be running.
-        assert!(!backend.is_running(1234));
+        assert_eq!(
+            backend.observe(1234),
+            ProcessObservation::Exited,
+            "owning nothing means nothing of ours is running"
+        );
         assert!(
             backend.kill(1234).is_ok(),
             "killing an unowned process must be a no-op, not an error"

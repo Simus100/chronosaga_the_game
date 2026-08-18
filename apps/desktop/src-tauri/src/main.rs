@@ -473,7 +473,18 @@ fn main() {
             };
 
             app.manage::<LocalAiRuntimeState>(manager.clone());
-            app.manage(Mutex::new(RuntimeWatcher::spawn(manager)));
+
+            // An observer we cannot start is a degraded local AI, not a dead
+            // application: the Simulation Core and the Safe/Procedural path do
+            // not depend on it.
+            match RuntimeWatcher::spawn(manager) {
+                Ok(watcher) => {
+                    app.manage(Mutex::new(watcher));
+                }
+                Err(reason) => eprintln!(
+                    "local AI watcher unavailable, runtime will not advance on its own: {reason}"
+                ),
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

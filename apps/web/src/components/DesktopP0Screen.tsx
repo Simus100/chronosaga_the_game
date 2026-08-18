@@ -22,6 +22,17 @@ function gbFromMb(value?: number | null): string {
   return `${(value / 1024).toFixed(value >= 10240 ? 0 : 1)} GB`;
 }
 
+/**
+ * Player-facing label for an AI profile id.
+ *
+ * AUTO / LITE / STANDARD are the normal profiles. `procedural` stays the
+ * internal id everywhere — save, manifest, contracts — but must never be shown
+ * as a fourth equivalent choice: it is the degraded recovery path.
+ */
+function aiProfileLabel(value?: string): string {
+  return value === "procedural" ? "SAFE MODE (NO LOCAL AI)" : (value ?? "auto").toUpperCase();
+}
+
 function normalizeProfile(value?: string): P0SmokeCampaign["aiProfile"] {
   if (value === "lite" || value === "standard" || value === "procedural") return value;
   return "auto";
@@ -257,7 +268,9 @@ export function DesktopP0Screen() {
           <small>
             RUNTIME READY significa che llama-server risponde su /health. Non significa che
             l&apos;inferenza sia disponibile: senza modello caricato INFERENCE READY resta FALSE
-            fino a P0.3-C.
+            fino a P0.3-C. I profili normali sono AUTO / LITE / STANDARD; SAFE MODE (nessuna AI
+            locale) e&apos; un percorso di recupero a narrativa ridotta, non un quarto profilo
+            equivalente.
           </small>
         </article>
 
@@ -267,7 +280,7 @@ export function DesktopP0Screen() {
             <span>CAMPAIGN</span><b>{loaded?.campaignId ?? SMOKE_CAMPAIGN_ID}</b>
             <span>SEED</span><b>{loaded?.seed ?? 7419}</b>
             <span>TURN</span><b>{loaded?.turn ?? "NOT LOADED"}</b>
-            <span>AI PROFILE</span><b>{loaded?.aiProfile?.toUpperCase() ?? "AUTO"}</b>
+            <span>AI PROFILE</span><b>{aiProfileLabel(loaded?.aiProfile)}</b>
             <span>SCHEMA</span><b>{database?.schemaVersion ?? "—"}</b>
           </div>
           <div className="p0-actions">

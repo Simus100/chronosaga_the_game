@@ -40,7 +40,11 @@ pub struct RuntimeWatcher {
 
 impl RuntimeWatcher {
     /// Start observing. Returns immediately; the work happens on a new thread.
-    pub fn spawn(manager: Arc<LocalAiRuntimeManager>) -> Self {
+    ///
+    /// Fallible on purpose: an operating system that refuses a thread must not
+    /// take Chronosaga down with it. A failure here means the local AI cannot be
+    /// observed — gameplay continues on the Safe/Procedural path.
+    pub fn spawn(manager: Arc<LocalAiRuntimeManager>) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
 
@@ -72,12 +76,12 @@ impl RuntimeWatcher {
                     sleep_interruptibly(interval, &thread_stop);
                 }
             })
-            .expect("the local AI watcher thread must be spawnable");
+            .map_err(|error| format!("unable to start the local AI watcher thread: {error}"))?;
 
-        Self {
+        Ok(Self {
             stop,
             handle: Some(handle),
-        }
+        })
     }
 
     /// Ask the watcher to finish and wait for it.
@@ -115,8 +119,8 @@ fn sleep_interruptibly(total: Duration, stop: &AtomicBool) {
 mod tests {
     use super::*;
     use crate::local_ai_runtime::{
-        Clock, HealthOutcome, HealthProbe, LaunchSpec, ProcessBackend, RuntimeConfig,
-        DEFAULT_STARTUP_TIMEOUT_MS, LOOPBACK_HOST,
+        Clock, HealthOutcome, HealthProbe, LaunchSpec, ProcessBackend, ProcessObservation,
+        RuntimeConfig, DEFAULT_STARTUP_TIMEOUT_MS, LOOPBACK_HOST,
     };
     use std::{
         path::{Path, PathBuf},
@@ -149,8 +153,12 @@ mod tests {
             self.running.store(true, Ordering::Relaxed);
             Ok(777)
         }
-        fn is_running(&self, _pid: u32) -> bool {
-            self.running.load(Ordering::Relaxed)
+        fn observe(&self, _pid: u32) -> ProcessObservation {
+            if self.running.load(Ordering::Relaxed) {
+                ProcessObservation::Running
+            } else {
+                ProcessObservation::Exited
+            }
         }
         fn kill(&self, _pid: u32) -> Result<(), String> {
             self.running.store(false, Ordering::Relaxed);
@@ -207,7 +215,7 @@ mod tests {
     fn watcher_advances_a_starting_runtime_to_ready_on_its_own() {
         let calls = Arc::new(AtomicU32::new(0));
         let manager = manager(HealthOutcome::Ready, calls.clone());
-        let mut watcher = RuntimeWatcher::spawn(manager.clone());
+        let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start in tests");
 
         manager.start().expect("start should succeed");
         assert_eq!(manager.snapshot().state, RuntimePhase::Starting);
@@ -240,7 +248,7 @@ mod tests {
             }),
             Box::new(RealClock),
         ));
-        let mut watcher = RuntimeWatcher::spawn(manager.clone());
+        let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start in tests");
 
         manager.start().expect("start should succeed");
         wait_until("Ready", || manager.snapshot().state == RuntimePhase::Ready);
@@ -269,8 +277,8 @@ mod tests {
         fn spawn(&self, spec: &LaunchSpec) -> Result<u32, String> {
             self.0.spawn(spec)
         }
-        fn is_running(&self, pid: u32) -> bool {
-            self.0.is_running(pid)
+        fn observe(&self, pid: u32) -> ProcessObservation {
+            self.0.observe(pid)
         }
         fn kill(&self, pid: u32) -> Result<(), String> {
             self.0.kill(pid)
@@ -281,7 +289,7 @@ mod tests {
     fn watcher_leaves_an_idle_runtime_alone() {
         let calls = Arc::new(AtomicU32::new(0));
         let manager = manager(HealthOutcome::Ready, calls.clone());
-        let mut watcher = RuntimeWatcher::spawn(manager.clone());
+        let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start in tests");
 
         // Never started, so there is nothing to observe.
         thread::sleep(Duration::from_millis(400));
@@ -298,7 +306,7 @@ mod tests {
     fn stopping_the_watcher_ends_the_thread_and_is_idempotent() {
         let calls = Arc::new(AtomicU32::new(0));
         let manager = manager(HealthOutcome::Ready, calls.clone());
-        let mut watcher = RuntimeWatcher::spawn(manager.clone());
+        let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start in tests");
 
         manager.start().expect("start should succeed");
         wait_until("Ready", || manager.snapshot().state == RuntimePhase::Ready);
@@ -321,7 +329,7 @@ mod tests {
         let calls = Arc::new(AtomicU32::new(0));
         let manager = manager(HealthOutcome::Ready, calls.clone());
         {
-            let _watcher = RuntimeWatcher::spawn(manager.clone());
+            let _watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start in tests");
             manager.start().expect("start should succeed");
             wait_until("Ready", || manager.snapshot().state == RuntimePhase::Ready);
         }
@@ -336,10 +344,24 @@ mod tests {
     }
 
     #[test]
+    fn spawning_the_watcher_reports_success_instead_of_panicking() {
+        // The contract is what matters: spawn returns a Result, so a caller can
+        // degrade to "local AI unavailable" instead of dying. Forcing a real
+        // thread-creation failure would need OS resource exhaustion, which is
+        // not something a unit test should induce.
+        let calls = Arc::new(AtomicU32::new(0));
+        let manager = manager(HealthOutcome::Ready, calls);
+        let watcher: Result<RuntimeWatcher, String> = RuntimeWatcher::spawn(manager);
+
+        let mut watcher = watcher.expect("a healthy machine must be able to spawn the watcher");
+        watcher.stop();
+    }
+
+    #[test]
     fn the_watcher_never_makes_the_ui_read_impure() {
         let calls = Arc::new(AtomicU32::new(0));
         let manager = manager(HealthOutcome::Loading, calls.clone());
-        let mut watcher = RuntimeWatcher::spawn(manager.clone());
+        let mut watcher = RuntimeWatcher::spawn(manager.clone()).expect("the watcher must start in tests");
 
         manager.start().expect("start should succeed");
         wait_until("Loading", || manager.snapshot().state == RuntimePhase::Loading);
