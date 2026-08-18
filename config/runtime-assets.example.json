@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "status": "ARCHITECTURE_EXAMPLE_ONLY",
+  "developmentOnly": true,
+  "workspaceRootEnv": "CHRONOSAGA_WORKSPACE_ROOT",
+  "notes": [
+    "This file describes the intended external-asset layout for development tooling.",
+    "It does not prove that any model, runtime binary or asset pack is installed, licensed, benchmarked or approved for release.",
+    "A store listed here describes where a payload belongs on a machine that has one, not that this machine has it.",
+    "Heavy runtime files must not be committed to the normal Git repository."
+  ],
+  "stores": {
+    "models": {
+      "external": true,
+      "relativeToWorkspaceRoot": "runtime-assets/models"
+    },
+    "runtime": {
+      "external": true,
+      "relativeToWorkspaceRoot": "runtime-assets/runtime",
+      "holds": "inference runtime binaries such as llama.cpp releases, one directory per locked release and platform",
+      "provenanceLock": "config/local-ai-runtime.lock.json"
+    },
+    "visualSource": {
+      "external": true,
+      "relativeToWorkspaceRoot": "runtime-assets/visual-source"
+    },
+    "visualReady": {
+      "external": true,
+      "relativeToWorkspaceRoot": "runtime-assets/visual-ready"
+    },
+    "audio": {
+      "external": true,
+      "relativeToWorkspaceRoot": "runtime-assets/audio"
+    },
+    "licenses": {
+      "external": true,
+      "relativeToWorkspaceRoot": "runtime-assets/licenses"
+    },
+    "builds": {
+      "external": true,
+      "relativeToWorkspaceRoot": "builds"
+    },
+    "benchmarks": {
+      "external": true,
+      "relativeToWorkspaceRoot": "benchmarks"
+    }
+  },
+  "modelProfiles": {
+    "lite": {
+      "manifestProfileId": "lite",
+      "directory": "runtime-assets/models/lite",
+      "requiredForSourceBuild": false,
+      "requiredForProceduralFallback": false
+    },
+    "standard": {
+      "manifestProfileId": "standard",
+      "directory": "runtime-assets/models/standard",
+      "requiredForSourceBuild": false,
+      "requiredForProceduralFallback": false
+    }
+  },
+  "visual": {
+    "rawAiGenerationDirectory": "runtime-assets/visual-source/ai-generations",
+    "masterDirectory": "runtime-assets/visual-source/master",
+    "characterSheetDirectory": "runtime-assets/visual-source/character-sheets",
+    "gameReadyDirectory": "runtime-assets/visual-ready"
+  },
+  "packaging": {
+    "copyFromExternalStore": true,
+    "verifyLockedHashes": true,
+    "verifyLicenseMetadata": true,
+    "failOnMissingRequiredAsset": true,
+    "allowSilentModelSubstitution": false
+  }
+}

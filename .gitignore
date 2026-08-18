@@ -11,8 +11,43 @@ target/
 apps/desktop/src-tauri/target/
 volumes/
 backups/
-models/*.gguf
+
+# Generated build artifacts. Tauri regenerates the ACL/capability schemas at
+# build time and tsc rewrites its incremental cache; neither is source.
+apps/desktop/src-tauri/gen/schemas/
+*.tsbuildinfo
+
+# Packaging staging for the local AI runtime. Populated from the external
+# workspace by scripts/stage-local-ai-runtime.mjs; the payload never enters Git.
+apps/desktop/src-tauri/.runtime-stage/
+
+# Lockfiles are intentionally tracked: P0 benchmarks and CI must resolve the
+# same dependency tree on every machine. Do not ignore pnpm-lock.yaml or
+# apps/desktop/src-tauri/Cargo.lock.
+
+# Local development workspace / heavy runtime assets.
+# These directories should normally live outside the repository, but are
+# ignored here as a safety net if an agent creates them inside the clone.
+runtime-assets/
+local-assets/
+asset-source/
+visual-source/
+builds/
+temp/
+benchmarks/local/
+
+# Model weights and large ML artifacts must never enter normal Git history.
+*.gguf
+*.safetensors
+*.ckpt
+*.pth
+*.pt
 models/*.bin
-models/*.safetensors
+models/*.onnx
+
+# Keep repository-side model metadata/documentation.
 !models/manifest.json
 !models/README.md
+
+# Architecture example is intentionally tracked.
+!config/runtime-assets.example.json

@@ -11,12 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
@@ -28,3 +26,71 @@ jobs:
           name: chronosaga-source-${{ github.sha }}
           path: chronosaga_the_game-source-${{ github.sha }}.zip
           retention-days: 30
+
+  desktop-windows-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Select current stable Rust
+        shell: pwsh
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc --version
+          cargo --version
+      - run: pnpm install --frozen-lockfile
+      - name: Build shared React frontend
+        run: pnpm --filter @paa/web build
+      # Unit tests before the type check: a compiling runtime that mishandles
+      # process ownership is worse than one that fails to compile. The
+      # real-runtime E2E tests self-skip without CHRONOSAGA_RUNTIME_E2E, so this
+      # stays independent of the external llama.cpp payload.
+      - name: Test Tauri Windows runtime
+        run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Check Tauri Windows runtime
+        run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+      # Deliberately the AI-free installer: hosted runners have no verified
+      # llama.cpp payload, and fabricating one would defeat the provenance lock.
+      # The installer that ships the local AI runtime is built by
+      # `pnpm package:windows:ai` on a machine where
+      # `pnpm verify:local-ai-runtime` passes; see docs and
+      # config/local-ai-runtime.lock.json.
+      - name: Build Windows P0 NSIS installer (without local AI runtime)
+        run: pnpm --dir apps/desktop tauri build --bundles nsis
+      - name: Upload Windows P0 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: chronosaga-windows-p0-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  # Packaging the verified local AI runtime needs the external payload, which
+  # GitHub-hosted runners do not have. The job is defined so the pipeline is
+  # explicit, but only runs where a self-hosted runner provides the workspace:
+  # it must never "succeed" by skipping the integrity gate.
+  windows-ai-installer:
+    if: false # enable on a runner that has CHRONOSAGA_WORKSPACE_ROOT populated
+    runs-on: [self-hosted, windows, chronosaga-runtime]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - name: Verify the locked llama.cpp payload
+        run: pnpm verify:local-ai-runtime
+      - name: Build the installer with the local AI runtime
+        run: pnpm package:windows:ai
+      - name: Upload Windows P0 AI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: chronosaga-windows-p0-ai-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
