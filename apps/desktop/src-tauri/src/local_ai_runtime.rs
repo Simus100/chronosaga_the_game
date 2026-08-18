@@ -722,6 +722,7 @@ impl SystemProcessBackend {
     /// Append one diagnostic line. Best effort: failing to log must never break
     /// the lifecycle, so the result is deliberately discarded.
     fn log(&self, line: &str) {
+        rotate_log_if_needed(&self.log_path, LOG_MAX_BYTES);
         let stamp = SystemClock.now_ms();
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
@@ -877,6 +878,31 @@ impl ProcessBackend for SystemProcessBackend {
         *slot = None;
         Ok(())
     }
+}
+
+/// Size at which the sidecar log is rolled over.
+///
+/// Deliberately tiny policy: one previous generation, no framework. The log
+/// exists to explain the last crash, not to be an audit trail.
+pub const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Roll `path` to `path.1` once it exceeds `max_bytes`, keeping one generation.
+///
+/// Best effort throughout: a rotation that cannot happen must never stop the
+/// runtime from starting.
+fn rotate_log_if_needed(path: &Path, max_bytes: u64) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return; // No log yet, nothing to roll.
+    };
+    if metadata.len() < max_bytes {
+        return;
+    }
+
+    let mut previous = path.as_os_str().to_owned();
+    previous.push(".1");
+    let previous = PathBuf::from(previous);
+    // Overwrites the older generation: two is all we keep.
+    let _ = std::fs::rename(path, &previous);
 }
 
 /// Blocking `/health` probe over loopback TCP.
@@ -1909,6 +1935,42 @@ mod tests {
             backend.kill(1234).is_ok(),
             "killing an unowned process must be a no-op, not an error"
         );
+    }
+
+    #[test]
+    fn the_log_rotates_once_it_passes_the_size_limit() {
+        let directory = std::env::temp_dir().join("chronosaga-log-rotation-test");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let log = directory.join("local-ai-runtime.log");
+        let previous = directory.join("local-ai-runtime.log.1");
+
+        // Below the limit: nothing moves.
+        std::fs::write(&log, vec![b'x'; 100]).unwrap();
+        rotate_log_if_needed(&log, 1_000);
+        assert!(log.is_file(), "a small log stays put");
+        assert!(!previous.exists(), "nothing to roll yet");
+
+        // At or above the limit: the current log becomes the previous one.
+        std::fs::write(&log, vec![b'x'; 1_000]).unwrap();
+        rotate_log_if_needed(&log, 1_000);
+        assert!(!log.exists(), "the oversized log was rolled away");
+        assert_eq!(std::fs::metadata(&previous).unwrap().len(), 1_000);
+
+        // Only one generation is kept: a second rotation overwrites it.
+        std::fs::write(&log, vec![b'y'; 2_000]).unwrap();
+        rotate_log_if_needed(&log, 1_000);
+        assert_eq!(
+            std::fs::metadata(&previous).unwrap().len(),
+            2_000,
+            "the older generation is discarded, never accumulated"
+        );
+
+        // A missing log is not an error.
+        let _ = std::fs::remove_file(&log);
+        rotate_log_if_needed(&log, 1_000);
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

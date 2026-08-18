@@ -123,6 +123,8 @@ struct RuntimeStatus {
     model_manifest_present: bool,
     llama_server_path: String,
     llama_server_present: bool,
+    /// Where the runtime was resolved from, or why it could not be.
+    llama_server_source: String,
     recommended_ai_profile: String,
     profiles: Vec<ModelProfileSummary>,
 }
@@ -194,23 +196,6 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
         .map_err(|error| format!("Unable to store SQLite schema version: {error}"))?;
 
     Ok(connection)
-}
-
-/// Where the legacy `get_runtime_status` probe expects a bundled sidecar.
-///
-/// P0.3-B2A runs the runtime from the external development workspace instead,
-/// so this stays as the packaging-time location that P0.3-B2B will fill.
-fn llama_server_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
-
-    Ok(resource_dir.join("bin").join(if cfg!(target_os = "windows") {
-        "llama-server.exe"
-    } else {
-        "llama-server"
-    }))
 }
 
 /// Diagnostic log for the sidecar, next to the save database.
@@ -322,7 +307,16 @@ fn get_runtime_status(app: AppHandle) -> Result<RuntimeStatus, String> {
         .path()
         .resource_dir()
         .map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
-    let llama_server_path = llama_server_path(&app)?;
+    // One source of truth: exactly what the lifecycle manager resolves.
+    let (llama_server_path, llama_server_present, llama_server_source) =
+        match runtime_lock::resolve(&app) {
+            Ok(runtime) => (
+                as_string(&runtime.executable),
+                true,
+                runtime.source.label().to_string(),
+            ),
+            Err(reason) => (String::new(), false, reason),
+        };
 
     let fallback_manifest_path = manifest_path(&app);
     let manifest = load_manifest(&app)?;
@@ -343,8 +337,9 @@ fn get_runtime_status(app: AppHandle) -> Result<RuntimeStatus, String> {
         resource_dir: as_string(&resource_dir),
         model_manifest_present: manifest_path.exists(),
         model_manifest_path: as_string(&manifest_path),
-        llama_server_present: llama_server_path.exists(),
-        llama_server_path: as_string(&llama_server_path),
+        llama_server_present,
+        llama_server_path,
+        llama_server_source,
         recommended_ai_profile,
         profiles,
     })
@@ -462,20 +457,18 @@ fn main() {
             let manager = match runtime_lock::resolve(handle) {
                 Ok(runtime) => {
                     eprintln!(
-                        "local AI runtime resolved: llama.cpp {} at {}",
+                        "local AI runtime resolved ({}): llama.cpp {} at {}",
+                        runtime.source.label(),
                         runtime.release_tag,
                         runtime.executable.display()
                     );
                     Arc::new(system_manager(runtime.directory, runtime.executable, log_path))
                 }
                 Err(reason) => {
+                    // Report Unavailable honestly rather than pointing the
+                    // manager at a path nobody verified.
                     eprintln!("local AI runtime unavailable: {reason}");
-                    let fallback = llama_server_path(handle)?;
-                    Arc::new(system_manager(
-                        fallback.parent().map(PathBuf::from).unwrap_or_default(),
-                        fallback,
-                        log_path,
-                    ))
+                    Arc::new(system_manager(PathBuf::new(), PathBuf::from(&reason), log_path))
                 }
             };
 

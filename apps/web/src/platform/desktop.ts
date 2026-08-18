@@ -38,6 +38,8 @@ export interface P0RuntimeStatus {
   modelManifestPresent: boolean;
   llamaServerPath: string;
   llamaServerPresent: boolean;
+  /** "packaged", "development workspace", or why resolution failed. */
+  llamaServerSource: string;
   recommendedAiProfile: string;
   profiles: P0ModelProfile[];
 }

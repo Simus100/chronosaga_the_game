@@ -13,7 +13,9 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter @paa/game-core test && pnpm --filter @paa/ai-contracts test",
     "lint": "pnpm -r lint --if-present",
-    "verify:local-ai-runtime": "node scripts/verify-local-ai-runtime.mjs"
+    "verify:local-ai-runtime": "node scripts/verify-local-ai-runtime.mjs",
+    "stage:local-ai-runtime": "node scripts/stage-local-ai-runtime.mjs",
+    "package:windows:ai": "pnpm stage:local-ai-runtime && pnpm --dir apps/desktop tauri build --config src-tauri/tauri.ai.conf.json --bundles nsis"
   },
   "devDependencies": {
     "typescript": "7.0.2"

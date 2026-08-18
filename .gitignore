@@ -17,6 +17,10 @@ backups/
 apps/desktop/src-tauri/gen/schemas/
 *.tsbuildinfo
 
+# Packaging staging for the local AI runtime. Populated from the external
+# workspace by scripts/stage-local-ai-runtime.mjs; the payload never enters Git.
+apps/desktop/src-tauri/.runtime-stage/
+
 # Lockfiles are intentionally tracked: P0 benchmarks and CI must resolve the
 # same dependency tree on every machine. Do not ignore pnpm-lock.yaml or
 # apps/desktop/src-tauri/Cargo.lock.
