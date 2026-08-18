@@ -13,3 +13,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 sysinfo = "0.39.6"
+# Inference HTTP. Already in the graph via Tauri, so declaring it adds no new
+# crate: it makes the use intentional and keeps the manifest honest about what
+# the source imports. Chosen over a handwritten client because inference needs
+# real JSON bodies, headers and timeouts, unlike the fixed /health probe.
+# Default features are off: the endpoint is loopback plain HTTP, so TLS, cookies
+# and the rest would be weight for nothing.
+reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
+# Structural URL validation for the loopback invariant, rather than string
+# prefix matching. Comes from the same graph as reqwest.
+url = "2.5.8"
+# Session API key entropy, straight from the OS RNG.
+getrandom = "0.3.4"
+# Streaming SHA-256 for model integrity. Streaming matters: the Lite artifact is
+# 1.28 GB and must never be read into memory to be hashed.
+sha2 = "0.10.9"
