@@ -108,6 +108,10 @@ export interface P0LocalAiRuntimeSnapshot {
   /** A model is loaded and inference can be served. False until P0.3-C. */
   inferenceReady: boolean;
   loadedModels?: number | null;
+  modelProfileId?: string | null;
+  modelLabel?: string | null;
+  modelContextSize?: number | null;
+  modelPath?: string | null;
 }
 
 /**
@@ -125,4 +129,55 @@ export function startLocalAiRuntime(): Promise<P0LocalAiRuntimeSnapshot> {
 
 export function stopLocalAiRuntime(): Promise<P0LocalAiRuntimeSnapshot> {
   return invoke<P0LocalAiRuntimeSnapshot>("stop_local_ai_runtime");
+}
+
+/** The locked Lite model, as the diagnostics see it. */
+export interface P0LocalAiModelStatus {
+  profileId: string;
+  label: string;
+  resolved: boolean;
+  path: string;
+  license: string;
+  contextSize: number;
+  releaseApproved: boolean;
+  /** The artifact was hashed and matches the locked SHA-256. */
+  integrityVerified: boolean;
+  verificationMs?: number | null;
+  sizeBytes: number;
+  expectedSha256: string;
+  status: string;
+  artifactRepository: string;
+  artifactRevision: string;
+  problem?: string | null;
+}
+
+export interface P0DialogueLine {
+  speakerId: string;
+  text: string;
+}
+
+/** Result of one real local generation, after the application validator ran. */
+export interface P0InferenceOutcome {
+  accepted: boolean;
+  durationMs: number;
+  narration?: string | null;
+  dialogue: P0DialogueLine[];
+  toneTags: string[];
+  validationError?: string | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  tokensPerSecond?: number | null;
+  model?: string | null;
+}
+
+export function getLocalAiModelStatus(): Promise<P0LocalAiModelStatus> {
+  return invoke<P0LocalAiModelStatus>("get_local_ai_model_status");
+}
+
+/**
+ * Run the grounded P0 smoke generation. The request never leaves the machine:
+ * React invokes Rust, Rust talks to llama-server on loopback.
+ */
+export function runLocalAiSmokeInference(): Promise<P0InferenceOutcome> {
+  return invoke<P0InferenceOutcome>("run_local_ai_smoke_inference");
 }

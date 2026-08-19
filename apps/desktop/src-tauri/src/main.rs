@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod inference;
 mod local_ai_runtime;
+mod model_lock;
 mod runtime_lock;
 mod runtime_watcher;
 
@@ -8,7 +10,10 @@ mod runtime_watcher;
 #[cfg(test)]
 mod runtime_e2e;
 
-use local_ai_runtime::{system_manager, LocalAiRuntimeManager, LocalAiRuntimeSnapshot};
+use inference::{InferenceOutcome, LocalModelProvider};
+use local_ai_runtime::{
+    system_manager_with_config, LocalAiRuntimeManager, LocalAiRuntimeSnapshot, RuntimeConfig,
+};
 use runtime_watcher::RuntimeWatcher;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -445,6 +450,198 @@ fn stop_local_ai_runtime(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRunt
     runtime.stop()
 }
 
+/// What the diagnostics need to know about the locked Lite model.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAiModelStatus {
+    profile_id: String,
+    label: String,
+    /// The artifact was found at the exact locked path, name and size.
+    /// A location claim only: it says nothing about the bytes.
+    resolved: bool,
+    /// The artifact was hashed and matches the locked SHA-256. Only this may be
+    /// shown to a player as "verified".
+    integrity_verified: bool,
+    /// How long the digest took, when it was computed.
+    verification_ms: Option<u64>,
+    path: String,
+    license: String,
+    context_size: u32,
+    release_approved: bool,
+    /// Artifact size and the digest the lock expects, for provenance.
+    size_bytes: u64,
+    expected_sha256: String,
+    /// Candidate status from the lock, e.g. `P0_BENCHMARK_CANDIDATE`.
+    status: String,
+    /// Where the artifact came from, so provenance is visible in diagnostics.
+    artifact_repository: String,
+    artifact_revision: String,
+    /// Why the model could not be used, when it could not.
+    problem: Option<String>,
+}
+
+/// Outcome of the once-per-session model integrity check, kept in Tauri state.
+///
+/// Held so the 1.28 GB digest is computed once at startup and never again on a
+/// status refresh.
+struct VerifiedModelState(Option<model_lock::VerifiedModel>, Option<String>);
+
+#[tauri::command]
+fn get_local_ai_model_status(
+    app: AppHandle,
+    verified: State<'_, VerifiedModelState>,
+) -> LocalAiModelStatus {
+    let fallback = |problem: String| LocalAiModelStatus {
+        profile_id: model_lock::LITE_PROFILE_ID.to_string(),
+        label: "Qwen3-1.7B Q4_K_M".to_string(),
+        resolved: false,
+        integrity_verified: false,
+        verification_ms: None,
+        path: String::new(),
+        license: "Apache-2.0".to_string(),
+        context_size: 0,
+        release_approved: false,
+        size_bytes: 0,
+        expected_sha256: String::new(),
+        status: "UNRESOLVED".to_string(),
+        artifact_repository: String::new(),
+        artifact_revision: String::new(),
+        problem: Some(problem),
+    };
+
+    // The verified model from startup is authoritative when present.
+    if let Some(verified_model) = &verified.0 {
+        let model = verified_model.model();
+        return LocalAiModelStatus {
+            profile_id: model.profile_id().to_string(),
+            label: model.label(),
+            resolved: true,
+            integrity_verified: true,
+            verification_ms: Some(verified_model.verification_ms()),
+            path: as_string(model.path()),
+            license: model.license().to_string(),
+            context_size: model.context_target(),
+            release_approved: model.release_approved(),
+            size_bytes: model.size_bytes(),
+            expected_sha256: model.expected_sha256().to_string(),
+            status: model.status().to_string(),
+            artifact_repository: model.artifact_repository().to_string(),
+            artifact_revision: model.artifact_revision().to_string(),
+            problem: None,
+        };
+    }
+
+    // Otherwise report what resolution alone could establish, and why the model
+    // is not usable.
+    match model_lock::resolve_lite(&app) {
+        Ok(model) => LocalAiModelStatus {
+            profile_id: model.profile_id().to_string(),
+            label: model.label(),
+            resolved: true,
+            integrity_verified: false,
+            verification_ms: None,
+            path: as_string(model.path()),
+            license: model.license().to_string(),
+            context_size: model.context_target(),
+            release_approved: model.release_approved(),
+            size_bytes: model.size_bytes(),
+            expected_sha256: model.expected_sha256().to_string(),
+            status: model.status().to_string(),
+            artifact_repository: model.artifact_repository().to_string(),
+            artifact_revision: model.artifact_revision().to_string(),
+            problem: verified
+                .1
+                .clone()
+                .or_else(|| Some("model integrity has not been verified".to_string())),
+        },
+        Err(error) => fallback(error.message().to_string()),
+    }
+}
+
+/// Build a provider bound to this runtime endpoint and session key.
+fn provider_for(runtime: &LocalAiRuntimeManager) -> Result<LocalModelProvider, String> {
+    let spec = runtime.launch_spec();
+    LocalModelProvider::new(spec.base_url(), spec.api_key().to_string())
+}
+
+/// Run the P0 grounded smoke generation against the local model.
+///
+/// Async because the request is real network I/O; the lifecycle manager stays
+/// synchronous and no lock is held across the await.
+#[tauri::command]
+async fn run_local_ai_smoke_inference(
+    runtime: State<'_, LocalAiRuntimeState>,
+) -> Result<InferenceOutcome, String> {
+    let snapshot = runtime.snapshot();
+    if !snapshot.inference_ready {
+        return Err(format!(
+            "inference is not available: the runtime is {:?} with {} model(s) loaded",
+            snapshot.state,
+            snapshot.loaded_models.unwrap_or(0)
+        ));
+    }
+    let provider = provider_for(&runtime)?;
+    let outcome = provider.generate_smoke().await?;
+
+    // Rejected output stays here: enough to diagnose the refusal without letting
+    // unvalidated model text cross into the interface.
+    if !outcome.accepted {
+        let preview: String = outcome.raw.chars().take(400).collect();
+        eprintln!(
+            "local AI generation rejected ({}): {preview}",
+            outcome.validation_error.as_deref().unwrap_or("unknown reason")
+        );
+    }
+    Ok(outcome)
+}
+
+/// Background model-aware probe.
+///
+/// The lifecycle watcher proves the HTTP runtime is up; this proves a model is
+/// actually loaded. Kept separate because it needs async HTTP, and deliberately
+/// not driven by the interface.
+fn spawn_model_probe(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            sleep_ms(500).await;
+
+            let Some(runtime) = handle.try_state::<LocalAiRuntimeState>() else {
+                continue;
+            };
+            if !runtime.needs_model_probe() {
+                continue;
+            }
+            let Ok(provider) = provider_for(&runtime) else {
+                continue;
+            };
+            // Require the expected identity, not merely "a model exists": the
+            // launch contract names the profile with --alias, so a runtime
+            // serving something else must not turn inference on.
+            let expected = runtime
+                .launch_spec()
+                .model()
+                .map(|model| model.profile_id().to_string());
+            let Some(expected) = expected else {
+                continue;
+            };
+            if let Ok(serving) = provider.serves_model(&expected).await {
+                runtime.record_loaded_models(u32::from(serving));
+            }
+        }
+    });
+}
+
+/// Sleep helper: Tauri already runs on an async runtime, so the probe loop does
+/// not need a timer dependency of its own.
+async fn sleep_ms(millis: u64) {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(std::time::Duration::from_millis(millis))
+    })
+    .await
+    .ok();
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -454,6 +651,37 @@ fn main() {
             // Resolve the locked runtime from the external workspace. A failure
             // is not fatal: the manager simply reports Unavailable and gameplay
             // keeps its procedural fallback.
+            // Resolve the locked Lite model. Its absence is not fatal: the
+            // runtime simply starts model-less and inference stays unavailable.
+            // Resolve, then hash once. Only a verified artifact may be
+            // attached to the launch contract; a same-size impostor is refused
+            // here rather than handed to llama-server.
+            let (model, model_problem) = match model_lock::resolve_lite(handle) {
+                Ok(resolved) => {
+                    let label = resolved.label();
+                    let path = resolved.path().to_path_buf();
+                    match resolved.verify_integrity() {
+                        Ok(verified) => {
+                            eprintln!(
+                                "local AI model verified: {label} at {} (sha256 in {} ms)",
+                                path.display(),
+                                verified.verification_ms()
+                            );
+                            (Some(verified), None)
+                        }
+                        Err(error) => {
+                            eprintln!("local AI model integrity check failed: {}", error.message);
+                            (None, Some(error.message))
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("local AI model unavailable: {}", error.message());
+                    (None, Some(error.message().to_string()))
+                }
+            };
+
+            let model_state = model.clone();
             let manager = match runtime_lock::resolve(handle) {
                 Ok(runtime) => {
                     eprintln!(
@@ -462,16 +690,31 @@ fn main() {
                         runtime.release_tag,
                         runtime.executable.display()
                     );
-                    Arc::new(system_manager(runtime.directory, runtime.executable, log_path))
+                    let mut config = RuntimeConfig::loopback();
+                    if let Some(verified) = &model {
+                        config = config.with_model(verified);
+                    }
+                    Arc::new(system_manager_with_config(
+                        config,
+                        runtime.directory,
+                        runtime.executable,
+                        log_path,
+                    ))
                 }
                 Err(reason) => {
                     // Report Unavailable honestly rather than pointing the
                     // manager at a path nobody verified.
                     eprintln!("local AI runtime unavailable: {reason}");
-                    Arc::new(system_manager(PathBuf::new(), PathBuf::from(&reason), log_path))
+                    Arc::new(system_manager_with_config(
+                        RuntimeConfig::loopback(),
+                        PathBuf::new(),
+                        PathBuf::from(&reason),
+                        log_path,
+                    ))
                 }
             };
 
+            app.manage(VerifiedModelState(model_state, model_problem));
             app.manage::<LocalAiRuntimeState>(manager.clone());
 
             // An observer we cannot start is a degraded local AI, not a dead
@@ -485,6 +728,7 @@ fn main() {
                     "local AI watcher unavailable, runtime will not advance on its own: {reason}"
                 ),
             }
+            spawn_model_probe(handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -495,7 +739,9 @@ fn main() {
             load_smoke_campaign,
             get_local_ai_runtime_status,
             start_local_ai_runtime,
-            stop_local_ai_runtime
+            stop_local_ai_runtime,
+            get_local_ai_model_status,
+            run_local_ai_smoke_inference
         ])
         .build(tauri::generate_context!())
         .expect("error while building Chronosaga: The Game")

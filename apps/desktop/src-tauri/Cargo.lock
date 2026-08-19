@@ -2204,12 +2204,16 @@ dependencies = [
 name = "parametric-ai-adventure"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tauri",
  "tauri-build",
+ "url",
 ]
 
 [[package]]

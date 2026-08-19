@@ -157,6 +157,43 @@ pub struct LaunchSpec {
     host: String,
     port: u16,
     endpoint: String,
+    /// Validated model to load, or `None` for the model-less router mode used by
+    /// the P0.3-B lifecycle tests. Normal P0.3-C operation always carries one.
+    model: Option<LaunchModel>,
+    /// Per-session API key. Never logged, never persisted, never sent to the UI.
+    api_key: String,
+}
+
+/// The model half of the launch contract.
+///
+/// Private fields and no public constructor: the only way to obtain one is
+/// [`RuntimeConfig::with_model`], which takes an already-resolved model. Nothing
+/// outside this module can point llama-server at an arbitrary path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchModel {
+    path: PathBuf,
+    profile_id: String,
+    label: String,
+    context_size: u32,
+}
+
+impl LaunchModel {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
+    /// Human-readable model name, e.g. `Qwen3-1.7B Q4_K_M`.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn context_size(&self) -> u32 {
+        self.context_size
+    }
 }
 
 impl LaunchSpec {
@@ -173,6 +210,77 @@ impl LaunchSpec {
     /// so the probe can never be pointed somewhere else than the process.
     pub fn endpoint(&self) -> &str {
         &self.endpoint
+    }
+
+    /// Base URL of the local API, e.g. `http://127.0.0.1:8081`.
+    pub fn base_url(&self) -> String {
+        format!("http://{}:{}", self.host(), self.port())
+    }
+
+    pub fn model(&self) -> Option<&LaunchModel> {
+        self.model.as_ref()
+    }
+
+    /// Per-session API key. Callers must never log or persist this.
+    pub fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    /// The exact llama-server command line, minus the executable.
+    ///
+    /// Built here rather than in the backend so the arguments are covered by
+    /// unit tests and cannot be assembled from arbitrary strings elsewhere.
+    /// Every flag below was checked against `llama-server.exe --help` from the
+    /// pinned b10343 payload.
+    pub fn command_arguments(&self) -> Vec<String> {
+        let mut args = Vec::new();
+
+        if let Some(model) = &self.model {
+            args.push("--model".to_string());
+            args.push(model.path.to_string_lossy().into_owned());
+            args.push("--ctx-size".to_string());
+            args.push(model.context_size.to_string());
+            // Stable name for the OpenAI-compatible endpoints.
+            args.push("--alias".to_string());
+            args.push(model.profile_id.clone());
+        }
+
+        args.push("--host".to_string());
+        args.push(self.host().to_string());
+        args.push("--port".to_string());
+        args.push(self.port().to_string());
+
+        // Authentication: every request from Chronosaga carries this key.
+        args.push("--api-key".to_string());
+        args.push(self.api_key.clone());
+
+        // Attack surface. b10343 enables the Web UI and permissive CORS by
+        // default, and offers built-in tools, an agent mode and an MCP proxy.
+        // None of that belongs in a game's private sidecar.
+        args.push("--no-webui".to_string());
+        args.push("--cors-origins".to_string());
+        args.push(LOOPBACK_HOST.to_string());
+        args.push("--no-cors-credentials".to_string());
+        args.push("--no-agent".to_string());
+        args.push("--no-webui-mcp-proxy".to_string());
+
+        // Reasoning off by default: Lite is here for low-latency dialogue, not
+        // for spending its budget on hidden thinking.
+        args.push("--reasoning".to_string());
+        args.push("off".to_string());
+
+        args
+    }
+
+    /// The command line with the key replaced, for logs and diagnostics.
+    pub fn redacted_arguments(&self) -> Vec<String> {
+        let mut args = self.command_arguments();
+        if let Some(index) = args.iter().position(|a| a == "--api-key") {
+            if index + 1 < args.len() {
+                args[index + 1] = "<redacted>".to_string();
+            }
+        }
+        args
     }
 }
 
@@ -229,6 +337,22 @@ pub struct RuntimeConfig {
     host: String,
     port: u16,
     startup_timeout_ms: u64,
+    model: Option<LaunchModel>,
+    api_key: String,
+}
+
+/// Generate a per-session API key from the OS RNG.
+///
+/// A fresh key every launch: it never reaches disk, the save file or the UI, so
+/// there is nothing to rotate and nothing to leak between sessions.
+fn generate_session_key() -> String {
+    let mut bytes = [0u8; 32];
+    if getrandom::fill(&mut bytes).is_err() {
+        // Fail closed. An unauthenticated sidecar is not an acceptable
+        // degradation, so make the key unusable rather than predictable.
+        return String::new();
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 impl RuntimeConfig {
@@ -242,11 +366,36 @@ impl RuntimeConfig {
         if port == 0 {
             return Err("refusing port 0: the local AI runtime needs a fixed port".to_string());
         }
+        let api_key = generate_session_key();
+        if api_key.is_empty() {
+            return Err(
+                "refusing to configure the local AI runtime without a session API key".to_string(),
+            );
+        }
+
         Ok(Self {
             host: host.to_string(),
             port,
             startup_timeout_ms,
+            model: None,
+            api_key,
         })
+    }
+
+    /// Attach a model that has passed its integrity check.
+    ///
+    /// The parameter type is the guarantee: a [`VerifiedModel`] can only be
+    /// produced by hashing an artifact resolved from the committed lock, so an
+    /// arbitrary path cannot reach a launch contract even by mistake.
+    pub fn with_model(mut self, verified: &crate::model_lock::VerifiedModel) -> Self {
+        let model = verified.model();
+        self.model = Some(LaunchModel {
+            path: model.path().to_path_buf(),
+            profile_id: model.profile_id().to_string(),
+            label: model.label(),
+            context_size: model.context_target(),
+        });
+        self
     }
 
     /// Loopback configuration with the P0 defaults.
@@ -280,6 +429,8 @@ impl RuntimeConfig {
             host: self.host.clone(),
             port: self.port,
             endpoint: self.endpoint(),
+            model: self.model.clone(),
+            api_key: self.api_key.clone(),
         }
     }
 }
@@ -317,8 +468,17 @@ pub struct LocalAiRuntimeSnapshot {
     pub inference_ready: bool,
     /// Models the runtime reports as loaded, or `None` while unobserved.
     ///
-    /// P0.3-B1 never observes it; P0.3-C is responsible for populating it.
+    /// Populated by the model-aware probe once the runtime is Ready.
     pub loaded_models: Option<u32>,
+    /// Profile the runtime was launched with, e.g. `lite`, or `None` in the
+    /// model-less router mode.
+    pub model_profile_id: Option<String>,
+    /// Human-readable model name, e.g. `Qwen3-1.7B Q4_K_M`.
+    pub model_label: Option<String>,
+    /// Context window the runtime was started with.
+    pub model_context_size: Option<u32>,
+    /// Absolute path the model was loaded from, for diagnostics.
+    pub model_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -419,6 +579,7 @@ impl LocalAiRuntimeManager {
 
     fn build_snapshot(&self, inner: &RuntimeInner) -> LocalAiRuntimeSnapshot {
         let runtime_ready = inner.phase == RuntimePhase::Ready;
+        let model = self.launch_spec.model();
         LocalAiRuntimeSnapshot {
             state: inner.phase,
             binary_present: inner.binary_present,
@@ -434,12 +595,17 @@ impl LocalAiRuntimeManager {
             // must never claim it can generate.
             inference_ready: runtime_ready && inner.loaded_models.unwrap_or(0) > 0,
             loaded_models: inner.loaded_models,
+            model_profile_id: model.map(|m| m.profile_id().to_string()),
+            model_label: model.map(|m| m.label().to_string()),
+            model_context_size: model.map(|m| m.context_size()),
+            model_path: model.map(|m| m.path().to_string_lossy().into_owned()),
         }
     }
 
     /// Fail after confirming the process is gone: the PID may be released.
     fn fail_process_gone(inner: &mut RuntimeInner, reason: String) {
         inner.phase = RuntimePhase::Failed;
+        inner.loaded_models = None;
         inner.pid = None;
         inner.started_at = None;
         inner.last_error = Some(reason);
@@ -451,6 +617,7 @@ impl LocalAiRuntimeManager {
     /// able to kill this child, and a later [`Self::stop`] is that something.
     fn fail_retaining_process(inner: &mut RuntimeInner, reason: String) {
         inner.phase = RuntimePhase::Failed;
+        inner.loaded_models = None;
         inner.last_error = Some(reason);
     }
 
@@ -464,6 +631,12 @@ impl LocalAiRuntimeManager {
         }
     }
 
+    /// The validated launch contract, for callers that need the endpoint or the
+    /// session key. The key must never be logged or sent to the interface.
+    pub fn launch_spec(&self) -> &LaunchSpec {
+        &self.launch_spec
+    }
+
     /// Current snapshot.
     ///
     /// A pure read: it takes the state lock briefly, copies the fields and
@@ -472,6 +645,25 @@ impl LocalAiRuntimeManager {
     pub fn snapshot(&self) -> LocalAiRuntimeSnapshot {
         let inner = self.lock();
         self.build_snapshot(&inner)
+    }
+
+    /// Record what a model-aware probe found.
+    ///
+    /// This is the evidence half of `inference_ready`: the lifecycle knows the
+    /// HTTP runtime is up, but only a probe can say a model is actually loaded.
+    /// Ignored unless the runtime is Ready, so a late answer cannot resurrect a
+    /// runtime that has since stopped or failed.
+    pub fn record_loaded_models(&self, count: u32) {
+        let mut inner = self.lock();
+        if inner.phase == RuntimePhase::Ready {
+            inner.loaded_models = Some(count);
+        }
+    }
+
+    /// Whether a model-aware probe is still needed.
+    pub fn needs_model_probe(&self) -> bool {
+        let inner = self.lock();
+        inner.phase == RuntimePhase::Ready && inner.loaded_models.is_none()
     }
 
     /// Request a start.
@@ -524,6 +716,7 @@ impl LocalAiRuntimeManager {
             inner.phase = RuntimePhase::Starting;
             inner.started_at = None;
             inner.last_error = None;
+            inner.loaded_models = None;
             self.launch_spec.clone()
         };
 
@@ -690,6 +883,7 @@ impl LocalAiRuntimeManager {
                 None => {
                     inner.phase = Self::idle_phase(binary_present);
                     inner.started_at = None;
+                    inner.loaded_models = None;
                     return self.build_snapshot(&inner);
                 }
                 Some(pid) => {
@@ -708,6 +902,7 @@ impl LocalAiRuntimeManager {
                 inner.pid = None;
                 inner.started_at = None;
                 inner.last_error = None;
+                inner.loaded_models = None;
                 inner.phase = Self::idle_phase(binary_present);
             }
             Err(error) => {
@@ -789,16 +984,21 @@ impl ProcessBackend for SystemProcessBackend {
 
         // Refuse a second sidecar, and reap a dead one before replacing it.
         if let Some(existing) = slot.as_mut() {
-            match existing.try_wait() {
-                Ok(None) => {
-                    return Err(format!(
-                        "llama-server is already running as PID {}",
-                        existing.id()
-                    ))
-                }
-                _ => {
-                    let _ = existing.wait();
+            let pid = existing.id();
+            let observation = existing
+                .try_wait()
+                .map(|status| status.map(|status| status.to_string()))
+                .map_err(|error| error.to_string());
+
+            match classify_pre_spawn(pid, observation) {
+                PreSpawnDecision::RefuseRunning(message) => return Err(message),
+                PreSpawnDecision::ReplaceExited(note) => {
+                    self.log(&note);
                     *slot = None;
+                }
+                PreSpawnDecision::RefuseUnknown(message) => {
+                    self.log(&format!("pre-spawn {message}"));
+                    return Err(message);
                 }
             }
         }
@@ -824,14 +1024,10 @@ impl ProcessBackend for SystemProcessBackend {
             .try_clone()
             .map_err(|error| format!("unable to duplicate the sidecar log handle: {error}"))?;
 
-        let port = spec.port().to_string();
         let mut command = Command::new(&self.executable);
         command
             .current_dir(&self.directory)
-            .arg("--host")
-            .arg(spec.host())
-            .arg("--port")
-            .arg(&port)
+            .args(spec.command_arguments())
             .stdin(Stdio::null())
             // Redirected to a file rather than piped: nobody drains a pipe here,
             // and a full pipe buffer would stall the child.
@@ -851,11 +1047,11 @@ impl ProcessBackend for SystemProcessBackend {
             .spawn()
             .map_err(|error| format!("unable to start {}: {error}", self.executable.display()))?;
         let pid = child.id();
+        // Redacted: the session key must never reach the log file.
         self.log(&format!(
-            "start pid={pid} exe={} args=[--host {} --port {}]",
+            "start pid={pid} exe={} args={:?}",
             self.executable.display(),
-            spec.host(),
-            spec.port()
+            spec.redacted_arguments()
         ));
         *slot = Some(child);
         Ok(pid)
@@ -944,6 +1140,40 @@ fn rotate_log_if_needed(path: &Path, max_bytes: u64) {
     let previous = PathBuf::from(previous);
     // Overwrites the older generation: two is all we keep.
     let _ = std::fs::rename(path, &previous);
+}
+
+/// What to do about a child that is already owned when a start is requested.
+#[derive(Debug, PartialEq, Eq)]
+enum PreSpawnDecision {
+    /// The child is confirmed alive: keep it and refuse the duplicate.
+    RefuseRunning(String),
+    /// The child is confirmed gone and already reaped: the slot is free.
+    ReplaceExited(String),
+    /// We could not tell: keep owning it and refuse to start another.
+    RefuseUnknown(String),
+}
+
+/// Decide what an already-owned child means for a new spawn request.
+///
+/// Split out from `spawn` so the three cases can be tested directly; inducing a
+/// real `try_wait()` failure would mean corrupting an OS handle.
+///
+/// The error case is deliberately not folded in with "exited". Doing so would
+/// abandon a child that may still be running, and would call the blocking
+/// `wait()` on a process whose status we just failed to read — which can hang
+/// forever.
+fn classify_pre_spawn(pid: u32, observation: Result<Option<String>, String>) -> PreSpawnDecision {
+    match observation {
+        Ok(None) => PreSpawnDecision::RefuseRunning(format!(
+            "llama-server is already running as PID {pid}"
+        )),
+        Ok(Some(status)) => {
+            PreSpawnDecision::ReplaceExited(format!("exit pid={pid} status={status}"))
+        }
+        Err(error) => PreSpawnDecision::RefuseUnknown(format!(
+            "cannot determine whether llama-server PID {pid} is still running ({error});              stop it before starting a new one"
+        )),
+    }
 }
 
 /// Blocking `/health` probe over loopback TCP.
@@ -1063,13 +1293,17 @@ fn classify_health_response(response: &str) -> HealthOutcome {
 pub const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Build the manager the application ships with.
-pub fn system_manager(
+///
+/// The configuration is explicit so the caller can attach the resolved model
+/// before the runtime exists; a model-less config yields router mode.
+pub fn system_manager_with_config(
+    config: RuntimeConfig,
     directory: PathBuf,
     executable: PathBuf,
     log_path: PathBuf,
 ) -> LocalAiRuntimeManager {
     LocalAiRuntimeManager::new(
-        RuntimeConfig::loopback(),
+        config,
         Box::new(SystemProcessBackend::new(directory, executable, log_path)),
         Box::new(LoopbackHealthProbe::new(HEALTH_TIMEOUT)),
         Box::new(SystemClock),
@@ -1966,7 +2200,94 @@ mod tests {
         assert_eq!(spec.port(), 9099);
         assert_eq!(spec.endpoint(), "http://127.0.0.1:9099/health");
         assert_eq!(spec.endpoint(), config.endpoint());
-        assert_eq!(spec, RuntimeConfig::new(LOOPBACK_HOST, 9099, 1).unwrap().launch_spec());
+
+        // Two configurations agree on the network contract but never on the
+        // session key: a fresh one is generated per runtime on purpose.
+        let other = RuntimeConfig::new(LOOPBACK_HOST, 9099, 1).unwrap().launch_spec();
+        assert_eq!(spec.host(), other.host());
+        assert_eq!(spec.port(), other.port());
+        assert_eq!(spec.endpoint(), other.endpoint());
+        assert_ne!(
+            spec.api_key(),
+            other.api_key(),
+            "each runtime must get its own session key"
+        );
+    }
+
+    #[test]
+    fn every_session_gets_a_fresh_unguessable_key() {
+        let first = RuntimeConfig::loopback();
+        let second = RuntimeConfig::loopback();
+
+        let first = first.launch_spec();
+        let second = second.launch_spec();
+        assert_eq!(first.api_key().len(), 64, "32 bytes of entropy, hex encoded");
+        assert!(first.api_key().chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(first.api_key(), second.api_key());
+    }
+
+    #[test]
+    fn the_command_line_carries_the_locked_model_and_closes_the_runtime_down() {
+        let model = crate::model_lock::VerifiedModel::for_test(
+            crate::model_lock::ResolvedModel::for_test(
+                "lite",
+                PathBuf::from("D:/models/Qwen3-1.7B-Q4_K_M.gguf"),
+                4096,
+            ),
+        );
+        let config = RuntimeConfig::loopback().with_model(&model);
+        let spec = config.launch_spec();
+        let args = spec.command_arguments();
+        let joined = args.join(" ");
+
+        // Single-model mode, from the locked path only.
+        assert!(joined.contains("--model D:/models/Qwen3-1.7B-Q4_K_M.gguf"));
+        assert!(joined.contains("--ctx-size 4096"));
+        assert!(joined.contains("--alias lite"));
+
+        // Loopback and nothing else.
+        assert!(joined.contains(&format!("--host {LOOPBACK_HOST}")));
+        assert!(joined.contains(&format!("--cors-origins {LOOPBACK_HOST}")));
+
+        // The attack surface b10343 enables by default is closed.
+        for flag in [
+            "--no-webui",
+            "--no-cors-credentials",
+            "--no-agent",
+            "--no-webui-mcp-proxy",
+        ] {
+            assert!(args.iter().any(|a| a == flag), "{flag} must be passed");
+        }
+
+        // Reasoning off: Lite is here for dialogue, not hidden thinking.
+        assert!(joined.contains("--reasoning off"));
+
+        // Authenticated, and never fetched from the network.
+        assert!(args.iter().any(|a| a == "--api-key"));
+        assert!(!joined.contains("-hf"), "no remote model download");
+        assert!(!joined.contains("--tools"), "no built-in tools");
+    }
+
+    #[test]
+    fn a_model_less_launch_stays_in_router_mode() {
+        let spec = RuntimeConfig::loopback().launch_spec();
+        let args = spec.command_arguments();
+        assert!(spec.model().is_none());
+        assert!(!args.iter().any(|a| a == "--model"), "no model must be passed");
+        // Security flags apply either way.
+        assert!(args.iter().any(|a| a == "--no-webui"));
+    }
+
+    #[test]
+    fn the_session_key_never_appears_in_diagnostics() {
+        let spec = RuntimeConfig::loopback().launch_spec();
+        let redacted = spec.redacted_arguments().join(" ");
+
+        assert!(
+            !redacted.contains(spec.api_key()),
+            "the log line must not carry the key"
+        );
+        assert!(redacted.contains("--api-key <redacted>"));
     }
 
     #[test]
@@ -2058,6 +2379,106 @@ mod tests {
     }
 
     #[test]
+    fn the_snapshot_reports_the_model_the_runtime_was_launched_with() {
+        let model = crate::model_lock::VerifiedModel::for_test(
+            crate::model_lock::ResolvedModel::for_test(
+                "lite",
+                PathBuf::from("D:/models/Qwen3-1.7B-Q4_K_M.gguf"),
+                4096,
+            ),
+        );
+        let manager = LocalAiRuntimeManager::new(
+            RuntimeConfig::loopback().with_model(&model),
+            Box::new(SharedProcess(Arc::new(FakeProcess::present()))),
+            Box::new(FakeHealth::new(vec![HealthOutcome::Ready])),
+            Box::new(SharedClock(Arc::new(FakeClock::new()))),
+        );
+
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.model_profile_id.as_deref(), Some("lite"));
+        assert_eq!(snapshot.model_label.as_deref(), Some("Qwen3-1.7B Q4_K_M"));
+        assert_eq!(snapshot.model_context_size, Some(4096));
+        assert!(snapshot.model_path.unwrap().ends_with("Qwen3-1.7B-Q4_K_M.gguf"));
+
+        // Router mode reports no model at all.
+        let router = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        assert_eq!(router.snapshot().model_profile_id, None);
+    }
+
+    #[test]
+    fn a_model_probe_is_what_turns_on_inference_ready() {
+        let manager = ready_manager(Arc::new(FakeProcess::present()), Arc::new(FakeClock::new()));
+
+        // Ready, but nothing has yet proved a model is loaded.
+        assert!(manager.needs_model_probe());
+        let before = manager.snapshot();
+        assert!(before.runtime_ready && !before.inference_ready);
+
+        // A server answering /health with zero models must stay unusable.
+        manager.record_loaded_models(0);
+        let empty = manager.snapshot();
+        assert!(
+            !empty.inference_ready,
+            "a runtime with no loaded model must never claim inference"
+        );
+        assert_eq!(empty.loaded_models, Some(0));
+
+        manager.record_loaded_models(1);
+        let serving = manager.snapshot();
+        assert!(serving.inference_ready);
+        assert!(!manager.needs_model_probe(), "the probe answer is remembered");
+    }
+
+    #[test]
+    fn probe_evidence_is_discarded_when_the_runtime_leaves_ready() {
+        let manager = ready_manager(Arc::new(FakeProcess::present()), Arc::new(FakeClock::new()));
+        manager.record_loaded_models(1);
+        assert!(manager.snapshot().inference_ready);
+
+        manager.stop();
+        let stopped = manager.snapshot();
+        assert_eq!(stopped.loaded_models, None, "stale evidence must not survive");
+        assert!(!stopped.inference_ready);
+    }
+
+    #[test]
+    fn a_late_probe_answer_cannot_revive_a_stopped_runtime() {
+        let manager = ready_manager(Arc::new(FakeProcess::present()), Arc::new(FakeClock::new()));
+        manager.stop();
+
+        // An in-flight probe that lands after the stop must be ignored.
+        manager.record_loaded_models(1);
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.state, RuntimePhase::Stopped);
+        assert!(!snapshot.inference_ready);
+        assert_eq!(snapshot.loaded_models, None);
+    }
+
+    #[test]
+    fn a_crash_clears_the_inference_evidence() {
+        let process = Arc::new(FakeProcess::present());
+        let manager = manager_with(
+            process.clone(),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager.start().expect("start should succeed");
+        manager.poll();
+        manager.record_loaded_models(1);
+        assert!(manager.snapshot().inference_ready);
+
+        process.crash();
+        let failed = manager.poll();
+        assert_eq!(failed.state, RuntimePhase::Failed);
+        assert!(!failed.inference_ready);
+        assert_eq!(failed.loaded_models, None);
+    }
+
+    #[test]
     fn no_idle_or_failed_phase_ever_claims_readiness() {
         let manager = manager_with(
             Arc::new(FakeProcess::present()),
@@ -2085,6 +2506,56 @@ mod tests {
             missing.join("llama-server.exe"),
             std::env::temp_dir().join("chronosaga-absent-runtime.log"),
         )
+    }
+
+    #[test]
+    fn a_pre_spawn_observation_error_refuses_the_start_and_keeps_ownership() {
+        let decision = classify_pre_spawn(4242, Err("handle is invalid".to_string()));
+
+        match decision {
+            PreSpawnDecision::RefuseUnknown(message) => {
+                assert!(message.contains("4242"), "the PID must be named: {message}");
+                assert!(
+                    message.contains("cannot determine"),
+                    "the message must say we could not tell, not that it exited: {message}"
+                );
+                assert!(message.contains("stop it"), "it must say how to recover: {message}");
+            }
+            other => panic!("an observation error must never allow a replacement: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_confirmed_running_child_refuses_a_duplicate_spawn() {
+        match classify_pre_spawn(77, Ok(None)) {
+            PreSpawnDecision::RefuseRunning(message) => assert!(message.contains("77")),
+            other => panic!("a live child must block a second spawn: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_confirmed_exited_child_frees_the_slot() {
+        match classify_pre_spawn(77, Ok(Some("exit code: 0".to_string()))) {
+            PreSpawnDecision::ReplaceExited(note) => {
+                assert!(note.contains("77") && note.contains("exit code: 0"));
+            }
+            other => panic!("a reaped child must free the slot: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_confirmed_exit_ever_frees_the_slot() {
+        // The whole point of the three-way split: exactly one of the outcomes
+        // may release ownership.
+        let frees = |observation| {
+            matches!(
+                classify_pre_spawn(1, observation),
+                PreSpawnDecision::ReplaceExited(_)
+            )
+        };
+        assert!(!frees(Ok(None)), "running must not free the slot");
+        assert!(frees(Ok(Some("exit code: 1".to_string()))), "exited frees it");
+        assert!(!frees(Err("io error".to_string())), "unknown must not free it");
     }
 
     #[test]

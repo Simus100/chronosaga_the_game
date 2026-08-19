@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getDatabaseStatus,
+  getLocalAiModelStatus,
   getLocalAiRuntimeStatus,
   getRuntimeStatus,
   getSystemInfo,
   loadSmokeCampaign,
   saveSmokeCampaign,
+  runLocalAiSmokeInference,
   startLocalAiRuntime,
   stopLocalAiRuntime,
   type P0DatabaseStatus,
+  type P0InferenceOutcome,
+  type P0LocalAiModelStatus,
   type P0LocalAiRuntimeSnapshot,
   type P0RuntimeStatus,
   type P0SmokeCampaign,
@@ -48,7 +52,41 @@ export function DesktopP0Screen() {
   const [error, setError] = useState<string | null>(null);
 
   const [ai, setAi] = useState<P0LocalAiRuntimeSnapshot | null>(null);
+  const [model, setModel] = useState<P0LocalAiModelStatus | null>(null);
+  const [inference, setInference] = useState<P0InferenceOutcome | null>(null);
+  const [inferring, setInferring] = useState(false);
   const aiTimer = useRef<number | null>(null);
+
+  async function refreshModel() {
+    try {
+      setModel(await getLocalAiModelStatus());
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
+  /**
+   * Real local generation. The button only reaches Rust; Rust owns the request,
+   * the session key and the validator.
+   */
+  async function runInference() {
+    setInferring(true);
+    setInference(null);
+    try {
+      const outcome = await runLocalAiSmokeInference();
+      setInference(outcome);
+      setMessage(
+        outcome.accepted
+          ? `Inference accepted in ${outcome.durationMs} ms.`
+          : "Inference rejected by the application validator.",
+      );
+    } catch (cause) {
+      setError(String(cause));
+      setMessage("Local inference failed.");
+    } finally {
+      setInferring(false);
+    }
+  }
 
   // A pure read on the Rust side: the background watcher is what advances the
   // state machine, this only mirrors it.
@@ -150,6 +188,7 @@ export function DesktopP0Screen() {
   useEffect(() => {
     void runDiagnostics();
     void refreshAi();
+    void refreshModel();
     aiTimer.current = window.setInterval(() => void refreshAi(), 500);
     return () => {
       if (aiTimer.current !== null) window.clearInterval(aiTimer.current);
@@ -267,10 +306,76 @@ export function DesktopP0Screen() {
           {ai?.lastError && <p className="p0-path">ERROR // {ai.lastError}</p>}
           <small>
             RUNTIME READY significa che llama-server risponde su /health. Non significa che
-            l&apos;inferenza sia disponibile: senza modello caricato INFERENCE READY resta FALSE
-            fino a P0.3-C. I profili normali sono AUTO / LITE / STANDARD; SAFE MODE (nessuna AI
-            locale) e&apos; un percorso di recupero a narrativa ridotta, non un quarto profilo
-            equivalente.
+            l&apos;inferenza sia disponibile: INFERENCE READY diventa TRUE solo quando il runtime
+            dichiara di servire il modello atteso. I profili normali sono AUTO / LITE / STANDARD;
+            SAFE MODE (nessuna AI locale) e&apos; un percorso di recupero a narrativa ridotta, non
+            un quarto profilo equivalente.
+          </small>
+        </article>
+
+        <article className="p0-panel p0-checks">
+          <h2>LITE LOCAL INFERENCE</h2>
+          <div className="p0-check"><span>AI PROFILE</span>
+            <b className="ok">LITE</b></div>
+          <div className="p0-check"><span>MODEL</span>
+            <b className={model?.resolved ? "ok" : "pending"}>{model?.label ?? "—"}</b></div>
+          <div className="p0-check"><span>MODEL RESOLVED</span>
+            <b className={model?.resolved ? "ok" : "pending"}>{model?.resolved ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>MODEL VERIFIED</span>
+            <b className={model?.integrityVerified ? "ok" : "pending"}>
+              {model?.integrityVerified ? "TRUE" : "FALSE"}
+            </b></div>
+          <div className="p0-check"><span>SHA-256 CHECK</span>
+            <b className="pending">
+              {model?.verificationMs != null ? `${model.verificationMs} ms` : "—"}
+            </b></div>
+          <div className="p0-check"><span>CANDIDATE STATUS</span>
+            <b className="pending">{model?.status ?? "—"}</b></div>
+          <div className="p0-check"><span>CONTEXT</span>
+            <b className="pending">{ai?.modelContextSize ?? model?.contextSize ?? "—"}</b></div>
+          <div className="p0-check"><span>RUNTIME READY</span>
+            <b className={ai?.runtimeReady ? "ok" : "pending"}>{ai?.runtimeReady ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>INFERENCE READY</span>
+            <b className={ai?.inferenceReady ? "ok" : "pending"}>{ai?.inferenceReady ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>MODELS LOADED</span>
+            <b className="pending">{ai?.loadedModels ?? "—"}</b></div>
+          <div className="p0-actions">
+            <button disabled={busy || inferring || !ai?.inferenceReady} onClick={() => void runInference()}>
+              {inferring ? "GENERATING…" : "RUN LITE INFERENCE TEST"}
+            </button>
+          </div>
+          {model?.problem && <p className="p0-path">MODEL // {model.problem}</p>}
+          {inference && (
+            <div className="p0-save-state">
+              <span>RESULT</span>
+              <b className={inference.accepted ? "ok" : "pending"}>
+                {inference.accepted ? "ACCEPTED" : "REJECTED"}
+              </b>
+              <span>DURATION</span><b>{inference.durationMs} ms</b>
+              <span>TOKENS/S</span>
+              <b>{inference.tokensPerSecond ? inference.tokensPerSecond.toFixed(1) : "—"}</b>
+              <span>TOKENS OUT</span><b>{inference.completionTokens ?? "—"}</b>
+            </div>
+          )}
+          {inference?.accepted && (
+            <>
+              <p className="p0-note">{inference.narration}</p>
+              {inference.dialogue.map((line, index) => (
+                <p className="p0-note" key={index}>
+                  {line.speakerId}: “{line.text}”
+                </p>
+              ))}
+              <p className="p0-path">TONE // {inference.toneTags.join(", ") || "—"}</p>
+            </>
+          )}
+          {inference && !inference.accepted && (
+            <p className="p0-path">REJECTED // {inference.validationError}</p>
+          )}
+          <small>
+            Il modello e un candidato di benchmark P0, non il modello di release. MODEL VERIFIED
+            significa che lo SHA-256 dell&apos;artefatto corrisponde al lock. La generazione resta
+            locale su 127.0.0.1 e passa dal validatore applicativo prima di essere mostrata; un
+            output respinto non viene esposto alla UI.
           </small>
         </article>
 
