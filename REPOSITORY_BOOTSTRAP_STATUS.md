@@ -8,12 +8,13 @@ Questo file fotografa lo stato corrente della repository. Non sostituisce Produc
 
 ## Branch state
 
-- `develop`: `06812f98f6d55aa787c93984b4bc772228475b01`
-  - merge PR #8: **P0.3-C: prove real Lite local inference on Windows**
-- `main`: `27571a85100a11875cad7d72431a48586573a976`
+- **P0.3-C functional baseline merged in `develop`:** `06812f98f6d55aa787c93984b4bc772228475b01`
+  - merge PR #8: **P0.3-C: prove real Lite local inference on Windows**.
+- Questo status file è stato aggiunto successivamente tramite PR documentale; per questo **non pinna il proprio merge commit come “current develop HEAD”**. L'HEAD corrente di `develop` va letto direttamente da GitHub.
+- `main` osservato nello snapshot: `27571a85100a11875cad7d72431a48586573a976`
   - contiene la precedente promozione fino alla strategia visuale statica/code-driven;
-  - **non contiene ancora P0.3-C**.
-- Nessuna promozione ulteriore di `develop` → `main` è implicita in questo snapshot.
+  - **non contiene P0.3-C** nello snapshot.
+- `main` e `develop` hanno storie Git divergenti a causa delle precedenti PR/merge; non vanno riallineati con merge/force/fast-forward automatici. Una futura promozione `develop` → `main` richiede una PR deliberata e review del diff.
 
 ## Gate completati
 
