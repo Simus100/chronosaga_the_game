@@ -1,7 +1,7 @@
 # KNOWLEDGE INDEX v1
 ## Chronosaga: The Game
 
-**Data:** 2026-08-18
+**Data:** 2026-08-19
 
 I documenti seguenti costituiscono la Knowledge di progetto.
 
@@ -141,7 +141,7 @@ Fonte operativa prevalente per il gate tecnico immediato:
 - Web compatibility checks durante Windows-first;
 - exit criteria `GO / GO WITH LIMITS / NO-GO`.
 
-**Stato review 2026-08-18:** P0.1 Desktop runtime e P0.2 SQLite persistence sono stati validati sul PC Windows target. Sul branch `feature/p0-local-ai-runtime-v0.1` il P0.3 include lifecycle reale llama.cpp, watcher, verifier/provenance e preparazione packaging; restano acceptance/hardening finale del packaging AI e il primo GGUF reale prima di chiudere il gate local-AI completo.
+**Stato review 2026-08-19:** P0.1 Desktop runtime e P0.2 SQLite persistence sono validati sul PC Windows target; P0.3-B lifecycle/runtime llama.cpp è merged; P0.3-C ha provato e mergiato la prima inferenza locale Lite reale con GGUF integrity-verified e output strutturato validato. Restano Standard, AUTO/profile switching, fallback completo e la matrice P0.5 prima di chiudere l'intero gate dual-model. Per lo stato operativo aggiornato usare `REPOSITORY_BOOTSTRAP_STATUS.md`.
 
 ## 10. `IMPLEMENTATION_BACKLOG_v0.1.md`
 Backlog operativo aggiornato internamente a v0.2.
