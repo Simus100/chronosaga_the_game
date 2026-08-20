@@ -28,8 +28,17 @@ use crate::runtime_lock::WORKSPACE_ROOT_ENV;
 /// Repository- and resource-relative location of the model lock.
 pub const MODEL_LOCK_RELATIVE_PATH: &str = "config/local-ai-models.lock.json";
 
-/// The profile P0.3-C implements.
+/// The profile P0.3-C implemented first.
 pub const LITE_PROFILE_ID: &str = "lite";
+
+/// The profile P0.4-A adds.
+pub const STANDARD_PROFILE_ID: &str = "standard";
+
+/// The locked profiles the desktop diagnostics know about, in display order.
+///
+/// P0.4-A Phase A deliberately stops here: two explicit profiles, no AUTO and
+/// no player-facing profile manager. Those belong to Phase B.
+pub const KNOWN_PROFILE_IDS: [&str; 2] = [LITE_PROFILE_ID, STANDARD_PROFILE_ID];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -365,14 +374,17 @@ pub fn load_lock(app: &AppHandle) -> Result<ModelLock, String> {
         .map_err(|error| format!("Unable to parse {}: {error}", path.display()))
 }
 
-/// Resolve the Lite model for this application instance.
+/// Resolve one locked profile for this application instance.
 ///
-/// P0.3-C never packages the weights, so this is workspace-only for now. The
+/// P0.4-A never packages the weights, so this is workspace-only for now. The
 /// packaged path is prepared by [`load_lock`] reading a bundled lock first.
-pub fn resolve_lite(app: &AppHandle) -> Result<ResolvedModel, ModelResolutionError> {
+pub fn resolve_for_app(
+    app: &AppHandle,
+    profile_id: &str,
+) -> Result<ResolvedModel, ModelResolutionError> {
     let lock = load_lock(app).map_err(ModelResolutionError::Missing)?;
     let workspace = env::var(WORKSPACE_ROOT_ENV).ok();
-    resolve_profile(&lock, LITE_PROFILE_ID, workspace.as_deref())
+    resolve_profile(&lock, profile_id, workspace.as_deref())
 }
 
 #[cfg(test)]
@@ -485,6 +497,57 @@ mod tests {
         assert!(matches!(blank, ModelResolutionError::WorkspaceUnavailable(_)));
     }
 
+    /// A lock holding both profiles, each pointing at its own directory.
+    fn dual_lock() -> ModelLock {
+        let mut lock = lock();
+        let mut standard = lock.profiles.get("lite").unwrap().clone();
+        standard.profile_id = "standard".to_string();
+        standard.family = "SmolLM3-3B".to_string();
+        standard.artifact_filename = "SmolLM3-Q4_K_M.gguf".to_string();
+        standard.external_path_relative_to_workspace_root =
+            "runtime-assets/models/standard/smollm3".to_string();
+        lock.profiles.insert("standard".to_string(), standard);
+        lock
+    }
+
+    #[test]
+    fn each_profile_resolves_to_its_own_artifact() {
+        let root = std::env::temp_dir().join("chronosaga-dual-profile");
+        let _ = fs::remove_dir_all(&root);
+        let lite_dir = root.join("runtime-assets/models/lite/qwen3");
+        let standard_dir = root.join("runtime-assets/models/standard/smollm3");
+        fs::create_dir_all(&lite_dir).unwrap();
+        fs::create_dir_all(&standard_dir).unwrap();
+        fs::write(lite_dir.join("Qwen3-1.7B-Q4_K_M.gguf"), vec![b'l'; 64]).unwrap();
+        fs::write(standard_dir.join("SmolLM3-Q4_K_M.gguf"), vec![b's'; 64]).unwrap();
+
+        let lock = dual_lock();
+        let workspace = root.to_str().unwrap();
+
+        let lite = resolve_profile(&lock, "lite", Some(workspace)).expect("lite must resolve");
+        assert_eq!(lite.profile_id(), "lite");
+        assert!(lite.path().ends_with("Qwen3-1.7B-Q4_K_M.gguf"));
+
+        let standard =
+            resolve_profile(&lock, "standard", Some(workspace)).expect("standard must resolve");
+        assert_eq!(standard.profile_id(), "standard");
+        assert!(standard.path().ends_with("SmolLM3-Q4_K_M.gguf"));
+
+        // Neither may borrow the other's artifact.
+        assert_ne!(lite.path(), standard.path());
+    }
+
+    #[test]
+    fn the_known_profiles_are_exactly_the_locked_ones() {
+        assert_eq!(KNOWN_PROFILE_IDS, ["lite", "standard"]);
+        for id in KNOWN_PROFILE_IDS {
+            assert!(
+                dual_lock().profiles.contains_key(id),
+                "{id} must be resolvable"
+            );
+        }
+    }
+
     #[test]
     fn an_unknown_profile_is_refused_rather_than_defaulted() {
         // Asking for Standard before it is locked must fail, never silently fall
@@ -577,6 +640,29 @@ mod tests {
             .join(MODEL_LOCK_RELATIVE_PATH);
         let contents = fs::read_to_string(&path).expect("the repository lock must be readable");
         let lock: ModelLock = serde_json::from_str(&contents).expect("the lock must parse");
+
+        for id in KNOWN_PROFILE_IDS {
+            assert!(
+                lock.profiles.contains_key(id),
+                "the shipped lock must declare the '{id}' profile"
+            );
+        }
+
+        let standard = lock
+            .profiles
+            .get(STANDARD_PROFILE_ID)
+            .expect("standard must be locked");
+        assert_eq!(standard.family, "SmolLM3-3B");
+        assert_eq!(standard.quantization, "Q4_K_M");
+        assert_eq!(standard.size_bytes, 1_915_305_312);
+        assert_eq!(
+            standard.sha256,
+            "8334b850b7bd46238c16b0c550df2138f0889bf433809008cc17a8b05761863e"
+        );
+        assert!(
+            !standard.release_approved,
+            "Standard is a benchmark candidate, not an approved release model"
+        );
 
         let lite = lock.profiles.get(LITE_PROFILE_ID).expect("lite must be locked");
         assert_eq!(lite.profile_id, "lite");

@@ -508,7 +508,12 @@ pub struct LocalAiRuntimeManager {
     config: RuntimeConfig,
     /// Built once from the config, so the bind address and the probed endpoint
     /// can never disagree.
-    launch_spec: LaunchSpec,
+    /// The active launch contract.
+    ///
+    /// Behind its own short-lived lock so the selected profile can be changed
+    /// while the runtime is idle. Reads are cheap and never perform I/O, so this
+    /// does not weaken the "no I/O under the state lock" rule.
+    launch: Mutex<LaunchSpec>,
     process: Box<dyn ProcessBackend>,
     health: Box<dyn HealthProbe>,
     clock: Box<dyn Clock>,
@@ -533,7 +538,7 @@ impl LocalAiRuntimeManager {
         };
 
         Self {
-            launch_spec: config.launch_spec(),
+            launch: Mutex::new(config.launch_spec()),
             config,
             process,
             health,
@@ -579,7 +584,8 @@ impl LocalAiRuntimeManager {
 
     fn build_snapshot(&self, inner: &RuntimeInner) -> LocalAiRuntimeSnapshot {
         let runtime_ready = inner.phase == RuntimePhase::Ready;
-        let model = self.launch_spec.model();
+        let launch = self.launch_spec();
+        let model = launch.model();
         LocalAiRuntimeSnapshot {
             state: inner.phase,
             binary_present: inner.binary_present,
@@ -633,8 +639,63 @@ impl LocalAiRuntimeManager {
 
     /// The validated launch contract, for callers that need the endpoint or the
     /// session key. The key must never be logged or sent to the interface.
-    pub fn launch_spec(&self) -> &LaunchSpec {
-        &self.launch_spec
+    pub fn launch_spec(&self) -> LaunchSpec {
+        self.launch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Swap the model the next start will load.
+    ///
+    /// Allowed only while nothing is owned: a running runtime keeps the contract
+    /// it was launched with, which is what "one model at a time" means in
+    /// practice. Phase B builds the player-facing profile manager on top of
+    /// this; Phase A only needs the diagnostics to be able to choose.
+    pub fn select_model(
+        &self,
+        model: Option<&crate::model_lock::VerifiedModel>,
+    ) -> Result<LocalAiRuntimeSnapshot, String> {
+        let Some(_operation) = self.try_operation() else {
+            return Err("another local AI runtime operation is already in progress".to_string());
+        };
+
+        {
+            let inner = self.lock();
+            if inner.pid.is_some() {
+                return Err(format!(
+                    "local AI runtime process {} is still tracked; stop it before changing model",
+                    inner.pid.unwrap_or_default()
+                ));
+            }
+            if matches!(
+                inner.phase,
+                RuntimePhase::Starting | RuntimePhase::Loading | RuntimePhase::Ready
+                    | RuntimePhase::Stopping
+            ) {
+                return Err(format!(
+                    "cannot change model while the runtime is {:?}",
+                    inner.phase
+                ));
+            }
+        }
+
+        let mut config = RuntimeConfig::loopback();
+        if let Some(model) = model {
+            config = config.with_model(model);
+        }
+        {
+            let mut launch = self
+                .launch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *launch = config.launch_spec();
+        }
+
+        let mut inner = self.lock();
+        inner.loaded_models = None;
+        inner.last_error = None;
+        Ok(self.build_snapshot(&inner))
     }
 
     /// Current snapshot.
@@ -717,7 +778,7 @@ impl LocalAiRuntimeManager {
             inner.started_at = None;
             inner.last_error = None;
             inner.loaded_models = None;
-            self.launch_spec.clone()
+            self.launch_spec()
         };
 
         // External spawn, no state lock held.
@@ -767,7 +828,7 @@ impl LocalAiRuntimeManager {
         // misleading when we could not observe it at all.
         let health = match observation {
             Some(ProcessObservation::Exited) | Some(ProcessObservation::Unknown(_)) => None,
-            _ => Some(self.health.poll(self.launch_spec.endpoint())),
+            _ => Some(self.health.poll(self.launch_spec().endpoint())),
         };
         let now_ms = self.clock.now_ms();
         let expired = self.startup_expired(started_at, now_ms);
@@ -2139,7 +2200,7 @@ mod tests {
 
         // `new` is allowed one probe; after that the backend refuses everything.
         let manager = LocalAiRuntimeManager {
-            launch_spec: RuntimeConfig::loopback().launch_spec(),
+            launch: Mutex::new(RuntimeConfig::loopback().launch_spec()),
             config: RuntimeConfig::loopback(),
             process: Box::new(ExplodingProcess(PathBuf::from("/fake/llama-server"))),
             health: Box::new(ExplodingHealth),
@@ -2407,6 +2468,121 @@ mod tests {
             Arc::new(FakeClock::new()),
         );
         assert_eq!(router.snapshot().model_profile_id, None);
+    }
+
+    fn verified(profile: &str, file: &str) -> crate::model_lock::VerifiedModel {
+        crate::model_lock::VerifiedModel::for_test(crate::model_lock::ResolvedModel::for_test(
+            profile,
+            PathBuf::from(format!("D:/models/{file}")),
+            4096,
+        ))
+    }
+
+    #[test]
+    fn a_configured_profile_is_not_a_loaded_profile() {
+        // The snapshot reports which model the contract carries. It becomes the
+        // *loaded* profile only once the runtime is serving, which is why the
+        // diagnostics gate that label on runtime_ready rather than on the
+        // contract alone.
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager
+            .select_model(Some(&verified("standard", "SmolLM3-Q4_K_M.gguf")))
+            .unwrap();
+
+        let configured = manager.snapshot();
+        assert_eq!(configured.model_profile_id.as_deref(), Some("standard"));
+        assert!(
+            !configured.runtime_ready,
+            "configuring a profile must not imply the model is loaded"
+        );
+
+        manager.start().expect("start should succeed");
+        manager.poll();
+        let serving = manager.snapshot();
+        assert!(serving.runtime_ready);
+        assert_eq!(serving.model_profile_id.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn selecting_a_profile_swaps_the_whole_launch_contract() {
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+
+        manager
+            .select_model(Some(&verified("lite", "Qwen3-1.7B-Q4_K_M.gguf")))
+            .expect("selecting while idle is allowed");
+        let lite = manager.snapshot();
+        assert_eq!(lite.model_profile_id.as_deref(), Some("lite"));
+
+        manager
+            .select_model(Some(&verified("standard", "SmolLM3-Q4_K_M.gguf")))
+            .expect("selecting another profile while idle is allowed");
+        let standard = manager.snapshot();
+        assert_eq!(standard.model_profile_id.as_deref(), Some("standard"));
+        assert!(standard.model_path.unwrap().ends_with("SmolLM3-Q4_K_M.gguf"));
+
+        // One model at a time: the contract holds exactly one, never both.
+        let args = manager.launch_spec().command_arguments().join(" ");
+        assert!(args.contains("SmolLM3-Q4_K_M.gguf"));
+        assert!(!args.contains("Qwen3-1.7B-Q4_K_M.gguf"));
+        assert_eq!(args.matches("--model").count(), 1);
+    }
+
+    #[test]
+    fn a_running_runtime_refuses_to_have_its_model_swapped() {
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager
+            .select_model(Some(&verified("lite", "Qwen3-1.7B-Q4_K_M.gguf")))
+            .unwrap();
+        manager.start().expect("start should succeed");
+
+        let error = manager
+            .select_model(Some(&verified("standard", "SmolLM3-Q4_K_M.gguf")))
+            .expect_err("a live runtime must not be swapped underneath");
+        assert!(error.contains("still tracked"), "unexpected error: {error}");
+
+        // The running contract is untouched.
+        assert!(manager
+            .launch_spec()
+            .command_arguments()
+            .join(" ")
+            .contains("Qwen3-1.7B-Q4_K_M.gguf"));
+
+        // After a stop the swap is allowed again.
+        manager.stop();
+        manager
+            .select_model(Some(&verified("standard", "SmolLM3-Q4_K_M.gguf")))
+            .expect("stopping first is the supported path");
+    }
+
+    #[test]
+    fn readiness_evidence_is_dropped_when_the_profile_changes() {
+        let manager = ready_manager(Arc::new(FakeProcess::present()), Arc::new(FakeClock::new()));
+        manager.record_loaded_models(1);
+        assert!(manager.snapshot().inference_ready);
+
+        manager.stop();
+        manager
+            .select_model(Some(&verified("standard", "SmolLM3-Q4_K_M.gguf")))
+            .expect("selecting after a stop is allowed");
+
+        let snapshot = manager.snapshot();
+        assert_eq!(
+            snapshot.loaded_models, None,
+            "evidence about the previous model must not survive the swap"
+        );
+        assert!(!snapshot.inference_ready);
     }
 
     #[test]

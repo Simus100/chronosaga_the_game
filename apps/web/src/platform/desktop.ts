@@ -174,6 +174,21 @@ export function getLocalAiModelStatus(): Promise<P0LocalAiModelStatus> {
   return invoke<P0LocalAiModelStatus>("get_local_ai_model_status");
 }
 
+/** Every locked profile, for the diagnostic selector. Does not hash. */
+export function listLocalAiProfiles(): Promise<P0LocalAiModelStatus[]> {
+  return invoke<P0LocalAiModelStatus[]>("list_local_ai_profiles");
+}
+
+/**
+ * Choose the profile the runtime will load next.
+ *
+ * The interface sends a profile id and nothing else: the model path, its digest
+ * and the llama-server command line all stay in Rust.
+ */
+export function selectLocalAiProfile(profileId: string): Promise<P0LocalAiModelStatus> {
+  return invoke<P0LocalAiModelStatus>("select_local_ai_profile", { profileId });
+}
+
 /**
  * Run the grounded P0 smoke generation. The request never leaves the machine:
  * React invokes Rust, Rust talks to llama-server on loopback.

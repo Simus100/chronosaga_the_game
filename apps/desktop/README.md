@@ -34,7 +34,7 @@ Implemented on `feature/p0-windows-runtime`:
 - free-storage probe for the application data volume;
 - app-local-data and resource-path resolution;
 - bundled `models/manifest.json` resolved to a stable `models/manifest.json` resource path;
-- runtime check for the future `bin/llama-server.exe` resource;
+- runtime check for the packaged `llama-server` resource;
 - automatic Lite/Standard/Procedural recommendation using the thresholds in the model manifest;
 - desktop-only P0 diagnostics screen; the normal Web UI remains unchanged in a browser.
 
@@ -60,18 +60,39 @@ Database file:
 
 The P0 save is deliberately tiny. It proves persistence before the production campaign schema is introduced.
 
+### P0.3 — local AI runtime and first real inference
+
+Implemented:
+
+- llama.cpp `b10343` locked by provenance and SHA-256, staged into the Windows
+  installer as a resource (`config/local-ai-runtime.lock.json`);
+- owned `llama-server` child process with start/health/timeout/stop lifecycle,
+  loopback-only binding and a per-session API key;
+- background watcher that advances the lifecycle; the interface only reads;
+- Lite model (Qwen3-1.7B Q4_K_M) locked, hash-verified once per session and
+  loaded in single-model mode;
+- Rust-owned OpenAI-compatible inference client and application-side validator;
+- structured output contract, with rejected output kept out of the interface.
+
+### P0.4-A — Standard profile
+
+Implemented:
+
+- Standard model (SmolLM3-3B Q4_K_M) locked and hash-verified the same way;
+- both profiles selectable from the desktop diagnostics, one resident at a time;
+- the runtime must be stopped before the profile changes.
+
+Both models remain P0 benchmark candidates. Neither is approved for release.
+
 ## Still required
 
-### P0.3+
-
-- bundle a verified `llama-server.exe` sidecar;
-- select exact benchmark GGUF artifacts;
-- sidecar start/health/timeout/stop lifecycle;
+- `AUTO` selection from the hardware probe;
+- production profile UX and the `SAFE MODE` recovery presentation;
+- `STANDARD -> LITE -> SAFE/PROCEDURAL` fallback chain;
 - GPU/VRAM acceleration probe;
-- Lite ~1.7B inference benchmark;
-- Standard ~3B inference benchmark;
-- model switching and failure fallback;
-- clean-machine NSIS installer validation.
+- the P0.5 benchmark: hardware matrix, context matrix, 50-case quality suite;
+- multi-GB Full Offline packaging of both model payloads;
+- clean-machine NSIS installer validation with models included.
 
 Do not commit GGUF weights or third-party runtime binaries to the public repository until exact artifacts, licenses, hashes and distribution terms are recorded.
 
