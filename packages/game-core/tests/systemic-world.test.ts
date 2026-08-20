@@ -52,6 +52,23 @@ describe("M1 systemic world foundation", () => {
     expect(effectResult.errors.some(error => error.includes("requires key"))).toBe(true);
   });
 
+  it("rejects structurally malformed raw state JSON without throwing", () => {
+    expect(validateSystemicWorldState(null)).toEqual({
+      ok: false,
+      errors: ["WorldState must be an object"]
+    });
+
+    const missingContainers = {
+      campaignId: "broken",
+      party: [],
+      simulation: { schemaVersion: 1 }
+    };
+    const result = validateSystemicWorldState(missingContainers);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some(error => error.includes("settlements must be an array"))).toBe(true);
+    expect(result.errors.some(error => error.includes("delayedConsequences must be an array"))).toBe(true);
+  });
+
   it("rejects malformed authored event fixtures before resolution", () => {
     const event: GameEvent = {
       id: "evt_relay_offer",
@@ -76,6 +93,10 @@ describe("M1 systemic world foundation", () => {
     const result = validateGameEvent(malformed);
     expect(result.ok).toBe(false);
     expect(result.errors.some(error => error.includes("requires key"))).toBe(true);
+
+    const rawResult = validateGameEvent({ id: "raw_broken", version: 1 });
+    expect(rawResult.ok).toBe(false);
+    expect(rawResult.errors.some(error => error.includes("choices must be an array"))).toBe(true);
   });
 
   it("schedules and applies a delayed consequence deterministically without AI", () => {
