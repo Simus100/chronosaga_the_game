@@ -444,6 +444,9 @@ fn get_local_ai_runtime_status(runtime: State<'_, LocalAiRuntimeState>) -> Local
 fn start_local_ai_runtime(
     runtime: State<'_, LocalAiRuntimeState>,
 ) -> Result<LocalAiRuntimeSnapshot, String> {
+    // Refuse before the spawn, not after: llama-server happily starts in router
+    // mode with no model and reports itself healthy.
+    local_ai_runtime::serving_start_verdict(runtime.launch_spec().model().is_some())?;
     runtime.start()
 }
 
