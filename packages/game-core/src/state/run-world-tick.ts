@@ -349,6 +349,7 @@ function addShortageMemory(
   turn: number,
   changes: StateChange[]
 ): void {
+  const settlement = state.simulation?.settlements.find(item => item.id === settlementId);
   const character = state.party.find(
     item => item.locationId === settlementId && item.role === "Quartermaster"
   );
@@ -359,7 +360,7 @@ function addShortageMemory(
 
   const memory: CharacterMemory = {
     id: memoryId,
-    summary: "Helios Reach ended the world tick below its target water reserve.",
+    summary: `${settlement?.name ?? settlementId} ended the world tick below its target water reserve.`,
     tags: ["water", "shortage", "world_tick"],
     turn,
     source: { kind: "world_tick", id: `world_tick_${turn}`, tick: turn, rule: "resource_shortage" }
