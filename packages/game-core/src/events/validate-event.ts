@@ -62,7 +62,7 @@ export function validateGameEvent(input: unknown): EventValidationResult {
   const body = text(input.body);
 
   if (!id?.trim()) errors.push("event id cannot be empty");
-  if (!Number.isInteger(input.version) || Number(input.version) < 1) {
+  if (typeof input.version !== "number" || !Number.isInteger(input.version) || input.version < 1) {
     errors.push("event version must be a positive integer");
   }
   if (!title?.trim()) errors.push(`event ${id || "<empty>"} title cannot be empty`);
