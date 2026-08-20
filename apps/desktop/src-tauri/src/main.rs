@@ -3,6 +3,7 @@
 mod inference;
 mod local_ai_runtime;
 mod model_lock;
+mod profile_orchestrator;
 mod runtime_lock;
 mod runtime_watcher;
 
@@ -500,6 +501,92 @@ struct ModelCacheState(Mutex<ModelCache>);
 /// profile must never touch the save or the authoritative WorldState.
 struct SelectedProfileState(Mutex<String>);
 
+/// What the player last requested (`auto`, `lite`, `standard`) and how the last
+/// transition ended, including any fallback.
+///
+/// Preference and diagnostics only. Nothing here is written to the campaign.
+struct ProfileOutcomeState(Mutex<Option<profile_orchestrator::ProfileOutcome>>);
+
+/// Read the hardware facts AUTO is allowed to consider.
+fn hardware_snapshot(app: &AppHandle) -> profile_orchestrator::HardwareSnapshot {
+    let mut system = System::new_all();
+    system.refresh_all();
+    let _ = app;
+    profile_orchestrator::HardwareSnapshot {
+        total_ram_mb: system.total_memory() / 1024 / 1024,
+        logical_cores: system.cpus().len(),
+    }
+}
+
+/// Stop the runtime and prove the child is gone.
+///
+/// The hard precondition of every transition: if the previous process cannot be
+/// proved dead, nothing new may be started. Returns the reason on failure.
+fn stop_and_confirm_reaped(runtime: &LocalAiRuntimeManager) -> Result<(), String> {
+    let snapshot = runtime.stop();
+    profile_orchestrator::reap_verdict(
+        snapshot.pid,
+        snapshot.inference_ready,
+        snapshot.last_error.as_deref(),
+    )
+}
+
+/// Bring one concrete profile up: verify, select, start, wait for readiness.
+///
+/// Every early return leaves the runtime stopped and reaped, so the caller can
+/// immediately try the next profile in the chain.
+fn try_profile(
+    app: &AppHandle,
+    cache: &ModelCacheState,
+    runtime: &LocalAiRuntimeManager,
+    profile_id: &str,
+) -> Result<(), String> {
+    // Development-only drill switch, so the fallback chain can be exercised
+    // without corrupting a verified artifact.
+    let forced = std::env::var(profile_orchestrator::FORCE_FAILURE_ENV).ok();
+    if profile_orchestrator::forced_failure(profile_id, forced.as_deref()) {
+        return Err(format!(
+            "{profile_id} failure forced by {}",
+            profile_orchestrator::FORCE_FAILURE_ENV
+        ));
+    }
+
+    let verified = verify_profile(app, cache, profile_id)?;
+    runtime.select_model(Some(&verified))?;
+
+    runtime.start().map_err(|error| {
+        // A failed start must not leave anything owned behind.
+        let _ = stop_and_confirm_reaped(runtime);
+        error
+    })?;
+
+    // Wait for the watcher to carry it to Ready, then for the model-aware probe
+    // to confirm the expected model is the one serving.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    while std::time::Instant::now() < deadline {
+        let snapshot = runtime.snapshot();
+        if snapshot.inference_ready {
+            return Ok(());
+        }
+        if matches!(
+            snapshot.state,
+            local_ai_runtime::RuntimePhase::Failed | local_ai_runtime::RuntimePhase::Unavailable
+        ) {
+            let reason = snapshot
+                .last_error
+                .unwrap_or_else(|| format!("{profile_id} runtime failed"));
+            stop_and_confirm_reaped(runtime)?;
+            return Err(reason);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    stop_and_confirm_reaped(runtime)?;
+    Err(format!("{profile_id} never reported an expected-model readiness"))
+}
+
+
+
 /// Verify one profile, reusing the cached answer when there is one.
 fn verify_profile(
     app: &AppHandle,
@@ -613,6 +700,95 @@ fn select_local_ai_profile(
     eprintln!("local AI profile selected: {profile_id}");
 
     Ok(model_status(&app, &cache, &profile_id))
+}
+
+/// Apply a requested profile, falling back through the chain when needed.
+///
+/// This is the whole of P0.4-B and P0.4-C in one product action:
+///
+/// ```text
+/// requested (auto|lite|standard)
+///   -> AUTO resolves to one concrete profile
+///   -> stop current runtime, prove the child is gone
+///   -> try the profile, then the rest of the chain
+///   -> Safe Mode if none can serve
+/// ```
+///
+/// Blocking on purpose: the transition must be atomic from the interface's point
+/// of view, and the manager is synchronous.
+#[tauri::command]
+fn apply_local_ai_profile(
+    app: AppHandle,
+    profile_id: String,
+    cache: State<'_, ModelCacheState>,
+    selected: State<'_, SelectedProfileState>,
+    outcome_state: State<'_, ProfileOutcomeState>,
+    runtime: State<'_, LocalAiRuntimeState>,
+) -> Result<profile_orchestrator::ProfileOutcome, String> {
+    let requested = profile_orchestrator::RequestedProfile::parse(&profile_id)?;
+
+    // Never start a second sidecar on top of a live one.
+    stop_and_confirm_reaped(&runtime)?;
+
+    let standard_available = verify_profile(&app, &cache, model_lock::STANDARD_PROFILE_ID).is_ok();
+    let decision = profile_orchestrator::resolve_request(
+        requested,
+        hardware_snapshot(&app),
+        standard_available,
+    );
+    eprintln!(
+        "local AI profile requested={} resolved={} ({})",
+        requested, decision.resolved_profile, decision.reason
+    );
+
+    let mut attempts = Vec::new();
+    for candidate in profile_orchestrator::fallback_chain(&decision.resolved_profile) {
+        match try_profile(&app, &cache, &runtime, &candidate) {
+            Ok(()) => {
+                attempts.push(profile_orchestrator::ProfileAttempt {
+                    profile_id: candidate.clone(),
+                    succeeded: true,
+                    error: None,
+                });
+                *selected.0.lock().unwrap_or_else(|p| p.into_inner()) = candidate;
+                break;
+            }
+            Err(error) => {
+                eprintln!("local AI profile {candidate} failed: {error}");
+                attempts.push(profile_orchestrator::ProfileAttempt {
+                    profile_id: candidate,
+                    succeeded: false,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    let outcome = profile_orchestrator::summarise(requested, &decision, attempts);
+    if outcome.safe_mode {
+        // Nothing local can serve. Gameplay continues on the deterministic core;
+        // only narration is reduced.
+        eprintln!(
+            "local AI unavailable, entering SAFE MODE: {}",
+            outcome.fallback_reason.as_deref().unwrap_or("no local model could start")
+        );
+        stop_and_confirm_reaped(&runtime)?;
+    }
+
+    *outcome_state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(outcome.clone());
+    Ok(outcome)
+}
+
+/// The last transition outcome, for the diagnostics panel.
+#[tauri::command]
+fn get_local_ai_profile_outcome(
+    outcome_state: State<'_, ProfileOutcomeState>,
+) -> Option<profile_orchestrator::ProfileOutcome> {
+    outcome_state
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
 }
 
 /// Build the diagnostic view of one profile.
@@ -824,6 +1000,7 @@ fn main() {
 
             app.manage(cache);
             app.manage(SelectedProfileState(Mutex::new(default_profile.to_string())));
+            app.manage(ProfileOutcomeState(Mutex::new(None)));
             app.manage::<LocalAiRuntimeState>(manager.clone());
 
             // An observer we cannot start is a degraded local AI, not a dead
@@ -852,6 +1029,8 @@ fn main() {
             get_local_ai_model_status,
             list_local_ai_profiles,
             select_local_ai_profile,
+            apply_local_ai_profile,
+            get_local_ai_profile_outcome,
             run_local_ai_smoke_inference
         ])
         .build(tauri::generate_context!())
