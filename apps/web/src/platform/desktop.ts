@@ -189,6 +189,38 @@ export function selectLocalAiProfile(profileId: string): Promise<P0LocalAiModelS
   return invoke<P0LocalAiModelStatus>("select_local_ai_profile", { profileId });
 }
 
+/** One attempt at bringing a profile up, in chain order. */
+export interface P0ProfileAttempt {
+  profileId: string;
+  succeeded: boolean;
+  error?: string | null;
+}
+
+/** How the last profile transition ended, including any fallback. */
+export interface P0ProfileOutcome {
+  requestedProfile: string;
+  resolvedProfile: string;
+  activeProfile?: string | null;
+  safeMode: boolean;
+  autoReason: string;
+  attempts: P0ProfileAttempt[];
+  fallbackReason?: string | null;
+  presentation: string;
+}
+
+/**
+ * Apply a requested profile: AUTO resolves it, the current runtime is stopped
+ * and reaped, then the chain STANDARD -> LITE -> SAFE is walked until one
+ * serves. The whole transition happens in Rust; the interface sends an id.
+ */
+export function applyLocalAiProfile(profileId: string): Promise<P0ProfileOutcome> {
+  return invoke<P0ProfileOutcome>("apply_local_ai_profile", { profileId });
+}
+
+export function getLocalAiProfileOutcome(): Promise<P0ProfileOutcome | null> {
+  return invoke<P0ProfileOutcome | null>("get_local_ai_profile_outcome");
+}
+
 /**
  * Run the grounded P0 smoke generation. The request never leaves the machine:
  * React invokes Rust, Rust talks to llama-server on loopback.
