@@ -367,8 +367,8 @@ function addShortageMemory(
   };
   const before = character.memories?.length ?? 0;
   character.memories = [...(character.memories ?? []), memory];
-  if (!character.memoryTags.includes("water_shortage_active")) {
-    character.memoryTags = [...character.memoryTags, "water_shortage_active"];
+  if (!character.memoryTags.includes("water_shortage_experienced")) {
+    character.memoryTags = [...character.memoryTags, "water_shortage_experienced"];
   }
   changes.push({
     type: "characterMemory",
@@ -408,22 +408,24 @@ function reactFactionAndFlags(
       });
     }
 
+    const faction = simulation.factions.find(item => item.id === settlement.controllingFactionId);
+    if (faction) {
+      const reactionFlag = `${faction.id}_resource_pressure`;
+      const previousReactionFlag = state.flags[reactionFlag];
+      state.flags[reactionFlag] = pressureActive;
+      if (previousReactionFlag !== pressureActive) {
+        changes.push({
+          type: "factionReactionFlag",
+          key: reactionFlag,
+          before: previousReactionFlag,
+          after: pressureActive
+        });
+      }
+    }
+
     if (!pressureActive) continue;
     reacted = true;
-    const faction = simulation.factions.find(item => item.id === settlement.controllingFactionId);
     if (!faction) continue;
-
-    const reactionFlag = `${faction.id}_resource_pressure`;
-    const previousReactionFlag = state.flags[reactionFlag];
-    state.flags[reactionFlag] = true;
-    if (previousReactionFlag !== true) {
-      changes.push({
-        type: "factionReactionFlag",
-        key: reactionFlag,
-        before: previousReactionFlag,
-        after: true
-      });
-    }
 
     const tag = `resource_pressure:${settlement.id}`;
     if (!faction.memoryTags.includes(tag)) {
