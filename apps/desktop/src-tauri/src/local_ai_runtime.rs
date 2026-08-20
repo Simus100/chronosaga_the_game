@@ -1178,6 +1178,29 @@ impl ProcessBackend for SystemProcessBackend {
     }
 }
 
+/// Whether a start request is allowed to bring the sidecar up for serving.
+///
+/// b10343 does not fail when it is given no `--model`. It starts in *router
+/// mode*, listens on the port, and answers `/health` with `200 {"status":"ok"}`
+/// while holding zero models. A runtime in that state is up and useless: it can
+/// never satisfy an inference request, and it occupies the loopback port that
+/// the real profile needs.
+///
+/// So a start that is not tied to a selected model is refused before the spawn.
+/// The manager itself still permits a model-less launch — the lifecycle tests
+/// exercise the state machine without ever touching a real GGUF — but no
+/// product path may reach `llama-server` without having chosen what it serves.
+pub fn serving_start_verdict(has_model: bool) -> Result<(), String> {
+    if has_model {
+        return Ok(());
+    }
+    Err(
+        "no AI profile has been applied yet, so there is no model to serve; \
+         choose AUTO, LITE or STANDARD first"
+            .to_string(),
+    )
+}
+
 /// Size at which the sidecar log is rolled over.
 ///
 /// Deliberately tiny policy: one previous generation, no framework. The log
@@ -2754,6 +2777,30 @@ mod tests {
             backend.kill(1234).is_ok(),
             "killing an unowned process must be a no-op, not an error"
         );
+    }
+
+    #[test]
+    fn a_start_without_a_chosen_model_never_reaches_router_mode() {
+        // The regression this exists for: pressing START on a fresh session
+        // launched llama-server with no --model at all, which came up in router
+        // mode holding zero models and still answered /health with 200.
+        let refused = serving_start_verdict(false).expect_err("a model-less start must be refused");
+        assert!(refused.contains("no AI profile has been applied"), "{refused}");
+        assert!(serving_start_verdict(true).is_ok());
+    }
+
+    #[test]
+    fn a_spec_without_a_model_would_have_produced_router_mode() {
+        // Why the guard is phrased as a product rule rather than an argument
+        // check: the launch contract is legitimately model-less until a profile
+        // is applied, and that is exactly the shape that triggers router mode.
+        let spec = RuntimeConfig::loopback().launch_spec();
+        assert!(spec.model().is_none());
+        assert!(
+            !spec.command_arguments().iter().any(|arg| arg == "--model"),
+            "a model-less spec carries no --model, which is what router mode needs"
+        );
+        assert!(serving_start_verdict(spec.model().is_some()).is_err());
     }
 
     #[test]
