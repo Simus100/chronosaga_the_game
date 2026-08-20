@@ -33,7 +33,9 @@ Implemented on `feature/p0-windows-runtime`:
 - OS/CPU/RAM/logical-core/physical-core probe through Rust;
 - free-storage probe for the application data volume;
 - app-local-data and resource-path resolution;
-- bundled `models/manifest.json` resolved to a stable `models/manifest.json` resource path;
+- bundled `config/local-ai-models.lock.json` resolved to a stable resource path; it is the
+  authoritative source for profiles, artifact names, sizes and digests. `models/manifest.json`
+  is a planning document and is no longer packaged or read at runtime;
 - runtime check for the packaged `llama-server` resource;
 - automatic Lite/Standard/Procedural recommendation using the thresholds in the model manifest;
 - desktop-only P0 diagnostics screen; the normal Web UI remains unchanged in a browser.

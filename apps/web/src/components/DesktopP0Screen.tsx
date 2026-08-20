@@ -30,6 +30,12 @@ function gbFromMb(value?: number | null): string {
   return `${(value / 1024).toFixed(value >= 10240 ? 0 : 1)} GB`;
 }
 
+/** Locked artifact sizes arrive as exact byte counts, not rounded megabytes. */
+function gbFromBytes(value?: number | null): string {
+  if (value === undefined || value === null) return "UNKNOWN";
+  return gbFromMb(value / (1024 * 1024));
+}
+
 /**
  * Player-facing label for an AI profile id.
  *
@@ -249,9 +255,9 @@ export function DesktopP0Screen() {
     () => [
       { label: "DATABASE", value: database?.ready ? "READY" : "WAIT", ok: Boolean(database?.ready) },
       {
-        label: "MODEL MANIFEST",
-        value: runtime?.modelManifestPresent ? "READY" : "MISSING",
-        ok: Boolean(runtime?.modelManifestPresent),
+        label: "MODEL LOCK",
+        value: runtime?.modelLockPresent ? "PACKAGED" : "MISSING",
+        ok: Boolean(runtime?.modelLockPresent),
       },
       {
         label: "LLAMA SERVER",
@@ -308,18 +314,31 @@ export function DesktopP0Screen() {
             <span>AUTO RECOMMENDATION</span>
             <strong>{runtime?.recommendedAiProfile?.toUpperCase() ?? "—"}</strong>
           </div>
+          {runtime?.autoReason && <p className="p0-note">{runtime.autoReason}</p>}
           <div className="p0-profile-grid">
-            {runtime?.profiles.map(profile => (
-              <div className="p0-profile" key={profile.id}>
-                <strong>{profile.label}</strong>
-                <span>{profile.candidateFamily}</span>
-                <small>
-                  {gbFromMb(profile.modelSizeMinMb)}–{gbFromMb(profile.modelSizeMaxMb)} model · RAM min {gbFromMb(profile.minRamMb)}
-                </small>
-              </div>
-            )) ?? <span className="p0-muted">Waiting for model manifest…</span>}
+            {runtime?.profiles.length
+              ? runtime.profiles.map(profile => (
+                  <div className="p0-profile" key={profile.id}>
+                    <strong>{profile.label}</strong>
+                    <span>{profile.file}</span>
+                    <small>
+                      {gbFromBytes(profile.sizeBytes)} · context {profile.contextTarget}
+                      {profile.minRamMb > 0 && ` · RAM min ${gbFromMb(profile.minRamMb)}`}
+                    </small>
+                    <small className={profile.available ? "ok" : "pending"}>
+                      {profile.available ? `FOUND — ${profile.source}` : "NOT INSTALLED"}
+                    </small>
+                  </div>
+                ))
+              : <span className="p0-muted">No packaged model lock, so no profiles.</span>}
           </div>
-          <p className="p0-path">MANIFEST // {runtime?.modelManifestPath ?? "—"}</p>
+          <p className="p0-path">LOCK // {runtime?.modelLockPath ?? "—"}</p>
+          <p className="p0-path">MODELS // {runtime?.userModelsDir ?? "—"}</p>
+          <p className="p0-note">
+            Place a locked GGUF in that folder to install a profile. The file name, size and
+            SHA-256 must match the lock exactly; nothing else is ever loaded. A model shipped
+            inside a future Full Offline installer wins over one placed there by hand.
+          </p>
         </article>
 
         <article className="p0-panel p0-checks">

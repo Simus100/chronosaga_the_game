@@ -98,6 +98,22 @@ pub struct AutoDecision {
 /// `standard_available` reflects whether the Standard artifact is actually
 /// present and verified. AUTO must not choose a model that cannot be loaded, or
 /// the first thing the player sees is a fallback.
+/// The hardware floor AUTO applies to a profile, as `(min RAM MB, min cores)`.
+///
+/// The readiness panel shows these numbers and [`resolve_auto`] enforces them,
+/// so they are read from one place. P0.4-D5 exists because they used to live
+/// twice: once here and once in a hand-maintained JSON manifest that had drifted
+/// to a different context size and to filenames that no longer existed.
+///
+/// Lite has no floor by design. It is the profile that has to run wherever
+/// Chronosaga runs; if it cannot, the answer is Safe Mode, not a smaller model.
+pub fn hardware_floor(profile_id: &str) -> (u64, usize) {
+    match profile_id {
+        "standard" => (AUTO_STANDARD_MIN_RAM_MB, AUTO_STANDARD_MIN_CORES),
+        _ => (0, 0),
+    }
+}
+
 pub fn resolve_auto(
     hardware: HardwareSnapshot,
     standard_available: bool,
@@ -332,6 +348,43 @@ mod tests {
             );
             assert!(!decision.reason.is_empty(), "the choice must be explainable");
         }
+    }
+
+    #[test]
+    fn the_displayed_floor_is_the_enforced_floor() {
+        // One source of truth: whatever the readiness panel shows for Standard
+        // has to be exactly what AUTO refuses to go below.
+        let (min_ram, min_cores) = hardware_floor("standard");
+        assert_eq!(min_ram, AUTO_STANDARD_MIN_RAM_MB);
+        assert_eq!(min_cores, AUTO_STANDARD_MIN_CORES);
+
+        let just_below = HardwareSnapshot {
+            total_ram_mb: min_ram - 1,
+            logical_cores: min_cores,
+        };
+        assert_eq!(resolve_auto(just_below, true).resolved_profile, "lite");
+
+        let too_few_cores = HardwareSnapshot {
+            total_ram_mb: min_ram,
+            logical_cores: min_cores - 1,
+        };
+        assert_eq!(resolve_auto(too_few_cores, true).resolved_profile, "lite");
+
+        let exactly_at_the_floor = HardwareSnapshot {
+            total_ram_mb: min_ram,
+            logical_cores: min_cores,
+        };
+        assert_eq!(
+            resolve_auto(exactly_at_the_floor, true).resolved_profile,
+            "standard"
+        );
+    }
+
+    #[test]
+    fn lite_carries_no_hardware_floor() {
+        // Lite must remain reachable on any machine that can run the game.
+        assert_eq!(hardware_floor("lite"), (0, 0));
+        assert_eq!(hardware_floor("anything-else"), (0, 0));
     }
 
     #[test]
