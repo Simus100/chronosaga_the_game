@@ -18,6 +18,7 @@ use runtime_watcher::RuntimeWatcher;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -480,44 +481,158 @@ struct LocalAiModelStatus {
     problem: Option<String>,
 }
 
-/// Outcome of the once-per-session model integrity check, kept in Tauri state.
+/// Verified models and resolution problems, cached per profile.
 ///
-/// Held so the 1.28 GB digest is computed once at startup and never again on a
-/// status refresh.
-struct VerifiedModelState(Option<model_lock::VerifiedModel>, Option<String>);
+/// Hashing a multi-GB artifact is expensive, so each profile is verified at most
+/// once per application session: at startup for the default, and on first
+/// selection for the other.
+#[derive(Default)]
+struct ModelCache {
+    verified: BTreeMap<String, model_lock::VerifiedModel>,
+    problems: BTreeMap<String, String>,
+}
 
+struct ModelCacheState(Mutex<ModelCache>);
+
+/// The profile the desktop diagnostics currently target.
+///
+/// An application preference, deliberately not campaign state: selecting a
+/// profile must never touch the save or the authoritative WorldState.
+struct SelectedProfileState(Mutex<String>);
+
+/// Verify one profile, reusing the cached answer when there is one.
+fn verify_profile(
+    app: &AppHandle,
+    cache: &ModelCacheState,
+    profile_id: &str,
+) -> Result<model_lock::VerifiedModel, String> {
+    {
+        let guard = cache.0.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(model) = guard.verified.get(profile_id) {
+            return Ok(model.clone());
+        }
+    }
+
+    let resolved = model_lock::resolve_for_app(app, profile_id).map_err(|error| {
+        let message = error.message().to_string();
+        cache
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .problems
+            .insert(profile_id.to_string(), message.clone());
+        message
+    })?;
+
+    let label = resolved.label();
+    match resolved.verify_integrity() {
+        Ok(verified) => {
+            eprintln!(
+                "local AI model verified: {profile_id} = {label} (sha256 in {} ms)",
+                verified.verification_ms()
+            );
+            let mut guard = cache.0.lock().unwrap_or_else(|p| p.into_inner());
+            guard.problems.remove(profile_id);
+            guard
+                .verified
+                .insert(profile_id.to_string(), verified.clone());
+            Ok(verified)
+        }
+        Err(error) => {
+            eprintln!("local AI model {profile_id} integrity check failed: {}", error.message);
+            cache
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .problems
+                .insert(profile_id.to_string(), error.message.clone());
+            Err(error.message)
+        }
+    }
+}
+
+/// Status of the currently selected profile.
 #[tauri::command]
 fn get_local_ai_model_status(
     app: AppHandle,
-    verified: State<'_, VerifiedModelState>,
+    cache: State<'_, ModelCacheState>,
+    selected: State<'_, SelectedProfileState>,
 ) -> LocalAiModelStatus {
-    let fallback = |problem: String| LocalAiModelStatus {
-        profile_id: model_lock::LITE_PROFILE_ID.to_string(),
-        label: "Qwen3-1.7B Q4_K_M".to_string(),
-        resolved: false,
-        integrity_verified: false,
-        verification_ms: None,
-        path: String::new(),
-        license: "Apache-2.0".to_string(),
-        context_size: 0,
-        release_approved: false,
-        size_bytes: 0,
-        expected_sha256: String::new(),
-        status: "UNRESOLVED".to_string(),
-        artifact_repository: String::new(),
-        artifact_revision: String::new(),
-        problem: Some(problem),
+    let profile_id = selected.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    model_status(&app, &cache, &profile_id)
+}
+
+/// Status of every locked profile, for the diagnostic selector.
+///
+/// Does not hash: it reports what resolution alone can establish, plus whatever
+/// verification has already been cached. Choosing a profile is what triggers the
+/// digest.
+#[tauri::command]
+fn list_local_ai_profiles(
+    app: AppHandle,
+    cache: State<'_, ModelCacheState>,
+) -> Vec<LocalAiModelStatus> {
+    model_lock::KNOWN_PROFILE_IDS
+        .iter()
+        .map(|id| model_status(&app, &cache, id))
+        .collect()
+}
+
+/// Select the profile the runtime will load next.
+///
+/// React sends a profile id and nothing else: the path, the digest and the
+/// command line all stay on this side. An unknown id is refused rather than
+/// defaulted, and a running runtime is never silently replaced.
+#[tauri::command]
+fn select_local_ai_profile(
+    app: AppHandle,
+    profile_id: String,
+    cache: State<'_, ModelCacheState>,
+    selected: State<'_, SelectedProfileState>,
+    runtime: State<'_, LocalAiRuntimeState>,
+) -> Result<LocalAiModelStatus, String> {
+    if !model_lock::KNOWN_PROFILE_IDS.contains(&profile_id.as_str()) {
+        return Err(format!(
+            "unknown local AI profile '{profile_id}'; the lock declares {:?}",
+            model_lock::KNOWN_PROFILE_IDS
+        ));
+    }
+
+    // One model at a time: the runtime keeps whatever it was launched with until
+    // it is stopped.
+    let snapshot = runtime.snapshot();
+    if snapshot.pid.is_some() {
+        return Err(
+            "stop the local AI runtime before selecting another profile".to_string()
+        );
+    }
+
+    let verified = verify_profile(&app, &cache, &profile_id)?;
+    runtime.select_model(Some(&verified))?;
+    *selected.0.lock().unwrap_or_else(|p| p.into_inner()) = profile_id.clone();
+    eprintln!("local AI profile selected: {profile_id}");
+
+    Ok(model_status(&app, &cache, &profile_id))
+}
+
+/// Build the diagnostic view of one profile.
+fn model_status(app: &AppHandle, cache: &ModelCacheState, profile_id: &str) -> LocalAiModelStatus {
+    let cached = {
+        let guard = cache.0.lock().unwrap_or_else(|p| p.into_inner());
+        (
+            guard.verified.get(profile_id).cloned(),
+            guard.problems.get(profile_id).cloned(),
+        )
     };
 
-    // The verified model from startup is authoritative when present.
-    if let Some(verified_model) = &verified.0 {
-        let model = verified_model.model();
+    if let (Some(verified), _) = (&cached.0, &cached.1) {
+        let model = verified.model();
         return LocalAiModelStatus {
             profile_id: model.profile_id().to_string(),
             label: model.label(),
             resolved: true,
             integrity_verified: true,
-            verification_ms: Some(verified_model.verification_ms()),
+            verification_ms: Some(verified.verification_ms()),
             path: as_string(model.path()),
             license: model.license().to_string(),
             context_size: model.context_target(),
@@ -531,9 +646,7 @@ fn get_local_ai_model_status(
         };
     }
 
-    // Otherwise report what resolution alone could establish, and why the model
-    // is not usable.
-    match model_lock::resolve_lite(&app) {
+    match model_lock::resolve_for_app(app, profile_id) {
         Ok(model) => LocalAiModelStatus {
             profile_id: model.profile_id().to_string(),
             label: model.label(),
@@ -549,12 +662,27 @@ fn get_local_ai_model_status(
             status: model.status().to_string(),
             artifact_repository: model.artifact_repository().to_string(),
             artifact_revision: model.artifact_revision().to_string(),
-            problem: verified
+            problem: cached
                 .1
-                .clone()
-                .or_else(|| Some("model integrity has not been verified".to_string())),
+                .or_else(|| Some("model integrity has not been verified yet".to_string())),
         },
-        Err(error) => fallback(error.message().to_string()),
+        Err(error) => LocalAiModelStatus {
+            profile_id: profile_id.to_string(),
+            label: profile_id.to_uppercase(),
+            resolved: false,
+            integrity_verified: false,
+            verification_ms: None,
+            path: String::new(),
+            license: "Apache-2.0".to_string(),
+            context_size: 0,
+            release_approved: false,
+            size_bytes: 0,
+            expected_sha256: String::new(),
+            status: "UNRESOLVED".to_string(),
+            artifact_repository: String::new(),
+            artifact_revision: String::new(),
+            problem: Some(error.message().to_string()),
+        },
     }
 }
 
@@ -653,35 +781,15 @@ fn main() {
             // keeps its procedural fallback.
             // Resolve the locked Lite model. Its absence is not fatal: the
             // runtime simply starts model-less and inference stays unavailable.
-            // Resolve, then hash once. Only a verified artifact may be
+            // Verify the default profile once. Only a verified artifact may be
             // attached to the launch contract; a same-size impostor is refused
-            // here rather than handed to llama-server.
-            let (model, model_problem) = match model_lock::resolve_lite(handle) {
-                Ok(resolved) => {
-                    let label = resolved.label();
-                    let path = resolved.path().to_path_buf();
-                    match resolved.verify_integrity() {
-                        Ok(verified) => {
-                            eprintln!(
-                                "local AI model verified: {label} at {} (sha256 in {} ms)",
-                                path.display(),
-                                verified.verification_ms()
-                            );
-                            (Some(verified), None)
-                        }
-                        Err(error) => {
-                            eprintln!("local AI model integrity check failed: {}", error.message);
-                            (None, Some(error.message))
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!("local AI model unavailable: {}", error.message());
-                    (None, Some(error.message().to_string()))
-                }
-            };
+            // here rather than handed to llama-server. The other profile is
+            // verified when it is first selected.
+            let cache = ModelCacheState(Mutex::new(ModelCache::default()));
+            let default_profile = model_lock::LITE_PROFILE_ID;
+            let model = verify_profile(handle, &cache, default_profile).ok();
 
-            let model_state = model.clone();
+
             let manager = match runtime_lock::resolve(handle) {
                 Ok(runtime) => {
                     eprintln!(
@@ -714,7 +822,8 @@ fn main() {
                 }
             };
 
-            app.manage(VerifiedModelState(model_state, model_problem));
+            app.manage(cache);
+            app.manage(SelectedProfileState(Mutex::new(default_profile.to_string())));
             app.manage::<LocalAiRuntimeState>(manager.clone());
 
             // An observer we cannot start is a degraded local AI, not a dead
@@ -741,6 +850,8 @@ fn main() {
             start_local_ai_runtime,
             stop_local_ai_runtime,
             get_local_ai_model_status,
+            list_local_ai_profiles,
+            select_local_ai_profile,
             run_local_ai_smoke_inference
         ])
         .build(tauri::generate_context!())
