@@ -37,7 +37,9 @@ Implemented on `feature/p0-windows-runtime`:
   authoritative source for profiles, artifact names, sizes and digests. `models/manifest.json`
   is a planning document and is no longer packaged or read at runtime;
 - runtime check for the packaged `llama-server` resource;
-- automatic Lite/Standard/Procedural recommendation using the thresholds in the model manifest;
+- automatic Lite/Standard/Safe recommendation from `profile_orchestrator::resolve_auto`, the
+  single authoritative AUTO decision, using the hardware thresholds in
+  `profile_orchestrator::hardware_floor` and the artifact availability reported by the lock above;
 - desktop-only P0 diagnostics screen; the normal Web UI remains unchanged in a browser.
 
 GPU/VRAM probing is intentionally deferred to the acceleration benchmark stage; it is not faked in P0.1.

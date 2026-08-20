@@ -901,6 +901,138 @@ mod tests {
     }
 
     #[test]
+    fn auto_falls_back_when_standard_is_the_right_size_but_the_wrong_bytes() {
+        // The dangerous shape, because it passes every cheap check: the exact
+        // locked filename, the exact locked byte count, different contents. A
+        // half-finished download or a swapped file looks like this.
+        //
+        // Resolution must accept it, because resolution is only a location
+        // claim. The digest is what has to stop it, and it has to stop it before
+        // anything can be launched from it. This walks the same chain
+        // apply_local_ai_profile walks, with real files on disk.
+        use crate::local_ai_runtime::{serving_start_verdict, RuntimeConfig};
+        use crate::profile_orchestrator::{
+            fallback_chain, resolve_auto, summarise, HardwareSnapshot, ProfileAttempt,
+            RequestedProfile,
+        };
+
+        let directory = std::env::temp_dir().join("chronosaga-auto-corrupt-standard");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+
+        let genuine_standard = b"the real SmolLM3 weights".to_vec();
+        let impostor_standard = b"a different payload!!!!!".to_vec();
+        assert_eq!(
+            genuine_standard.len(),
+            impostor_standard.len(),
+            "the fixture only means something if the sizes match"
+        );
+        let genuine_lite = b"the real Qwen3 weights".to_vec();
+
+        fs::write(directory.join("SmolLM3-Q4_K_M.gguf"), &impostor_standard).unwrap();
+        fs::write(directory.join("Qwen3-1.7B-Q4_K_M.gguf"), &genuine_lite).unwrap();
+
+        let mut lock = dual_lock();
+        {
+            let lite = lock.profiles.get_mut("lite").unwrap();
+            lite.size_bytes = genuine_lite.len() as u64;
+            lite.sha256 = digest_of(&genuine_lite);
+        }
+        {
+            let standard = lock.profiles.get_mut("standard").unwrap();
+            standard.size_bytes = genuine_standard.len() as u64;
+            standard.sha256 = digest_of(&genuine_standard);
+        }
+
+        // AUTO sees a machine that comfortably qualifies for Standard, and an
+        // artifact that resolves. Resolution alone cannot tell it is corrupt.
+        let standard_resolves =
+            resolve_from(&lock, "standard", None, Some(&directory), None).is_ok();
+        assert!(
+            standard_resolves,
+            "name and size are correct, so resolution must succeed"
+        );
+
+        let decision = resolve_auto(
+            HardwareSnapshot {
+                total_ram_mb: 64 * 1024,
+                logical_cores: 24,
+            },
+            standard_resolves,
+        );
+        assert_eq!(decision.resolved_profile, "standard");
+
+        // Walk the product's chain: resolve, verify, and only then serve.
+        let mut attempts = Vec::new();
+        let mut serving = None;
+        for candidate in fallback_chain(&decision.resolved_profile) {
+            let resolved =
+                resolve_from(&lock, &candidate, None, Some(&directory), None).expect("resolvable");
+            match resolved.verify_integrity() {
+                Ok(verified) => {
+                    attempts.push(ProfileAttempt {
+                        profile_id: candidate,
+                        succeeded: true,
+                        error: None,
+                    });
+                    serving = Some(verified);
+                    break;
+                }
+                Err(error) => attempts.push(ProfileAttempt {
+                    profile_id: candidate,
+                    succeeded: false,
+                    error: Some(error.message),
+                }),
+            }
+        }
+
+        // The corrupt Standard never became a VerifiedModel.
+        assert_eq!(attempts[0].profile_id, "standard");
+        assert!(!attempts[0].succeeded);
+        assert!(
+            attempts[0]
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("refusing to load an unverified model")),
+            "{:?}",
+            attempts[0].error
+        );
+
+        // The fallback reached a Lite that really did verify.
+        let serving = serving.expect("Lite must serve");
+        assert_eq!(serving.model().profile_id(), "lite");
+
+        let outcome = summarise(RequestedProfile::Auto, &decision, attempts);
+        assert!(!outcome.safe_mode, "Lite verified, so this is not Safe Mode");
+        assert_eq!(outcome.active_profile.as_deref(), Some("lite"));
+        assert!(
+            outcome.fallback_reason.is_some(),
+            "a degraded session must say why"
+        );
+
+        // Whatever is served is served with --model, pointing at the verified
+        // artifact and at nothing else. This is the router-mode guarantee: the
+        // only launch contract that can exist here carries a model, and one
+        // without a model is refused before any spawn.
+        let spec = RuntimeConfig::loopback().with_model(&serving).launch_spec();
+        let arguments = spec.command_arguments();
+        let model_flag = arguments
+            .iter()
+            .position(|argument| argument == "--model")
+            .expect("every spawn must carry --model");
+        assert_eq!(
+            arguments[model_flag + 1],
+            serving.model().path().to_string_lossy()
+        );
+        assert!(serving_start_verdict(spec.model().is_some()).is_ok());
+        assert!(
+            serving_start_verdict(RuntimeConfig::loopback().launch_spec().model().is_some())
+                .is_err(),
+            "a model-less contract must still be refused"
+        );
+    }
+
+    #[test]
     fn the_shipped_lock_file_parses_and_declares_lite() {
         // Guards the real config against drifting away from this struct.
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
