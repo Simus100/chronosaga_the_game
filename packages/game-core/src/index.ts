@@ -5,4 +5,5 @@ export * from "./state/delayed-consequences";
 export * from "./events/eligibility";
 export * from "./events/select-event";
 export * from "./events/resolve-choice";
+export * from "./events/validate-event";
 export * from "./rng/seeded-rng";
