@@ -73,7 +73,9 @@ fn resolve_model_from_lock(profile_id: &str) -> Option<crate::model_lock::Verifi
         .join("../../../config/local-ai-models.lock.json");
     let lock: crate::model_lock::ModelLock =
         serde_json::from_str(&fs::read_to_string(lock_path).ok()?).ok()?;
-    let resolved = crate::model_lock::resolve_profile(&lock, profile_id, Some(&workspace)).ok()?;
+    let resolved =
+        crate::model_lock::resolve_from(&lock, profile_id, None, None, Some(&workspace))
+            .ok()?;
 
     // The real digest over 1.28 GB, which is also how the E2E run measures it.
     let started = Instant::now();

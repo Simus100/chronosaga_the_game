@@ -8,8 +8,18 @@
 //! `*.gguf`. Everything comes from `config/local-ai-models.lock.json`, so a
 //! stray model dropped into the workspace can never be picked up by accident.
 //!
-//! P0.3-C resolves `lite` only. The schema already carries a map of profiles so
-//! Standard slots in later without a redesign.
+//! Resolution order is explicit and ordered, mirroring [`crate::runtime_lock`]:
+//!
+//! 1. **Packaged** — `resources/models/`, where the Full Offline bundle will put
+//!    the weights. Empty in the current small installer, and supported anyway so
+//!    populating it later needs no redesign.
+//! 2. **User library** — `%LOCALAPPDATA%\it.universalis.chronosaga\models\`,
+//!    the one place a player may legitimately put a model themselves.
+//! 3. **Development workspace** — `CHRONOSAGA_WORKSPACE_ROOT` plus the path the
+//!    lock names. Last, and for working from a checkout.
+//!
+//! Before P0.4-D only the third existed, which is why an installed Chronosaga
+//! could never find a model without a developer environment variable.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -40,6 +50,39 @@ pub const STANDARD_PROFILE_ID: &str = "standard";
 /// no player-facing profile manager. Those belong to Phase B.
 pub const KNOWN_PROFILE_IDS: [&str; 2] = [LITE_PROFILE_ID, STANDARD_PROFILE_ID];
 
+/// Resource-relative directory the Full Offline bundle will populate.
+///
+/// Deliberately supported while still empty: the resolver must already prefer it
+/// so shipping the weights later is a packaging change, not an architecture one.
+pub const PACKAGED_MODELS_DIR: &str = "models";
+
+/// Directory, under the application data folder, where a player may place models.
+///
+/// The same folder already holds the save database and the sidecar log, so it is
+/// the natural home and needs no new permission or install step.
+pub const USER_MODELS_DIR_NAME: &str = "models";
+
+/// Where a model artifact was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSource {
+    /// Shipped inside the installer.
+    Packaged,
+    /// The player's own model directory under the application data folder.
+    UserLibrary,
+    /// The external development workspace. Last, and development-only.
+    DevelopmentWorkspace,
+}
+
+impl ModelSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Packaged => "packaged",
+            Self::UserLibrary => "user model library",
+            Self::DevelopmentWorkspace => "development workspace",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelLock {
@@ -69,7 +112,7 @@ pub struct LockedModel {
 ///
 /// "Resolved" is a location claim, not an integrity claim: the bytes have not
 /// been read. Fields are private and there is no public constructor, so the only
-/// way to obtain one is [`resolve_profile`] reading the committed lock. Nothing
+/// way to obtain one is [`resolve_from`] reading the committed lock. Nothing
 /// else in the crate can invent a model pointing at an arbitrary path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedModel {
@@ -85,11 +128,16 @@ pub struct ResolvedModel {
     status: String,
     artifact_repository: String,
     artifact_revision: String,
+    source: ModelSource,
 }
 
 impl ResolvedModel {
     pub fn profile_id(&self) -> &str {
         &self.profile_id
+    }
+    /// Which of the ordered sources actually held the artifact.
+    pub fn source(&self) -> ModelSource {
+        self.source
     }
     pub fn path(&self) -> &Path {
         &self.path
@@ -161,6 +209,7 @@ impl ResolvedModel {
             status: "P0_BENCHMARK_CANDIDATE".to_string(),
             artifact_repository: "ggml-org/Qwen3-1.7B-GGUF".to_string(),
             artifact_revision: "daeb8e2d".to_string(),
+            source: ModelSource::DevelopmentWorkspace,
         }
     }
 
@@ -262,8 +311,6 @@ fn stream_sha256(path: &Path) -> std::io::Result<String> {
 /// Why a locked model could not be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelResolutionError {
-    /// No workspace root, so nothing can be located.
-    WorkspaceUnavailable(String),
     /// The lock has no such profile.
     UnknownProfile(String),
     /// The artifact is not where the lock says it should be.
@@ -275,10 +322,7 @@ pub enum ModelResolutionError {
 impl ModelResolutionError {
     pub fn message(&self) -> &str {
         match self {
-            Self::WorkspaceUnavailable(m)
-            | Self::UnknownProfile(m)
-            | Self::Missing(m)
-            | Self::Mismatch(m) => m,
+            Self::UnknownProfile(m) | Self::Missing(m) | Self::Mismatch(m) => m,
         }
     }
 }
@@ -288,18 +332,30 @@ fn file_size(path: &Path) -> Option<u64> {
     fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
 }
 
-/// Resolve one profile against a workspace root.
+/// Resolve one profile against the ordered model sources.
 ///
 /// Pure apart from the filesystem, and independent of Tauri, so the decision
 /// table is testable without a 1.28 GB artifact.
 ///
-/// Checks the path, the exact locked filename and the size. It deliberately does
-/// NOT hash: resolution is a location claim. The digest is checked once per
-/// session by [`ResolvedModel::verify_integrity`], and only the resulting
-/// [`VerifiedModel`] may be attached to a launch contract.
-pub fn resolve_profile(
+/// Checks the exact locked filename and the size at each source in turn, and
+/// stops at the first that matches. It deliberately does NOT hash: resolution is
+/// a location claim. The digest is checked once per session by
+/// [`ResolvedModel::verify_integrity`], and only the resulting [`VerifiedModel`]
+/// may be attached to a launch contract.
+///
+/// The packaged and user directories are flat — the locked filename sits
+/// directly inside them — because that is the only instruction a player can
+/// reasonably follow, and the only layout an installer needs to produce. The
+/// development workspace keeps the nested layout the lock names, so existing
+/// checkouts are untouched.
+///
+/// A wrong-sized file at an early source never shadows a correct one later: the
+/// mismatch is remembered and only reported if nothing else satisfies the lock.
+pub fn resolve_from(
     lock: &ModelLock,
     profile_id: &str,
+    packaged_models_dir: Option<&Path>,
+    user_models_dir: Option<&Path>,
     workspace_root: Option<&str>,
 ) -> Result<ResolvedModel, ModelResolutionError> {
     let Some(locked) = lock.profiles.get(profile_id) else {
@@ -308,65 +364,114 @@ pub fn resolve_profile(
         )));
     };
 
-    let Some(root) = workspace_root.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Err(ModelResolutionError::WorkspaceUnavailable(format!(
-            "{WORKSPACE_ROOT_ENV} is not set, so the {profile_id} model cannot be located"
-        )));
-    };
+    let mut candidates: Vec<(ModelSource, PathBuf)> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
 
-    let directory = Path::new(root).join(&locked.external_path_relative_to_workspace_root);
-    let path = directory.join(&locked.artifact_filename);
-
-    let Some(size) = file_size(&path) else {
-        return Err(ModelResolutionError::Missing(format!(
-            "{} is missing at {}; run `pnpm verify:local-ai-models`",
-            locked.artifact_filename,
-            path.display()
-        )));
-    };
-
-    if size != locked.size_bytes {
-        return Err(ModelResolutionError::Mismatch(format!(
-            "{} is {size} bytes but the lock expects {}; refusing to load an unverified model",
-            locked.artifact_filename, locked.size_bytes
-        )));
+    match packaged_models_dir {
+        Some(directory) => candidates.push((
+            ModelSource::Packaged,
+            directory.join(&locked.artifact_filename),
+        )),
+        None => notes.push("no packaged model directory in this build".to_string()),
     }
 
-    Ok(ResolvedModel {
-        profile_id: locked.profile_id.clone(),
-        path,
-        family: locked.family.clone(),
-        quantization: locked.quantization.clone(),
-        size_bytes: locked.size_bytes,
-        sha256: locked.sha256.clone(),
-        license: locked.license.clone(),
-        context_target: locked.context_target,
-        release_approved: locked.release_approved,
-        status: locked.status.clone(),
-        artifact_repository: locked.artifact_repository.clone(),
-        artifact_revision: locked.artifact_revision.clone(),
-    })
+    match user_models_dir {
+        Some(directory) => candidates.push((
+            ModelSource::UserLibrary,
+            directory.join(&locked.artifact_filename),
+        )),
+        None => notes.push("the user model directory could not be resolved".to_string()),
+    }
+
+    match workspace_root.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(root) => candidates.push((
+            ModelSource::DevelopmentWorkspace,
+            Path::new(root)
+                .join(&locked.external_path_relative_to_workspace_root)
+                .join(&locked.artifact_filename),
+        )),
+        None => notes.push(format!("{WORKSPACE_ROOT_ENV} is not set")),
+    }
+
+    let mut mismatch: Option<String> = None;
+
+    for (source, path) in candidates {
+        match file_size(&path) {
+            Some(size) if size == locked.size_bytes => {
+                return Ok(ResolvedModel {
+                    profile_id: locked.profile_id.clone(),
+                    path,
+                    family: locked.family.clone(),
+                    quantization: locked.quantization.clone(),
+                    size_bytes: locked.size_bytes,
+                    sha256: locked.sha256.clone(),
+                    license: locked.license.clone(),
+                    context_target: locked.context_target,
+                    release_approved: locked.release_approved,
+                    status: locked.status.clone(),
+                    artifact_repository: locked.artifact_repository.clone(),
+                    artifact_revision: locked.artifact_revision.clone(),
+                    source,
+                })
+            }
+            Some(size) => {
+                notes.push(format!("wrong size in the {}", source.label()));
+                mismatch.get_or_insert(format!(
+                    "{} in the {} is {size} bytes but the lock expects {}; \
+                     refusing to load an unverified model",
+                    locked.artifact_filename,
+                    source.label(),
+                    locked.size_bytes
+                ));
+            }
+            None => notes.push(format!("not in the {}", source.label())),
+        }
+    }
+
+    if let Some(message) = mismatch {
+        return Err(ModelResolutionError::Mismatch(message));
+    }
+
+    Err(ModelResolutionError::Missing(format!(
+        "{} was not found in any supported location ({}); place it in the model \
+         directory or run `pnpm verify:local-ai-models`",
+        locked.artifact_filename,
+        notes.join("; ")
+    )))
 }
 
-/// Read the model lock, preferring a packaged copy when one exists.
-pub fn load_lock(app: &AppHandle) -> Result<ModelLock, String> {
-    let mut candidates = Vec::new();
-    if let Ok(bundled) = app
-        .path()
-        .resolve(MODEL_LOCK_RELATIVE_PATH, BaseDirectory::Resource)
-    {
-        candidates.push(bundled);
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../")
-            .join(MODEL_LOCK_RELATIVE_PATH),
-    );
+/// The packaged model directory, when this build shipped one.
+pub fn packaged_models_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .resolve(PACKAGED_MODELS_DIR, BaseDirectory::Resource)
+        .ok()
+        .filter(|directory| directory.is_dir())
+}
 
-    let path = candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| format!("No {MODEL_LOCK_RELATIVE_PATH} found in resources or checkout"))?;
+/// The directory a player may place models in, creating it if it is absent.
+///
+/// Created eagerly so the folder exists to be found: telling someone to put a
+/// file somewhere that does not exist yet is a bad instruction.
+pub fn user_models_dir(app: &AppHandle) -> Option<PathBuf> {
+    let directory = app
+        .path()
+        .app_local_data_dir()
+        .ok()?
+        .join(USER_MODELS_DIR_NAME);
+    let _ = fs::create_dir_all(&directory);
+    Some(directory)
+}
+
+/// Where the authoritative model lock was resolved from.
+///
+/// Reported by the diagnostics so an incomplete installation is visible as a
+/// path problem rather than as an unexplained absence of profiles.
+pub fn lock_path(app: &AppHandle) -> Result<PathBuf, String> {
+    crate::runtime_lock::packaged_metadata_path(app, MODEL_LOCK_RELATIVE_PATH)
+}
+
+pub fn load_lock(app: &AppHandle) -> Result<ModelLock, String> {
+    let path = crate::runtime_lock::packaged_metadata_path(app, MODEL_LOCK_RELATIVE_PATH)?;
 
     let contents = fs::read_to_string(&path)
         .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
@@ -383,8 +488,16 @@ pub fn resolve_for_app(
     profile_id: &str,
 ) -> Result<ResolvedModel, ModelResolutionError> {
     let lock = load_lock(app).map_err(ModelResolutionError::Missing)?;
+    let packaged = packaged_models_dir(app);
+    let user = user_models_dir(app);
     let workspace = env::var(WORKSPACE_ROOT_ENV).ok();
-    resolve_profile(&lock, profile_id, workspace.as_deref())
+    resolve_from(
+        &lock,
+        profile_id,
+        packaged.as_deref(),
+        user.as_deref(),
+        workspace.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -431,7 +544,7 @@ mod tests {
     fn the_locked_lite_artifact_resolves_from_the_workspace() {
         let root = workspace_with("ok", "Qwen3-1.7B-Q4_K_M.gguf", 64);
         let resolved =
-            resolve_profile(&lock(), "lite", Some(root.to_str().unwrap())).expect("must resolve");
+            resolve_from(&lock(), "lite", None, None, Some(root.to_str().unwrap())).expect("must resolve");
 
         assert_eq!(resolved.profile_id, "lite");
         assert_eq!(resolved.label(), "Qwen3-1.7B Q4_K_M");
@@ -443,8 +556,8 @@ mod tests {
     #[test]
     fn resolution_is_deterministic_for_the_same_workspace() {
         let root = workspace_with("deterministic", "Qwen3-1.7B-Q4_K_M.gguf", 64);
-        let first = resolve_profile(&lock(), "lite", Some(root.to_str().unwrap())).unwrap();
-        let second = resolve_profile(&lock(), "lite", Some(root.to_str().unwrap())).unwrap();
+        let first = resolve_from(&lock(), "lite", None, None, Some(root.to_str().unwrap())).unwrap();
+        let second = resolve_from(&lock(), "lite", None, None, Some(root.to_str().unwrap())).unwrap();
         assert_eq!(first, second);
     }
 
@@ -454,7 +567,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("runtime-assets/models/lite/qwen3")).unwrap();
 
-        let error = resolve_profile(&lock(), "lite", Some(root.to_str().unwrap()))
+        let error = resolve_from(&lock(), "lite", None, None, Some(root.to_str().unwrap()))
             .expect_err("nothing to resolve");
         assert!(matches!(error, ModelResolutionError::Missing(_)));
         assert!(error.message().contains("verify:local-ai-models"));
@@ -467,7 +580,7 @@ mod tests {
         // accident this design prevents.
         let root = workspace_with("stray", "some-other-model-Q8_0.gguf", 64);
 
-        let error = resolve_profile(&lock(), "lite", Some(root.to_str().unwrap()))
+        let error = resolve_from(&lock(), "lite", None, None, Some(root.to_str().unwrap()))
             .expect_err("a stray artifact must not satisfy the lock");
         assert!(matches!(error, ModelResolutionError::Missing(_)));
         assert!(error.message().contains("Qwen3-1.7B-Q4_K_M.gguf"));
@@ -477,7 +590,7 @@ mod tests {
     fn an_artifact_of_the_wrong_size_is_refused() {
         let root = workspace_with("truncated", "Qwen3-1.7B-Q4_K_M.gguf", 10);
 
-        let error = resolve_profile(&lock(), "lite", Some(root.to_str().unwrap()))
+        let error = resolve_from(&lock(), "lite", None, None, Some(root.to_str().unwrap()))
             .expect_err("a truncated artifact must be refused");
         assert!(matches!(error, ModelResolutionError::Mismatch(_)));
         assert!(
@@ -488,13 +601,168 @@ mod tests {
     }
 
     #[test]
-    fn no_workspace_means_no_model() {
-        let error = resolve_profile(&lock(), "lite", None).expect_err("nothing to resolve");
-        assert!(matches!(error, ModelResolutionError::WorkspaceUnavailable(_)));
-        assert!(error.message().contains(WORKSPACE_ROOT_ENV));
+    fn no_source_at_all_means_no_model() {
+        // With every source absent the error must name each place that was
+        // considered, so a player is told what to do rather than that something
+        // unspecified went wrong.
+        let error = resolve_from(&lock(), "lite", None, None, None).expect_err("nothing to resolve");
+        assert!(matches!(error, ModelResolutionError::Missing(_)));
+        assert!(error.message().contains(WORKSPACE_ROOT_ENV), "{}", error.message());
+        assert!(error.message().contains("packaged"), "{}", error.message());
+        assert!(error.message().contains("user model"), "{}", error.message());
 
-        let blank = resolve_profile(&lock(), "lite", Some("   ")).expect_err("blank is not a path");
-        assert!(matches!(blank, ModelResolutionError::WorkspaceUnavailable(_)));
+        let blank = resolve_from(&lock(), "lite", None, None, Some("   "))
+            .expect_err("blank is not a path");
+        assert!(matches!(blank, ModelResolutionError::Missing(_)));
+    }
+
+    /// A flat directory holding an artifact of `size` bytes under the locked name.
+    fn flat_dir_with(label: &str, name: &str, size: usize) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("chronosaga-flat-{label}"));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(name), vec![b'g'; size]).unwrap();
+        directory
+    }
+
+    #[test]
+    fn the_packaged_directory_wins_over_everything_else() {
+        // What the Full Offline bundle will rely on: once the installer ships
+        // weights, they are what runs, whatever else is on the machine.
+        let packaged = flat_dir_with("packaged", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+        let user = flat_dir_with("user-loses", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+        let workspace = workspace_with("ws-loses", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+
+        let resolved = resolve_from(
+            &lock(),
+            "lite",
+            Some(&packaged),
+            Some(&user),
+            Some(workspace.to_str().unwrap()),
+        )
+        .expect("must resolve");
+
+        assert_eq!(resolved.source(), ModelSource::Packaged);
+        assert!(resolved.path().starts_with(&packaged));
+    }
+
+    #[test]
+    fn the_user_library_is_used_when_nothing_was_packaged() {
+        // The path that makes an installed Chronosaga usable at all today.
+        let user = flat_dir_with("user-wins", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+        let workspace = workspace_with("ws-second", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+
+        let resolved = resolve_from(
+            &lock(),
+            "lite",
+            None,
+            Some(&user),
+            Some(workspace.to_str().unwrap()),
+        )
+        .expect("must resolve");
+
+        assert_eq!(resolved.source(), ModelSource::UserLibrary);
+        assert!(resolved.path().starts_with(&user));
+    }
+
+    #[test]
+    fn the_development_workspace_is_the_last_resort() {
+        let workspace = workspace_with("ws-last", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+
+        let resolved = resolve_from(
+            &lock(),
+            "lite",
+            None,
+            None,
+            Some(workspace.to_str().unwrap()),
+        )
+        .expect("must resolve");
+
+        assert_eq!(resolved.source(), ModelSource::DevelopmentWorkspace);
+    }
+
+    #[test]
+    fn an_installed_app_needs_no_environment_variable() {
+        // The defect P0.4-D4 closes: before this, a model could only ever be
+        // found through a developer environment variable.
+        let user = flat_dir_with("no-env", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+
+        let resolved =
+            resolve_from(&lock(), "lite", None, Some(&user), None).expect("must resolve");
+
+        assert_eq!(resolved.source(), ModelSource::UserLibrary);
+    }
+
+    #[test]
+    fn a_damaged_early_copy_never_shadows_a_good_later_one() {
+        // A truncated download in the user folder must not make a correct
+        // packaged or workspace copy unreachable.
+        let user = flat_dir_with("truncated-user", "Qwen3-1.7B-Q4_K_M.gguf", 10);
+        let workspace = workspace_with("good-ws", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+
+        let resolved = resolve_from(
+            &lock(),
+            "lite",
+            None,
+            Some(&user),
+            Some(workspace.to_str().unwrap()),
+        )
+        .expect("the good copy must still be reachable");
+
+        assert_eq!(resolved.source(), ModelSource::DevelopmentWorkspace);
+    }
+
+    #[test]
+    fn a_damaged_copy_is_reported_when_it_is_the_only_one() {
+        let user = flat_dir_with("truncated-only", "Qwen3-1.7B-Q4_K_M.gguf", 10);
+
+        let error = resolve_from(&lock(), "lite", None, Some(&user), None)
+            .expect_err("a truncated artifact must be refused");
+
+        assert!(matches!(error, ModelResolutionError::Mismatch(_)));
+        assert!(
+            error.message().contains("refusing to load an unverified model"),
+            "{}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn a_stray_model_in_the_user_library_is_never_substituted() {
+        // The user directory is the one place an arbitrary file can appear, so
+        // the "never scan for *.gguf" rule matters most there.
+        let user = flat_dir_with("stray-user", "some-other-model-Q8_0.gguf", 64);
+
+        let error = resolve_from(&lock(), "lite", None, Some(&user), None)
+            .expect_err("a stray artifact must not satisfy the lock");
+
+        assert!(matches!(error, ModelResolutionError::Missing(_)));
+        assert!(error.message().contains("Qwen3-1.7B-Q4_K_M.gguf"));
+    }
+
+    #[test]
+    fn each_source_keeps_its_own_layout() {
+        // Flat for packaged and user, nested for the workspace. Getting this
+        // wrong silently makes one of the three sources dead.
+        let user = flat_dir_with("layout", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+        let flat = resolve_from(&lock(), "lite", None, Some(&user), None).unwrap();
+        assert_eq!(flat.path(), user.join("Qwen3-1.7B-Q4_K_M.gguf"));
+
+        let workspace = workspace_with("layout-ws", "Qwen3-1.7B-Q4_K_M.gguf", 64);
+        let nested = resolve_from(
+            &lock(),
+            "lite",
+            None,
+            None,
+            Some(workspace.to_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(
+            nested.path(),
+            workspace
+                .join("runtime-assets/models/lite/qwen3")
+                .join("Qwen3-1.7B-Q4_K_M.gguf")
+        );
     }
 
     /// A lock holding both profiles, each pointing at its own directory.
@@ -524,12 +792,12 @@ mod tests {
         let lock = dual_lock();
         let workspace = root.to_str().unwrap();
 
-        let lite = resolve_profile(&lock, "lite", Some(workspace)).expect("lite must resolve");
+        let lite = resolve_from(&lock, "lite", None, None, Some(workspace)).expect("lite must resolve");
         assert_eq!(lite.profile_id(), "lite");
         assert!(lite.path().ends_with("Qwen3-1.7B-Q4_K_M.gguf"));
 
         let standard =
-            resolve_profile(&lock, "standard", Some(workspace)).expect("standard must resolve");
+            resolve_from(&lock, "standard", None, None, Some(workspace)).expect("standard must resolve");
         assert_eq!(standard.profile_id(), "standard");
         assert!(standard.path().ends_with("SmolLM3-Q4_K_M.gguf"));
 
@@ -552,7 +820,7 @@ mod tests {
     fn an_unknown_profile_is_refused_rather_than_defaulted() {
         // Asking for Standard before it is locked must fail, never silently fall
         // back to Lite.
-        let error = resolve_profile(&lock(), "standard", Some("D:/whatever"))
+        let error = resolve_from(&lock(), "standard", None, None, Some("D:/whatever"))
             .expect_err("standard is not locked yet");
         assert!(matches!(error, ModelResolutionError::UnknownProfile(_)));
         assert!(error.message().contains("standard"));
