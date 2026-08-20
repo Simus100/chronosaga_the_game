@@ -70,8 +70,13 @@ struct ModelProfileSummary {
     license: String,
     status: String,
     release_approved: bool,
+    /// Provisional planning guidance the player needs before choosing. Not the
+    /// AUTO floor: for Lite those are different numbers with different meanings.
     min_ram_mb: u64,
+    recommended_ram_mb: u64,
     min_logical_cores: usize,
+    gpu_required: bool,
+    trade_off: String,
     /// Whether the artifact is where one of the ordered sources can see it.
     available: bool,
     /// Which source holds it, when one does.
@@ -242,7 +247,10 @@ fn profile_summaries(app: &AppHandle, lock: &model_lock::ModelLock) -> Vec<Model
         .iter()
         .filter_map(|id| lock.profiles.get(*id).map(|locked| (*id, locked)))
         .map(|(id, locked)| {
-            let (min_ram_mb, min_logical_cores) = profile_orchestrator::hardware_floor(id);
+            // Player-facing planning guidance, which for Standard *is* the AUTO
+            // threshold reused rather than a second constant. Reading the AUTO
+            // floor directly would tell a player Lite needs no RAM at all.
+            let guidance = profile_orchestrator::guidance(id);
             let (available, source, problem) = match model_lock::resolve_for_app(app, id) {
                 Ok(resolved) => (true, Some(resolved.source().label().to_string()), None),
                 Err(error) => (false, None, Some(error.message().to_string())),
@@ -258,8 +266,11 @@ fn profile_summaries(app: &AppHandle, lock: &model_lock::ModelLock) -> Vec<Model
                 license: locked.license.clone(),
                 status: locked.status.clone(),
                 release_approved: locked.release_approved,
-                min_ram_mb,
-                min_logical_cores,
+                min_ram_mb: guidance.map(|g| g.min_ram_mb).unwrap_or_default(),
+                recommended_ram_mb: guidance.map(|g| g.recommended_ram_mb).unwrap_or_default(),
+                min_logical_cores: guidance.map(|g| g.min_logical_cores).unwrap_or_default(),
+                gpu_required: guidance.is_some_and(|g| g.gpu_required),
+                trade_off: guidance.map(|g| g.trade_off.to_string()).unwrap_or_default(),
                 available,
                 source,
                 problem,
@@ -569,22 +580,15 @@ fn verify_profile(
         }
     }
 
-    let resolved = model_lock::resolve_for_app(app, profile_id).map_err(|error| {
-        let message = error.message().to_string();
-        cache
-            .0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .problems
-            .insert(profile_id.to_string(), message.clone());
-        message
-    })?;
-
-    let label = resolved.label();
-    match resolved.verify_integrity() {
+    // The digest-aware walk: it tries every source in order and only stops at a
+    // copy whose bytes match. A corrupt copy in an earlier source is skipped, so
+    // a damaged packaged model cannot make a good user copy unreachable.
+    match model_lock::verify_for_app(app, profile_id) {
         Ok(verified) => {
             eprintln!(
-                "local AI model verified: {profile_id} = {label} (sha256 in {} ms)",
+                "local AI model verified: {profile_id} = {} from the {} (sha256 in {} ms)",
+                verified.model().label(),
+                verified.model().source().label(),
                 verified.verification_ms()
             );
             let mut guard = cache.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -595,14 +599,15 @@ fn verify_profile(
             Ok(verified)
         }
         Err(error) => {
-            eprintln!("local AI model {profile_id} integrity check failed: {}", error.message);
+            let message = error.message().to_string();
+            eprintln!("local AI model {profile_id} could not be verified: {message}");
             cache
                 .0
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .problems
-                .insert(profile_id.to_string(), error.message.clone());
-            Err(error.message)
+                .insert(profile_id.to_string(), message.clone());
+            Err(message)
         }
     }
 }

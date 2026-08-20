@@ -322,11 +322,17 @@ export function DesktopP0Screen() {
                     <strong>{profile.label}</strong>
                     <span>{profile.file}</span>
                     <small>
-                      {gbFromBytes(profile.sizeBytes)} · context {profile.contextTarget}
-                      {profile.minRamMb > 0 && ` · RAM min ${gbFromMb(profile.minRamMb)}`}
+                      Disk {gbFromBytes(profile.sizeBytes)} · context {profile.contextTarget}
                     </small>
+                    <small>
+                      RAM min {gbFromMb(profile.minRamMb)} · recommended{" "}
+                      {gbFromMb(profile.recommendedRamMb)} · {profile.minLogicalCores}+ cores ·
+                      GPU {profile.gpuRequired ? "required" : "not required"}
+                    </small>
+                    <small>{profile.tradeOff}</small>
                     <small className={profile.available ? "ok" : "pending"}>
                       {profile.available ? `FOUND — ${profile.source}` : "NOT INSTALLED"}
+                      {!profile.releaseApproved && " · P0 CANDIDATE, NOT RELEASE APPROVED"}
                     </small>
                   </div>
                 ))
@@ -337,7 +343,9 @@ export function DesktopP0Screen() {
           <p className="p0-note">
             Place a locked GGUF in that folder to install a profile. The file name, size and
             SHA-256 must match the lock exactly; nothing else is ever loaded. A model shipped
-            inside a future Full Offline installer wins over one placed there by hand.
+            inside a future Full Offline installer wins over one placed there by hand, and a
+            copy that fails its digest is skipped in favour of a good copy further down.
+            RAM and core figures are provisional P0 planning targets, not final requirements.
           </p>
         </article>
 

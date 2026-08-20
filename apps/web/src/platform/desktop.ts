@@ -34,8 +34,13 @@ export interface P0ModelProfile {
   license: string;
   status: string;
   releaseApproved: boolean;
+  /** Provisional P0 planning guidance, not a finalised requirement. */
   minRamMb: number;
+  recommendedRamMb: number;
   minLogicalCores: number;
+  gpuRequired: boolean;
+  /** One line of quality/speed trade-off. */
+  tradeOff: string;
   available: boolean;
   /** "packaged", "user model library" or "development workspace". */
   source?: string | null;

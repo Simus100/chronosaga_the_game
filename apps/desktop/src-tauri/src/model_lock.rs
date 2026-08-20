@@ -20,6 +20,19 @@
 //!
 //! Before P0.4-D only the third existed, which is why an installed Chronosaga
 //! could never find a model without a developer environment variable.
+//!
+//! Two resolutions, deliberately different in cost:
+//!
+//! * [`resolve_from`] is **cheap**: filename and size only, no bytes read. It
+//!   answers "is this profile installed?" for the diagnostics panel and for the
+//!   AUTO availability question, which are asked on every status refresh.
+//! * [`verify_from`] is **authoritative for serving**: it walks the same ordered
+//!   sources and returns the first copy whose bytes match the locked digest.
+//!   A corrupt copy in an earlier source is skipped rather than fatal, so a
+//!   damaged packaged model cannot shadow a good one in the user library.
+//!
+//! Only [`verify_from`] can produce a [`VerifiedModel`], and only a
+//! [`VerifiedModel`] may be attached to a launch contract.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -332,6 +345,145 @@ fn file_size(path: &Path) -> Option<u64> {
     fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
 }
 
+/// The ordered places one profile's artifact may live.
+///
+/// Shared by the cheap and the verified resolutions so the two can never walk
+/// different sources or a different order. The second return value collects the
+/// sources that could not even be considered, for the error message.
+fn candidates_for(
+    locked: &LockedModel,
+    packaged_models_dir: Option<&Path>,
+    user_models_dir: Option<&Path>,
+    workspace_root: Option<&str>,
+) -> (Vec<(ModelSource, PathBuf)>, Vec<String>) {
+    let mut candidates = Vec::new();
+    let mut notes = Vec::new();
+
+    match packaged_models_dir {
+        Some(directory) => candidates.push((
+            ModelSource::Packaged,
+            directory.join(&locked.artifact_filename),
+        )),
+        None => notes.push("no packaged model directory in this build".to_string()),
+    }
+
+    match user_models_dir {
+        Some(directory) => candidates.push((
+            ModelSource::UserLibrary,
+            directory.join(&locked.artifact_filename),
+        )),
+        None => notes.push("the user model directory could not be resolved".to_string()),
+    }
+
+    match workspace_root.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(root) => candidates.push((
+            ModelSource::DevelopmentWorkspace,
+            Path::new(root)
+                .join(&locked.external_path_relative_to_workspace_root)
+                .join(&locked.artifact_filename),
+        )),
+        None => notes.push(format!("{WORKSPACE_ROOT_ENV} is not set")),
+    }
+
+    (candidates, notes)
+}
+
+/// Build the located model for one candidate. Still only a location claim.
+fn located(locked: &LockedModel, path: PathBuf, source: ModelSource) -> ResolvedModel {
+    ResolvedModel {
+        profile_id: locked.profile_id.clone(),
+        path,
+        family: locked.family.clone(),
+        quantization: locked.quantization.clone(),
+        size_bytes: locked.size_bytes,
+        sha256: locked.sha256.clone(),
+        license: locked.license.clone(),
+        context_target: locked.context_target,
+        release_approved: locked.release_approved,
+        status: locked.status.clone(),
+        artifact_repository: locked.artifact_repository.clone(),
+        artifact_revision: locked.artifact_revision.clone(),
+        source,
+    }
+}
+
+/// Resolve one profile for serving, digest included.
+///
+/// The authoritative path: it walks the ordered sources and returns the first
+/// copy whose bytes actually match the lock. A candidate with the right name and
+/// the right size but the wrong contents is **skipped, not fatal** — the search
+/// continues into the next source for the same profile.
+///
+/// That distinction is the whole point. Stopping at the first size match would
+/// let a corrupt packaged Standard shadow a perfectly good user copy, and the
+/// profile would degrade to Lite or Safe Mode while verified bytes sat unused
+/// one source further down.
+///
+/// Expensive by construction, so it is called when something is about to be
+/// served, never on a status refresh. [`resolve_from`] answers the cheap
+/// question.
+pub fn verify_from(
+    lock: &ModelLock,
+    profile_id: &str,
+    packaged_models_dir: Option<&Path>,
+    user_models_dir: Option<&Path>,
+    workspace_root: Option<&str>,
+) -> Result<VerifiedModel, ModelResolutionError> {
+    let Some(locked) = lock.profiles.get(profile_id) else {
+        return Err(ModelResolutionError::UnknownProfile(format!(
+            "the model lock declares no '{profile_id}' profile"
+        )));
+    };
+
+    let (candidates, mut notes) = candidates_for(
+        locked,
+        packaged_models_dir,
+        user_models_dir,
+        workspace_root,
+    );
+    let mut rejected = Vec::new();
+
+    for (source, path) in candidates {
+        match file_size(&path) {
+            None => notes.push(format!("not in the {}", source.label())),
+            Some(size) if size != locked.size_bytes => {
+                notes.push(format!("wrong size in the {}", source.label()));
+                rejected.push(format!(
+                    "the copy in the {} is {size} bytes, not {}",
+                    source.label(),
+                    locked.size_bytes
+                ));
+            }
+            Some(_) => match located(locked, path, source).verify_integrity() {
+                Ok(verified) => return Ok(verified),
+                Err(error) => {
+                    notes.push(format!("failed the digest in the {}", source.label()));
+                    rejected.push(format!(
+                        "the copy in the {} does not match the locked digest ({} ms)",
+                        source.label(),
+                        error.elapsed_ms
+                    ));
+                }
+            },
+        }
+    }
+
+    if !rejected.is_empty() {
+        return Err(ModelResolutionError::Mismatch(format!(
+            "no copy of {} could be verified: {}; refusing to load an unverified model",
+            locked.artifact_filename,
+            rejected.join("; ")
+        )));
+    }
+
+    Err(ModelResolutionError::Missing(format!(
+        "{} was not found in any supported location ({}); place it in the model \
+         directory or run `pnpm verify:local-ai-models`",
+        locked.artifact_filename,
+        notes.join("; ")
+    )))
+}
+
 /// Resolve one profile against the ordered model sources.
 ///
 /// Pure apart from the filesystem, and independent of Tauri, so the decision
@@ -364,56 +516,17 @@ pub fn resolve_from(
         )));
     };
 
-    let mut candidates: Vec<(ModelSource, PathBuf)> = Vec::new();
-    let mut notes: Vec<String> = Vec::new();
-
-    match packaged_models_dir {
-        Some(directory) => candidates.push((
-            ModelSource::Packaged,
-            directory.join(&locked.artifact_filename),
-        )),
-        None => notes.push("no packaged model directory in this build".to_string()),
-    }
-
-    match user_models_dir {
-        Some(directory) => candidates.push((
-            ModelSource::UserLibrary,
-            directory.join(&locked.artifact_filename),
-        )),
-        None => notes.push("the user model directory could not be resolved".to_string()),
-    }
-
-    match workspace_root.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(root) => candidates.push((
-            ModelSource::DevelopmentWorkspace,
-            Path::new(root)
-                .join(&locked.external_path_relative_to_workspace_root)
-                .join(&locked.artifact_filename),
-        )),
-        None => notes.push(format!("{WORKSPACE_ROOT_ENV} is not set")),
-    }
-
+    let (candidates, mut notes) = candidates_for(
+        locked,
+        packaged_models_dir,
+        user_models_dir,
+        workspace_root,
+    );
     let mut mismatch: Option<String> = None;
 
     for (source, path) in candidates {
         match file_size(&path) {
-            Some(size) if size == locked.size_bytes => {
-                return Ok(ResolvedModel {
-                    profile_id: locked.profile_id.clone(),
-                    path,
-                    family: locked.family.clone(),
-                    quantization: locked.quantization.clone(),
-                    size_bytes: locked.size_bytes,
-                    sha256: locked.sha256.clone(),
-                    license: locked.license.clone(),
-                    context_target: locked.context_target,
-                    release_approved: locked.release_approved,
-                    status: locked.status.clone(),
-                    artifact_repository: locked.artifact_repository.clone(),
-                    artifact_revision: locked.artifact_revision.clone(),
-                    source,
-                })
-            }
+            Some(size) if size == locked.size_bytes => return Ok(located(locked, path, source)),
             Some(size) => {
                 notes.push(format!("wrong size in the {}", source.label()));
                 mismatch.get_or_insert(format!(
@@ -483,6 +596,26 @@ pub fn load_lock(app: &AppHandle) -> Result<ModelLock, String> {
 ///
 /// P0.4-A never packages the weights, so this is workspace-only for now. The
 /// packaged path is prepared by [`load_lock`] reading a bundled lock first.
+/// Verify one profile for serving against this application's real sources.
+///
+/// The only production route to a [`VerifiedModel`].
+pub fn verify_for_app(
+    app: &AppHandle,
+    profile_id: &str,
+) -> Result<VerifiedModel, ModelResolutionError> {
+    let lock = load_lock(app).map_err(ModelResolutionError::Missing)?;
+    let packaged = packaged_models_dir(app);
+    let user = user_models_dir(app);
+    let workspace = env::var(WORKSPACE_ROOT_ENV).ok();
+    verify_from(
+        &lock,
+        profile_id,
+        packaged.as_deref(),
+        user.as_deref(),
+        workspace.as_deref(),
+    )
+}
+
 pub fn resolve_for_app(
     app: &AppHandle,
     profile_id: &str,
@@ -898,6 +1031,214 @@ mod tests {
         };
         assert!(error.found.is_none());
         assert!(error.message.contains("unable to read"));
+    }
+
+    /// A directory holding `bytes` under `name`, for source-ordering tests.
+    fn source_dir(label: &str, name: &str, bytes: &[u8]) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("chronosaga-source-{label}"));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(name), bytes).unwrap();
+        directory
+    }
+
+    /// A workspace holding `bytes` at the nested layout the lock names.
+    fn workspace_dir(label: &str, name: &str, bytes: &[u8]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("chronosaga-source-ws-{label}"));
+        let _ = fs::remove_dir_all(&root);
+        let directory = root.join("runtime-assets/models/standard/smollm3");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(name), bytes).unwrap();
+        root
+    }
+
+    /// A lock whose Standard entry expects `genuine`.
+    fn lock_expecting(genuine: &[u8]) -> ModelLock {
+        let mut lock = dual_lock();
+        let standard = lock.profiles.get_mut("standard").unwrap();
+        standard.size_bytes = genuine.len() as u64;
+        standard.sha256 = digest_of(genuine);
+        lock
+    }
+
+    const GENUINE: &[u8] = b"the real SmolLM3 weights";
+    const IMPOSTOR: &[u8] = b"a different payload!!!!!";
+    const NAME: &str = "SmolLM3-Q4_K_M.gguf";
+
+    #[test]
+    fn a_corrupt_packaged_copy_does_not_shadow_a_valid_user_copy() {
+        // The exact shape Codex flagged: the packaged copy has the right name
+        // and the right byte count, so cheap resolution stops there. If serving
+        // resolution stopped there too, a good user copy one source further down
+        // would never be tried and the profile would degrade for nothing.
+        assert_eq!(GENUINE.len(), IMPOSTOR.len(), "the fixture must be same-size");
+        let packaged = source_dir("corrupt-packaged", NAME, IMPOSTOR);
+        let user = source_dir("valid-user", NAME, GENUINE);
+        let lock = lock_expecting(GENUINE);
+
+        // Cheap resolution still stops at the first size match, by design.
+        let cheap = resolve_from(&lock, "standard", Some(&packaged), Some(&user), None).unwrap();
+        assert_eq!(cheap.source(), ModelSource::Packaged);
+
+        // Serving resolution keeps going and lands on the copy that verifies.
+        let verified =
+            verify_from(&lock, "standard", Some(&packaged), Some(&user), None).expect("must verify");
+        assert_eq!(verified.model().source(), ModelSource::UserLibrary);
+        assert!(verified.model().path().starts_with(&user));
+        assert_eq!(verified.model().profile_id(), "standard");
+    }
+
+    #[test]
+    fn a_corrupt_user_copy_does_not_shadow_a_valid_workspace_copy() {
+        // The same rule one source further along the chain.
+        let user = source_dir("corrupt-user", NAME, IMPOSTOR);
+        let workspace = workspace_dir("valid-ws", NAME, GENUINE);
+        let lock = lock_expecting(GENUINE);
+
+        let verified = verify_from(
+            &lock,
+            "standard",
+            None,
+            Some(&user),
+            Some(workspace.to_str().unwrap()),
+        )
+        .expect("must verify");
+
+        assert_eq!(verified.model().source(), ModelSource::DevelopmentWorkspace);
+        assert!(verified.model().path().starts_with(&workspace));
+    }
+
+    #[test]
+    fn a_corrupt_copy_never_reaches_a_launch_contract() {
+        // Whatever is served must be the verified copy and nothing else: the
+        // corrupt path must not appear anywhere in the command line.
+        use crate::local_ai_runtime::RuntimeConfig;
+
+        let packaged = source_dir("never-launched", NAME, IMPOSTOR);
+        let user = source_dir("launched", NAME, GENUINE);
+        let lock = lock_expecting(GENUINE);
+
+        let verified =
+            verify_from(&lock, "standard", Some(&packaged), Some(&user), None).unwrap();
+        let arguments = RuntimeConfig::loopback()
+            .with_model(&verified)
+            .launch_spec()
+            .command_arguments();
+
+        let model_flag = arguments
+            .iter()
+            .position(|argument| argument == "--model")
+            .expect("a serving contract always carries --model");
+        let served = &arguments[model_flag + 1];
+        assert_eq!(served, &verified.model().path().to_string_lossy().to_string());
+        assert!(served.contains("chronosaga-source-launched"));
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("chronosaga-source-never-launched")),
+            "the corrupt copy must not appear in the command line: {arguments:?}"
+        );
+    }
+
+    #[test]
+    fn every_copy_being_unusable_is_reported_rather_than_guessed() {
+        // When nothing verifies, the caller has to be able to tell the two cases
+        // apart: bytes that exist but are wrong, and bytes that are simply not
+        // there. The profile fallback chain reacts to the failure, not to the
+        // reason, but the player is told which one it was.
+        let packaged = source_dir("all-corrupt-packaged", NAME, IMPOSTOR);
+        let user = source_dir("all-corrupt-user", NAME, IMPOSTOR);
+        let lock = lock_expecting(GENUINE);
+
+        let error = verify_from(&lock, "standard", Some(&packaged), Some(&user), None)
+            .expect_err("no copy verifies");
+        assert!(matches!(error, ModelResolutionError::Mismatch(_)));
+        let message = error.message();
+        assert!(message.contains("does not match the locked digest"), "{message}");
+        assert!(message.contains("refusing to load an unverified model"), "{message}");
+        assert!(message.contains("packaged"), "{message}");
+        assert!(message.contains("user model library"), "{message}");
+
+        // Nothing present at all is a different, equally explicit answer.
+        let absent = source_dir("all-absent", "unrelated.txt", b"x");
+        let missing = verify_from(&lock, "standard", Some(&absent), None, None)
+            .expect_err("nothing to verify");
+        assert!(matches!(missing, ModelResolutionError::Missing(_)));
+        assert!(missing.message().contains("verify:local-ai-models"));
+    }
+
+    #[test]
+    fn the_profile_chain_still_degrades_when_no_copy_of_standard_verifies() {
+        // P2-A must not weaken P0.4-C: if Standard genuinely has no usable copy
+        // anywhere, the chain still degrades to Lite, and to Safe Mode when Lite
+        // is unusable too.
+        use crate::profile_orchestrator::{
+            fallback_chain, resolve_auto, summarise, HardwareSnapshot, ProfileAttempt,
+            RequestedProfile,
+        };
+
+        let big = HardwareSnapshot {
+            total_ram_mb: 64 * 1024,
+            logical_cores: 24,
+        };
+        let mut lock = lock_expecting(GENUINE);
+        let genuine_lite = b"the real Qwen3 weights";
+        {
+            let lite = lock.profiles.get_mut("lite").unwrap();
+            lite.size_bytes = genuine_lite.len() as u64;
+            lite.sha256 = digest_of(genuine_lite);
+        }
+
+        // Standard is corrupt everywhere; Lite is good.
+        let directory = std::env::temp_dir().join("chronosaga-chain-degrades");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(NAME), IMPOSTOR).unwrap();
+        fs::write(directory.join("Qwen3-1.7B-Q4_K_M.gguf"), genuine_lite).unwrap();
+
+        let decision = resolve_auto(big, true);
+        assert_eq!(decision.resolved_profile, "standard");
+
+        let mut attempts = Vec::new();
+        let mut served = None;
+        for candidate in fallback_chain(&decision.resolved_profile) {
+            match verify_from(&lock, &candidate, None, Some(&directory), None) {
+                Ok(verified) => {
+                    attempts.push(ProfileAttempt {
+                        profile_id: candidate,
+                        succeeded: true,
+                        error: None,
+                    });
+                    served = Some(verified);
+                    break;
+                }
+                Err(error) => attempts.push(ProfileAttempt {
+                    profile_id: candidate,
+                    succeeded: false,
+                    error: Some(error.message().to_string()),
+                }),
+            }
+        }
+        let outcome = summarise(RequestedProfile::Auto, &decision, attempts);
+        assert!(!outcome.safe_mode);
+        assert_eq!(outcome.active_profile.as_deref(), Some("lite"));
+        assert_eq!(served.unwrap().model().profile_id(), "lite");
+
+        // Now break Lite as well: Safe Mode, exactly as before.
+        fs::write(directory.join("Qwen3-1.7B-Q4_K_M.gguf"), b"not the weights......").unwrap();
+        let mut attempts = Vec::new();
+        for candidate in fallback_chain(&decision.resolved_profile) {
+            let error = verify_from(&lock, &candidate, None, Some(&directory), None)
+                .expect_err("nothing may verify now");
+            attempts.push(ProfileAttempt {
+                profile_id: candidate,
+                succeeded: false,
+                error: Some(error.message().to_string()),
+            });
+        }
+        let outcome = summarise(RequestedProfile::Auto, &decision, attempts);
+        assert!(outcome.safe_mode);
+        assert!(outcome.active_profile.is_none());
     }
 
     #[test]
