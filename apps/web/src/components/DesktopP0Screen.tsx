@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getDatabaseStatus,
+  applyLocalAiProfile,
   getLocalAiModelStatus,
+  getLocalAiProfileOutcome,
   getLocalAiRuntimeStatus,
   listLocalAiProfiles,
   getRuntimeStatus,
@@ -9,13 +11,13 @@ import {
   loadSmokeCampaign,
   saveSmokeCampaign,
   runLocalAiSmokeInference,
-  selectLocalAiProfile,
   startLocalAiRuntime,
   stopLocalAiRuntime,
   type P0DatabaseStatus,
   type P0InferenceOutcome,
   type P0LocalAiModelStatus,
   type P0LocalAiRuntimeSnapshot,
+  type P0ProfileOutcome,
   type P0RuntimeStatus,
   type P0SmokeCampaign,
   type P0SystemInfo,
@@ -57,72 +59,10 @@ export function DesktopP0Screen() {
   const [model, setModel] = useState<P0LocalAiModelStatus | null>(null);
   const [profiles, setProfiles] = useState<P0LocalAiModelStatus[]>([]);
   const [switching, setSwitching] = useState(false);
+  const [outcome, setOutcome] = useState<P0ProfileOutcome | null>(null);
   const [inference, setInference] = useState<P0InferenceOutcome | null>(null);
   const [inferring, setInferring] = useState(false);
   const aiTimer = useRef<number | null>(null);
-
-  async function refreshModel() {
-    try {
-      const [current, all] = await Promise.all([
-        getLocalAiModelStatus(),
-        listLocalAiProfiles(),
-      ]);
-      setModel(current);
-      setProfiles(all);
-    } catch (cause) {
-      setError(String(cause));
-    }
-  }
-
-  /**
-   * Choose which locked profile the runtime loads next.
-   *
-   * Only the profile id crosses the boundary: Rust resolves it from the model
-   * lock, hashes the artifact and builds the command line. The runtime must be
-   * stopped first — one model at a time, no hot swap in P0.4-A.
-   */
-  async function chooseProfile(profileId: string) {
-    setSwitching(true);
-    setInference(null);
-    try {
-      const chosen = await selectLocalAiProfile(profileId);
-      setModel(chosen);
-      setProfiles(await listLocalAiProfiles());
-      setMessage(
-        chosen.integrityVerified
-          ? `Profile ${profileId.toUpperCase()} selected and verified.`
-          : `Profile ${profileId.toUpperCase()} selected but not verified.`,
-      );
-    } catch (cause) {
-      setError(String(cause));
-      setMessage(`Could not select ${profileId.toUpperCase()}.`);
-    } finally {
-      setSwitching(false);
-    }
-  }
-
-  /**
-   * Real local generation. The button only reaches Rust; Rust owns the request,
-   * the session key and the validator.
-   */
-  async function runInference() {
-    setInferring(true);
-    setInference(null);
-    try {
-      const outcome = await runLocalAiSmokeInference();
-      setInference(outcome);
-      setMessage(
-        outcome.accepted
-          ? `Inference accepted in ${outcome.durationMs} ms.`
-          : "Inference rejected by the application validator.",
-      );
-    } catch (cause) {
-      setError(String(cause));
-      setMessage("Local inference failed.");
-    } finally {
-      setInferring(false);
-    }
-  }
 
   // A pure read on the Rust side: the background watcher is what advances the
   // state machine, this only mirrors it.
@@ -157,6 +97,80 @@ export function DesktopP0Screen() {
       setError(String(cause));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function refreshModel() {
+    try {
+      const [current, all, last] = await Promise.all([
+        getLocalAiModelStatus(),
+        listLocalAiProfiles(),
+        getLocalAiProfileOutcome(),
+      ]);
+      setModel(current);
+      setProfiles(all);
+      setOutcome(last);
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
+  /**
+   * Apply a profile through the real orchestration.
+   *
+   * The interface sends `auto`, `lite` or `standard` and nothing else. Rust
+   * resolves AUTO from local hardware, stops and reaps whatever was running,
+   * then walks STANDARD -> LITE -> SAFE until something serves. Safe Mode is an
+   * outcome the player is told about, never a button.
+   */
+  async function applyProfile(profileId: string) {
+    setSwitching(true);
+    setInference(null);
+    try {
+      const result = await applyLocalAiProfile(profileId);
+      setOutcome(result);
+      const [current, all] = await Promise.all([
+        getLocalAiModelStatus(),
+        listLocalAiProfiles(),
+      ]);
+      setModel(current);
+      setProfiles(all);
+      await refreshAi();
+      setMessage(
+        result.safeMode
+          ? `No local model could start: ${result.presentation}.`
+          : `${result.activeProfile?.toUpperCase()} active (${result.autoReason}).`,
+      );
+    } catch (cause) {
+      setError(String(cause));
+      setMessage(`Could not apply ${profileId.toUpperCase()}.`);
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  /**
+   * Real local generation against whichever profile is actually serving.
+   *
+   * The button only reaches Rust; Rust owns the request, the session key and the
+   * validator.
+   */
+  async function runInference() {
+    setInferring(true);
+    setInference(null);
+    try {
+      const result = await runLocalAiSmokeInference();
+      setInference(result);
+      setMessage(
+        result.accepted
+          ? `Inference accepted in ${result.durationMs} ms.`
+          : "Inference rejected by the application validator.",
+      );
+    } catch (cause) {
+      setError(String(cause));
+      setMessage("Local inference failed.");
+    } finally {
+      setInferring(false);
     }
   }
 
@@ -352,17 +366,30 @@ export function DesktopP0Screen() {
         <article className="p0-panel p0-checks">
           <h2>LOCAL INFERENCE</h2>
           <div className="p0-actions">
-            {profiles.map(profile => (
+            {["auto", ...profiles.map(profile => profile.profileId)].map(id => (
               <button
-                key={profile.profileId}
-                disabled={busy || switching || Boolean(ai?.pid)}
-                onClick={() => void chooseProfile(profile.profileId)}
+                key={id}
+                disabled={busy || switching}
+                onClick={() => void applyProfile(id)}
               >
-                {model?.profileId === profile.profileId ? "● " : "○ "}
-                {profile.profileId.toUpperCase()}
+                {outcome?.requestedProfile === id ? "● " : "○ "}
+                {id.toUpperCase()}
               </button>
             ))}
           </div>
+          {switching && <p className="p0-note">Applying profile…</p>}
+          <div className="p0-check"><span>REQUESTED PROFILE</span>
+            <b className="ok">{outcome?.requestedProfile?.toUpperCase() ?? "—"}</b></div>
+          <div className="p0-check"><span>RESOLVED PROFILE</span>
+            <b className="ok">{outcome?.resolvedProfile?.toUpperCase() ?? "—"}</b></div>
+          <div className="p0-check"><span>ACTIVE PROFILE</span>
+            <b className={outcome?.activeProfile ? "ok" : "pending"}>
+              {outcome?.activeProfile?.toUpperCase() ?? "—"}
+            </b></div>
+          <div className="p0-check"><span>MODE</span>
+            <b className={outcome?.safeMode ? "pending" : "ok"}>
+              {outcome?.presentation ?? "—"}
+            </b></div>
           <div className="p0-check"><span>SELECTED PROFILE</span>
             <b className="ok">{model?.profileId?.toUpperCase() ?? "—"}</b></div>
           <div className="p0-check"><span>MODEL FAMILY</span>
@@ -398,6 +425,18 @@ export function DesktopP0Screen() {
               {inferring ? "GENERATING…" : "RUN LOCAL INFERENCE TEST"}
             </button>
           </div>
+          {outcome?.autoReason && <p className="p0-path">AUTO // {outcome.autoReason}</p>}
+          {outcome?.fallbackReason && (
+            <p className="p0-path">FALLBACK // {outcome.fallbackReason}</p>
+          )}
+          {outcome?.attempts?.map(attempt => (
+            <div className="p0-check" key={attempt.profileId}>
+              <span>ATTEMPT {attempt.profileId.toUpperCase()}</span>
+              <b className={attempt.succeeded ? "ok" : "pending"}>
+                {attempt.succeeded ? "SERVING" : "FAILED"}
+              </b>
+            </div>
+          ))}
           {model?.problem && <p className="p0-path">MODEL // {model.problem}</p>}
           {inference && (
             <div className="p0-save-state">
@@ -426,8 +465,11 @@ export function DesktopP0Screen() {
             <p className="p0-path">REJECTED // {inference.validationError}</p>
           )}
           <small>
-            Profili bloccati: LITE (Qwen3-1.7B) e STANDARD (SmolLM3-3B). Il runtime va fermato
-            prima di cambiare profilo: un solo modello resta residente alla volta. Entrambi sono
+            AUTO sceglie in modo conservativo dall&apos;hardware locale; LITE e STANDARD sono
+            scelte manuali che vincono sulla raccomandazione. Il cambio profilo ferma e raccoglie
+            il runtime precedente prima di avviare il successivo: un solo modello resta residente
+            alla volta. Se nessun modello locale parte, il gioco continua in SAFE MODE — narrativa
+            ridotta, regole deterministiche e salvataggi invariati. Entrambi i modelli sono
             candidati di benchmark P0, non modelli di release. MODEL VERIFIED
             significa che lo SHA-256 dell&apos;artefatto corrisponde al lock. La generazione resta
             locale su 127.0.0.1 e passa dal validatore applicativo prima di essere mostrata; un
