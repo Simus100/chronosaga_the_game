@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { DelayedConsequenceState, EventEffect } from "@paa/game-types";
+import type { DelayedConsequenceState, EventEffect, GameEvent } from "@paa/game-types";
 import {
   applyDueConsequences,
   createSystemicScenario,
   scheduleDelayedConsequence,
+  validateGameEvent,
   validateSystemicWorldState
 } from "../src";
 
@@ -49,6 +50,32 @@ describe("M1 systemic world foundation", () => {
     const effectResult = validateSystemicWorldState(malformedEffect);
     expect(effectResult.ok).toBe(false);
     expect(effectResult.errors.some(error => error.includes("requires key"))).toBe(true);
+  });
+
+  it("rejects malformed authored event fixtures before resolution", () => {
+    const event: GameEvent = {
+      id: "evt_relay_offer",
+      version: 1,
+      title: "Relay Offer",
+      body: "A contractor offers emergency access to the relay route.",
+      category: "settlement",
+      tags: ["relay", "supply"],
+      weight: 1,
+      choices: [
+        {
+          id: "accept",
+          label: "Accept",
+          effects: [{ type: "RESOURCE_DELTA", key: "credits", value: -2 }]
+        }
+      ]
+    };
+    expect(validateGameEvent(event)).toEqual({ ok: true, errors: [] });
+
+    const malformed = structuredClone(event);
+    malformed.choices[0]!.effects = [{ type: "RESOURCE_DELTA", value: -2 } as EventEffect];
+    const result = validateGameEvent(malformed);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some(error => error.includes("requires key"))).toBe(true);
   });
 
   it("schedules and applies a delayed consequence deterministically without AI", () => {
