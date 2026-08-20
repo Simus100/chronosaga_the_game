@@ -32,6 +32,77 @@ pub const PACKAGED_RUNTIME_DIR: &str = "local-ai-runtime";
 /// Repository- and resource-relative location of the provenance lock.
 pub const LOCK_RELATIVE_PATH: &str = "config/local-ai-runtime.lock.json";
 
+/// Locate a metadata file the installer is expected to ship.
+///
+/// Both provenance locks are small JSON files that must travel inside the
+/// installer. Where a build is allowed to look for them is a release-safety
+/// question, not a convenience one:
+///
+/// * a **release** build has exactly one candidate, the packaged resource
+///   directory. If it is not there the build is incomplete, and the honest
+///   answer is a loud failure rather than a quiet success;
+/// * a **debug** build additionally accepts the source checkout, so `tauri dev`
+///   works without staging resources first.
+///
+/// The distinction is enforced by `cfg(debug_assertions)` rather than by an
+/// environment variable, because a shipped binary must not be talkable into
+/// reading a developer's disk. This is the defect P0.4-D3 closes: an installed
+/// build was resolving its model lock out of `D:\Chronosaga\repo\...`, which
+/// made the installer look self-contained on the one machine where it was not.
+pub fn packaged_metadata_path(app: &AppHandle, relative_path: &str) -> Result<PathBuf, String> {
+    let packaged = app
+        .path()
+        .resolve(relative_path, BaseDirectory::Resource)
+        .ok();
+
+    metadata_candidates(packaged, relative_path)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| missing_metadata_message(relative_path))
+}
+
+/// The ordered places a build may read packaged metadata from.
+fn metadata_candidates(packaged: Option<PathBuf>, relative_path: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = packaged {
+        candidates.push(path);
+    }
+    if let Some(path) = development_checkout_path(relative_path) {
+        candidates.push(path);
+    }
+    candidates
+}
+
+/// The source-checkout copy. Compiled into debug builds only.
+#[cfg(debug_assertions)]
+fn development_checkout_path(relative_path: &str) -> Option<PathBuf> {
+    Some(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../")
+            .join(relative_path),
+    )
+}
+
+/// Release builds have no development candidate at all.
+#[cfg(not(debug_assertions))]
+fn development_checkout_path(_relative_path: &str) -> Option<PathBuf> {
+    None
+}
+
+fn missing_metadata_message(relative_path: &str) -> String {
+    if cfg!(debug_assertions) {
+        format!(
+            "{relative_path} was found neither in the packaged resources nor in the source \
+             checkout; run the build from the repository or stage the resources first"
+        )
+    } else {
+        format!(
+            "{relative_path} is missing from this installation's resources. The build is \
+             incomplete: local AI metadata cannot be trusted and no model will be loaded."
+        )
+    }
+}
+
 /// The subset of the lock this process needs to find the runtime on disk.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,20 +199,7 @@ pub fn resolve_from(
 
 /// Read the lock, preferring the copy the installer shipped.
 pub fn load_lock(app: &AppHandle) -> Result<RuntimeLock, String> {
-    let mut candidates = Vec::new();
-    if let Ok(bundled) = app.path().resolve(LOCK_RELATIVE_PATH, BaseDirectory::Resource) {
-        candidates.push(bundled);
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../")
-            .join(LOCK_RELATIVE_PATH),
-    );
-
-    let path = candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| format!("No {LOCK_RELATIVE_PATH} found in resources or checkout"))?;
+    let path = packaged_metadata_path(app, LOCK_RELATIVE_PATH)?;
 
     let contents = fs::read_to_string(&path)
         .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
@@ -275,6 +333,39 @@ mod tests {
         assert!(error.contains("b10343"), "the error must name the release");
         assert!(error.contains("no packaged runtime"), "unexpected error: {error}");
         assert!(error.contains(WORKSPACE_ROOT_ENV), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn a_release_build_has_no_development_candidate() {
+        // The whole point of P0.4-D3: a shipped binary may look in exactly one
+        // place. If this ever regresses, an installed app can start reading a
+        // developer's checkout again and the installer stops being provable.
+        assert_eq!(
+            development_checkout_path(LOCK_RELATIVE_PATH).is_some(),
+            cfg!(debug_assertions),
+            "the source-checkout candidate must exist in debug builds and only there"
+        );
+    }
+
+    #[test]
+    fn the_packaged_copy_is_always_tried_first() {
+        let packaged = PathBuf::from("C:/install/config/local-ai-runtime.lock.json");
+        let candidates = metadata_candidates(Some(packaged.clone()), LOCK_RELATIVE_PATH);
+
+        assert_eq!(candidates.first(), Some(&packaged));
+        assert_eq!(candidates.len(), if cfg!(debug_assertions) { 2 } else { 1 });
+    }
+
+    #[test]
+    fn a_missing_packaged_lock_names_the_build_as_incomplete() {
+        // The message a player would see. It must point at the installation,
+        // not at a machine they do not have.
+        let message = missing_metadata_message(LOCK_RELATIVE_PATH);
+        assert!(message.contains(LOCK_RELATIVE_PATH), "{message}");
+        if !cfg!(debug_assertions) {
+            assert!(message.contains("installation"), "{message}");
+            assert!(!message.contains("checkout"), "{message}");
+        }
     }
 
     #[test]
