@@ -137,6 +137,18 @@ describe("M1-B deterministic world tick", () => {
     expect(compact.memoryTags).not.toContain("resource_pressure:settlement_helios");
   });
 
+  it("derives shortage memory text from settlement state instead of the fixture name", () => {
+    const input = createSystemicScenario(909);
+    input.simulation!.settlements[0]!.name = "New Dawn";
+
+    const result = runWorldTick(input);
+    const mara = result.state.party.find(character => character.id === "mara_001")!;
+    const tickMemory = mara.memories?.find(memory => memory.source.kind === "world_tick");
+
+    expect(tickMemory?.summary).toContain("New Dawn");
+    expect(tickMemory?.summary).not.toContain("Helios Reach");
+  });
+
   it("requires systemic state rather than silently running a partial simulation", () => {
     const legacy = createSystemicScenario(2) as WorldState;
     delete legacy.simulation;
