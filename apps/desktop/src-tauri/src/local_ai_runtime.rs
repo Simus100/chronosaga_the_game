@@ -2479,6 +2479,35 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_profile_is_not_a_loaded_profile() {
+        // The snapshot reports which model the contract carries. It becomes the
+        // *loaded* profile only once the runtime is serving, which is why the
+        // diagnostics gate that label on runtime_ready rather than on the
+        // contract alone.
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Ready],
+            Arc::new(FakeClock::new()),
+        );
+        manager
+            .select_model(Some(&verified("standard", "SmolLM3-Q4_K_M.gguf")))
+            .unwrap();
+
+        let configured = manager.snapshot();
+        assert_eq!(configured.model_profile_id.as_deref(), Some("standard"));
+        assert!(
+            !configured.runtime_ready,
+            "configuring a profile must not imply the model is loaded"
+        );
+
+        manager.start().expect("start should succeed");
+        manager.poll();
+        let serving = manager.snapshot();
+        assert!(serving.runtime_ready);
+        assert_eq!(serving.model_profile_id.as_deref(), Some("standard"));
+    }
+
+    #[test]
     fn selecting_a_profile_swaps_the_whole_launch_contract() {
         let manager = manager_with(
             Arc::new(FakeProcess::present()),

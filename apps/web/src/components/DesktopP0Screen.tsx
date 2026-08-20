@@ -386,8 +386,10 @@ export function DesktopP0Screen() {
           <div className="p0-check"><span>INFERENCE READY</span>
             <b className={ai?.inferenceReady ? "ok" : "pending"}>{ai?.inferenceReady ? "TRUE" : "FALSE"}</b></div>
           <div className="p0-check"><span>LOADED PROFILE</span>
-            <b className={ai?.modelProfileId ? "ok" : "pending"}>
-              {ai?.modelProfileId?.toUpperCase() ?? "—"}
+            <b className={ai?.runtimeReady ? "ok" : "pending"}>
+              {/* Only meaningful once the runtime is actually serving: before
+                  that this is the profile configured to load, not a loaded one. */}
+              {ai?.runtimeReady ? (ai.modelProfileId?.toUpperCase() ?? "—") : "—"}
             </b></div>
           <div className="p0-check"><span>MODELS LOADED</span>
             <b className="pending">{ai?.loadedModels ?? "—"}</b></div>
