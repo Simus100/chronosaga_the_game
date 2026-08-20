@@ -7,7 +7,8 @@
     "Hashes were verified against the provider metadata at the pinned revision and against the bytes on a Windows development machine.",
     "Model weights never enter Git. The bytes live in the external workspace; this file records which bytes are expected.",
     "Packaging must fail loudly when a payload does not match, and must never substitute a different model or quantization.",
-    "P0.3-C proved this Lite candidate runs real grounded inference on Windows CPU: 6-9 s per short answer, 18-20 tok/s, ~2.2 GB resident. That is a feasibility result, not a quality verdict; the 50-case suite and the hardware matrix belong to P0.5."
+    "P0.3-C proved this Lite candidate runs real grounded inference on Windows CPU: 6-9 s per short answer, 18-20 tok/s, ~2.2 GB resident. That is a feasibility result, not a quality verdict; the 50-case suite and the hardware matrix belong to P0.5.",
+    "Standard (SmolLM3-3B Q4_K_M) was locked on 2026-08-20 after downloading the pinned revision and hashing the local bytes on the Windows development machine."
   ],
   "profiles": {
     "lite": {
@@ -41,9 +42,42 @@
         "downloadedFromPinnedRevision": true,
         "gatedRepository": false
       }
+    },
+    "standard": {
+      "profileId": "standard",
+      "status": "P0_BENCHMARK_CANDIDATE",
+      "releaseApproved": false,
+      "family": "SmolLM3-3B",
+      "parameterClass": "~3B",
+      "baseModel": "HuggingFaceTB/SmolLM3-3B",
+      "artifactRepository": "ggml-org/SmolLM3-3B-GGUF",
+      "artifactRepositoryUrl": "https://huggingface.co/ggml-org/SmolLM3-3B-GGUF",
+      "artifactRevision": "4965cb60b150737b68a0408c36aeefb65078f894",
+      "artifactFilename": "SmolLM3-Q4_K_M.gguf",
+      "quantization": "Q4_K_M",
+      "sizeBytes": 1915305312,
+      "sha256": "8334b850b7bd46238c16b0c550df2138f0889bf433809008cc17a8b05761863e",
+      "license": "Apache-2.0",
+      "licenseSourceUrl": "https://huggingface.co/HuggingFaceTB/SmolLM3-3B",
+      "licenseCopyRelativeToWorkspaceRoot": "runtime-assets/licenses/SmolLM3-3B-Apache-2.0.txt",
+      "licenseSha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      "attribution": "SmolLM3-3B by HuggingFaceTB, Apache-2.0. GGUF quantization published by ggml-org. Both repositories declare apache-2.0 at the pinned revision. NOTE: the base model repository publishes no LICENSE file, so the stored copy is the canonical Apache-2.0 text rather than one shipped by the author; confirm before release approval.",
+      "externalPathRelativeToWorkspaceRoot": "runtime-assets/models/standard/smollm3-3b-q4-k-m",
+      "contextTarget": 4096,
+      "verified": true,
+      "verifiedAt": "2026-08-20",
+      "verification": {
+        "digestSource": "Hugging Face model API, siblings[].lfs.sha256 at the pinned revision",
+        "sizeMatchedProvider": true,
+        "digestMatchedProvider": true,
+        "licenseVerifiedApache2": true,
+        "licenseFilePublishedByAuthor": false,
+        "downloadedFromPinnedRevision": true,
+        "gatedRepository": false
+      }
     }
   },
   "pending": {
-    "standard": "Not selected. P0.3-C implements Lite only; Standard is added to this same schema when its candidate is locked."
+    "note": "Both P0 profiles are locked as benchmark candidates. Neither is release approved; P0.5 decides."
   }
 }
