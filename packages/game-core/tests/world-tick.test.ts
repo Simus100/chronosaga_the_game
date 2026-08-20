@@ -78,7 +78,7 @@ describe("M1-B deterministic world tick", () => {
     expect(settlement.stability).toBeLessThan(0.61);
 
     expect(compact.memoryTags).toContain("resource_pressure:settlement_helios");
-    expect(mara.memoryTags).toContain("water_shortage_active");
+    expect(mara.memoryTags).toContain("water_shortage_experienced");
     expect(mara.memories?.some(memory => memory.source.kind === "world_tick")).toBe(true);
 
     // Transitional top-level resource compatibility cannot drift from the local
@@ -135,6 +135,35 @@ describe("M1-B deterministic world tick", () => {
     expect(result.state.flags.settlement_helios_water_shortage_active).toBe(false);
     expect(result.state.flags.faction_compact_resource_pressure).not.toBe(true);
     expect(compact.memoryTags).not.toContain("resource_pressure:settlement_helios");
+  });
+
+  it("clears active shortage/pressure flags after reserves recover but keeps historical memory", () => {
+    const event = shortageEvent();
+    const shortage = runWorldTick(createSystemicScenario(818));
+    expect(isEventEligible(event, shortage.state)).toBe(true);
+
+    const recoveredInput = structuredClone(shortage.state);
+    const settlement = recoveredInput.simulation!.settlements[0]!;
+    for (const resource of ["water", "food", "energy", "medicine"]) {
+      settlement.resourceStock[resource] = 100;
+      recoveredInput.resources[resource] = 100;
+    }
+
+    const recovered = runWorldTick(recoveredInput);
+    const compact = recovered.state.simulation!.factions.find(
+      faction => faction.id === "faction_compact"
+    )!;
+    const mara = recovered.state.party.find(character => character.id === "mara_001")!;
+
+    expect(recovered.trace.factionReaction).toBe(false);
+    expect(recovered.state.flags.settlement_helios_water_shortage_active).toBe(false);
+    expect(recovered.state.flags.faction_compact_resource_pressure).toBe(false);
+    expect(isEventEligible(event, recovered.state)).toBe(false);
+
+    // Historical memory survives even though the live condition cleared.
+    expect(compact.memoryTags).toContain("resource_pressure:settlement_helios");
+    expect(mara.memoryTags).toContain("water_shortage_experienced");
+    expect(mara.memories?.some(memory => memory.source.kind === "world_tick")).toBe(true);
   });
 
   it("derives shortage memory text from settlement state instead of the fixture name", () => {
