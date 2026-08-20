@@ -3,11 +3,13 @@ import {
   getDatabaseStatus,
   getLocalAiModelStatus,
   getLocalAiRuntimeStatus,
+  listLocalAiProfiles,
   getRuntimeStatus,
   getSystemInfo,
   loadSmokeCampaign,
   saveSmokeCampaign,
   runLocalAiSmokeInference,
+  selectLocalAiProfile,
   startLocalAiRuntime,
   stopLocalAiRuntime,
   type P0DatabaseStatus,
@@ -53,15 +55,49 @@ export function DesktopP0Screen() {
 
   const [ai, setAi] = useState<P0LocalAiRuntimeSnapshot | null>(null);
   const [model, setModel] = useState<P0LocalAiModelStatus | null>(null);
+  const [profiles, setProfiles] = useState<P0LocalAiModelStatus[]>([]);
+  const [switching, setSwitching] = useState(false);
   const [inference, setInference] = useState<P0InferenceOutcome | null>(null);
   const [inferring, setInferring] = useState(false);
   const aiTimer = useRef<number | null>(null);
 
   async function refreshModel() {
     try {
-      setModel(await getLocalAiModelStatus());
+      const [current, all] = await Promise.all([
+        getLocalAiModelStatus(),
+        listLocalAiProfiles(),
+      ]);
+      setModel(current);
+      setProfiles(all);
     } catch (cause) {
       setError(String(cause));
+    }
+  }
+
+  /**
+   * Choose which locked profile the runtime loads next.
+   *
+   * Only the profile id crosses the boundary: Rust resolves it from the model
+   * lock, hashes the artifact and builds the command line. The runtime must be
+   * stopped first — one model at a time, no hot swap in P0.4-A.
+   */
+  async function chooseProfile(profileId: string) {
+    setSwitching(true);
+    setInference(null);
+    try {
+      const chosen = await selectLocalAiProfile(profileId);
+      setModel(chosen);
+      setProfiles(await listLocalAiProfiles());
+      setMessage(
+        chosen.integrityVerified
+          ? `Profile ${profileId.toUpperCase()} selected and verified.`
+          : `Profile ${profileId.toUpperCase()} selected but not verified.`,
+      );
+    } catch (cause) {
+      setError(String(cause));
+      setMessage(`Could not select ${profileId.toUpperCase()}.`);
+    } finally {
+      setSwitching(false);
     }
   }
 
@@ -314,10 +350,22 @@ export function DesktopP0Screen() {
         </article>
 
         <article className="p0-panel p0-checks">
-          <h2>LITE LOCAL INFERENCE</h2>
-          <div className="p0-check"><span>AI PROFILE</span>
-            <b className="ok">LITE</b></div>
-          <div className="p0-check"><span>MODEL</span>
+          <h2>LOCAL INFERENCE</h2>
+          <div className="p0-actions">
+            {profiles.map(profile => (
+              <button
+                key={profile.profileId}
+                disabled={busy || switching || Boolean(ai?.pid)}
+                onClick={() => void chooseProfile(profile.profileId)}
+              >
+                {model?.profileId === profile.profileId ? "● " : "○ "}
+                {profile.profileId.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div className="p0-check"><span>SELECTED PROFILE</span>
+            <b className="ok">{model?.profileId?.toUpperCase() ?? "—"}</b></div>
+          <div className="p0-check"><span>MODEL FAMILY</span>
             <b className={model?.resolved ? "ok" : "pending"}>{model?.label ?? "—"}</b></div>
           <div className="p0-check"><span>MODEL RESOLVED</span>
             <b className={model?.resolved ? "ok" : "pending"}>{model?.resolved ? "TRUE" : "FALSE"}</b></div>
@@ -337,11 +385,15 @@ export function DesktopP0Screen() {
             <b className={ai?.runtimeReady ? "ok" : "pending"}>{ai?.runtimeReady ? "TRUE" : "FALSE"}</b></div>
           <div className="p0-check"><span>INFERENCE READY</span>
             <b className={ai?.inferenceReady ? "ok" : "pending"}>{ai?.inferenceReady ? "TRUE" : "FALSE"}</b></div>
+          <div className="p0-check"><span>LOADED PROFILE</span>
+            <b className={ai?.modelProfileId ? "ok" : "pending"}>
+              {ai?.modelProfileId?.toUpperCase() ?? "—"}
+            </b></div>
           <div className="p0-check"><span>MODELS LOADED</span>
             <b className="pending">{ai?.loadedModels ?? "—"}</b></div>
           <div className="p0-actions">
             <button disabled={busy || inferring || !ai?.inferenceReady} onClick={() => void runInference()}>
-              {inferring ? "GENERATING…" : "RUN LITE INFERENCE TEST"}
+              {inferring ? "GENERATING…" : "RUN LOCAL INFERENCE TEST"}
             </button>
           </div>
           {model?.problem && <p className="p0-path">MODEL // {model.problem}</p>}
@@ -372,7 +424,9 @@ export function DesktopP0Screen() {
             <p className="p0-path">REJECTED // {inference.validationError}</p>
           )}
           <small>
-            Il modello e un candidato di benchmark P0, non il modello di release. MODEL VERIFIED
+            Profili bloccati: LITE (Qwen3-1.7B) e STANDARD (SmolLM3-3B). Il runtime va fermato
+            prima di cambiare profilo: un solo modello resta residente alla volta. Entrambi sono
+            candidati di benchmark P0, non modelli di release. MODEL VERIFIED
             significa che lo SHA-256 dell&apos;artefatto corrisponde al lock. La generazione resta
             locale su 127.0.0.1 e passa dal validatore applicativo prima di essere mostrata; un
             output respinto non viene esposto alla UI.

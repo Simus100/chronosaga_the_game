@@ -8,7 +8,8 @@
     "Model weights never enter Git. The bytes live in the external workspace; this file records which bytes are expected.",
     "Packaging must fail loudly when a payload does not match, and must never substitute a different model or quantization.",
     "P0.3-C proved this Lite candidate runs real grounded inference on Windows CPU: 6-9 s per short answer, 18-20 tok/s, ~2.2 GB resident. That is a feasibility result, not a quality verdict; the 50-case suite and the hardware matrix belong to P0.5.",
-    "Standard (SmolLM3-3B Q4_K_M) was locked on 2026-08-20 after downloading the pinned revision and hashing the local bytes on the Windows development machine."
+    "Standard (SmolLM3-3B Q4_K_M) was locked on 2026-08-20 after downloading the pinned revision and hashing the local bytes on the Windows development machine.",
+    "Licence semantics: licenseMetadataDeclares records what the provider metadata says; licenseFilePublishedByAuthor records whether the author actually ships a LICENSE artifact. Neither is release approval - licenseApprovedForRelease stays false for both profiles until a legal review signs off."
   ],
   "profiles": {
     "lite": {
@@ -38,9 +39,12 @@
         "digestSource": "Hugging Face model API, siblings[].lfs.sha256 at the pinned revision",
         "sizeMatchedProvider": true,
         "digestMatchedProvider": true,
-        "licenseVerifiedApache2": true,
         "downloadedFromPinnedRevision": true,
-        "gatedRepository": false
+        "gatedRepository": false,
+        "licenseMetadataDeclares": "Apache-2.0",
+        "licenseFilePublishedByAuthor": true,
+        "licenseCopyStored": "author-published LICENSE from the base model repository",
+        "licenseApprovedForRelease": false
       }
     },
     "standard": {
@@ -70,10 +74,12 @@
         "digestSource": "Hugging Face model API, siblings[].lfs.sha256 at the pinned revision",
         "sizeMatchedProvider": true,
         "digestMatchedProvider": true,
-        "licenseVerifiedApache2": true,
         "licenseFilePublishedByAuthor": false,
         "downloadedFromPinnedRevision": true,
-        "gatedRepository": false
+        "gatedRepository": false,
+        "licenseMetadataDeclares": "Apache-2.0",
+        "licenseCopyStored": "canonical Apache-2.0 text; the base model repository publishes no LICENSE file",
+        "licenseApprovedForRelease": false
       }
     }
   },
