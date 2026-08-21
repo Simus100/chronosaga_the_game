@@ -11,6 +11,7 @@ import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from './resu
 import { evaluateObjectively } from './objective.js';
 import { HARD_FAIL_CATEGORIES, type HardFailCategory } from './hard-fail.js';
 import { meanByAxis, scoresForProfile, type ScoreAxis, type ScoreSheet } from './scoring.js';
+import { asHardFails, type HumanReview } from './human-review.js';
 
 export interface ProfileSummary {
   profile: BenchmarkProfile;
@@ -27,8 +28,16 @@ export interface ProfileSummary {
   meanTokensPerSecond: number | null;
   deterministicFailures: number;
   heuristicWarnings: number;
+  /** Cases disqualified by the deterministic evaluator. */
+  machineHardFailedCases: number;
+  /** Cases a human reviewer disqualified. Never inferred from a low score. */
+  humanHardFailedCases: number;
+  /** Either kind. What a reader wants when asking "how many were unusable?". */
   hardFailedCases: number;
   hardFailsByCategory: Record<HardFailCategory, number>;
+  humanHardFailsByCategory: Record<HardFailCategory, number>;
+  /** Heuristic findings queued for review, which disqualify nothing. */
+  reviewSignals: number;
   acceptanceByTask: Record<string, { attempted: number; accepted: number }>;
   humanMeanByAxis: Record<ScoreAxis, number | null> | null;
 }
@@ -63,18 +72,123 @@ export function caseIdsFor(run: BenchmarkRun, profile: BenchmarkProfile): Set<st
 }
 
 /**
- * Refuse to compare profiles that did not see the same cases.
+ * The generation settings a Lite-versus-Standard quality comparison controls.
  *
- * Returns the offending case ids; empty means the comparison is fair.
+ * Varying any of these between profiles measures the setting, not the model.
+ * Context size is included deliberately: if P0.5-C later varies it on purpose,
+ * that belongs in a separate matrix dimension rather than mixed into one
+ * comparison, and this is what forces that conversation to happen.
+ */
+const CONTROLLED_SETTINGS = [
+  'contextSize',
+  'maxOutputTokens',
+  'temperature',
+  'topP',
+  'seed',
+  'reasoning',
+] as const;
+
+function controlledSignature(generation: BenchmarkGeneration): string {
+  const context = generation.context as unknown as Record<string, unknown>;
+  return CONTROLLED_SETTINGS.map(key => `${key}=${JSON.stringify(context[key] ?? null)}`).join(' ');
+}
+
+/**
+ * Refuse to compare profiles whose runs were not actually comparable.
+ *
+ * Case ids alone are necessary and nowhere near sufficient. Four things are
+ * checked, each of which has silently ruined somebody's benchmark before:
+ *
+ * 1. **Coverage** — both profiles saw every case.
+ * 2. **Identical inputs** — the recorded fingerprint over the prompts matches.
+ *    Same case id with a different prompt is not the same question.
+ * 3. **One artifact per profile** — a run that swapped models halfway measures
+ *    neither of them.
+ * 4. **Controlled settings** — the sampling and context were held equal where
+ *    the comparison claims to hold them equal.
+ *
+ * Returns human-readable problems; empty means the comparison is fair.
  */
 export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfile[]): string[] {
-  if (profiles.length < 2) return [];
+  const problems: string[] = [];
+
+  // 3 and 4 apply to a single profile too: a run that changed model or settings
+  // mid-flight is incoherent even before anything is compared against it.
+  for (const profile of profiles) {
+    const generations = run.generations.filter(generation => generation.profile === profile);
+    if (generations.length === 0) continue;
+
+    const digests = new Set(generations.map(generation => generation.artifact.sha256));
+    if (digests.size > 1) {
+      problems.push(
+        `${profile} mixed ${digests.size} artifact identities in one run: ${[...digests]
+          .map(digest => digest.slice(0, 12))
+          .sort()
+          .join(', ')}`,
+      );
+    }
+
+    const signatures = new Set(generations.map(controlledSignature));
+    if (signatures.size > 1) {
+      problems.push(`${profile} varied its controlled generation settings within one run`);
+    }
+  }
+
+  if (profiles.length < 2) return problems.sort();
+
   const sets = profiles.map(profile => caseIdsFor(run, profile));
   const union = new Set(sets.flatMap(set => [...set]));
-  const problems: string[] = [];
   for (const caseId of union) {
     const missing = profiles.filter((_, index) => !sets[index]!.has(caseId));
-    if (missing.length > 0) problems.push(`${caseId} missing for ${missing.join(', ')}`);
+    if (missing.length > 0) {
+      problems.push(`${caseId} missing for ${missing.join(', ')}`);
+      continue;
+    }
+
+    const fingerprints = new Set(
+      run.generations
+        .filter(generation => generation.caseId === caseId && profiles.includes(generation.profile))
+        .map(generation => generation.inputFingerprint),
+    );
+    if (fingerprints.size > 1) {
+      problems.push(`${caseId} was asked differently of each profile: ${fingerprints.size} fingerprints`);
+    }
+  }
+
+  // Across profiles, the controlled settings must also agree.
+  const perProfile = profiles
+    .map(profile => {
+      const first = run.generations.find(generation => generation.profile === profile);
+      return first ? controlledSignature(first) : null;
+    })
+    .filter((signature): signature is string => signature !== null);
+  if (new Set(perProfile).size > 1) {
+    problems.push('the profiles were run with different controlled generation settings');
+  }
+
+  return problems.sort();
+}
+
+/**
+ * Every generation whose recorded task disagrees with the suite.
+ *
+ * A row that mislabels its own task quietly corrupts every per-task breakdown,
+ * and nothing else would notice.
+ */
+export function taskMismatches(suite: BenchmarkSuite, run: BenchmarkRun): string[] {
+  const cases = new Map(suite.cases.map(entry => [entry.id, entry]));
+  const problems: string[] = [];
+  for (const generation of run.generations) {
+    const declared = cases.get(generation.caseId);
+    if (!declared) {
+      problems.push(`${generation.id} names case ${generation.caseId}, which the suite does not contain`);
+      continue;
+    }
+    if (declared.task !== generation.task) {
+      problems.push(
+        `${generation.id} claims task '${generation.task}' but ${generation.caseId} is '${declared.task}'`,
+      );
+    }
   }
   return problems.sort();
 }
@@ -84,6 +198,7 @@ function summarise(
   run: BenchmarkRun,
   profile: BenchmarkProfile,
   sheet: ScoreSheet | null,
+  review: HumanReview | null,
 ): ProfileSummary {
   const cases = new Map<string, BenchmarkCase>(suite.cases.map(entry => [entry.id, entry]));
   const generations = run.generations.filter(generation => generation.profile === profile);
@@ -98,10 +213,16 @@ function summarise(
   const hardFailsByCategory = Object.fromEntries(
     HARD_FAIL_CATEGORIES.map(category => [category, 0]),
   ) as Record<HardFailCategory, number>;
+  const humanHardFailsByCategory = Object.fromEntries(
+    HARD_FAIL_CATEGORIES.map(category => [category, 0]),
+  ) as Record<HardFailCategory, number>;
 
   const acceptanceByTask: Record<string, { attempted: number; accepted: number }> = {};
   let deterministicFailures = 0;
   let heuristicWarnings = 0;
+  let reviewSignals = 0;
+  let machineHardFailedCases = 0;
+  let humanHardFailedCases = 0;
   let hardFailedCases = 0;
   let firstAttemptAccepted = 0;
 
@@ -115,17 +236,27 @@ function summarise(
     if (accepted) bucket.accepted += 1;
     if (attempts.some(attempt => attempt.attempt === 1 && attempt.accepted)) firstAttemptAccepted += 1;
 
-    let caseHardFailed = false;
+    let caseMachineHardFailed = false;
+    let caseHumanHardFailed = false;
     for (const attempt of attempts) {
       const evaluation = evaluateObjectively(testCase, attempt);
       deterministicFailures += evaluation.deterministicFailures;
       heuristicWarnings += evaluation.heuristicWarnings;
+      reviewSignals += evaluation.reviewSignals.length;
       for (const fail of evaluation.hardFails) {
         hardFailsByCategory[fail.category] += 1;
-        caseHardFailed = true;
+        caseMachineHardFailed = true;
+      }
+      for (const fail of review ? asHardFails(review, attempt.id) : []) {
+        humanHardFailsByCategory[fail.category] += 1;
+        caseHumanHardFailed = true;
       }
     }
-    if (caseHardFailed) hardFailedCases += 1;
+    if (caseMachineHardFailed) machineHardFailedCases += 1;
+    if (caseHumanHardFailed) humanHardFailedCases += 1;
+    // A case is unusable if either kind of review disqualified it. Prose scores
+    // never enter this count.
+    if (caseMachineHardFailed || caseHumanHardFailed) hardFailedCases += 1;
   }
 
   const casesAttempted = byCase.size;
@@ -160,8 +291,12 @@ function summarise(
     ),
     deterministicFailures,
     heuristicWarnings,
+    reviewSignals,
+    machineHardFailedCases,
+    humanHardFailedCases,
     hardFailedCases,
     hardFailsByCategory,
+    humanHardFailsByCategory,
     acceptanceByTask,
     humanMeanByAxis,
   };
@@ -178,7 +313,15 @@ export function buildComparison(
   run: BenchmarkRun,
   profiles: BenchmarkProfile[] = ['lite', 'standard'],
   sheet: ScoreSheet | null = null,
+  review: HumanReview | null = null,
 ): ComparisonReport {
+  const mismatches = taskMismatches(suite, run);
+  if (mismatches.length > 0) {
+    throw new Error(
+      `the run mislabels the cases it claims to have run: ${mismatches.join('; ')}`,
+    );
+  }
+
   const parity = inputParityProblems(run, profiles);
   if (parity.length > 0) {
     throw new Error(
@@ -208,7 +351,7 @@ export function buildComparison(
     gitCommit: run.metadata.gitCommit,
     generatedAt: new Date(0).toISOString(),
     caseCount: allCaseIds.size,
-    profiles: profiles.map(profile => summarise(suite, run, profile, sheet)),
+    profiles: profiles.map(profile => summarise(suite, run, profile, sheet, review)),
     divergentCases,
   };
 }
@@ -227,7 +370,11 @@ export function renderComparison(report: ComparisonReport): string {
     lines.push(`  retries / fallbacks    ${profile.retries} / ${profile.fallbacks}`);
     lines.push(`  median latency         ${profile.medianLatencyMs ?? '—'} ms`);
     lines.push(`  mean tokens/s          ${profile.meanTokensPerSecond?.toFixed(1) ?? '—'}`);
-    lines.push(`  hard-failed cases      ${profile.hardFailedCases}`);
+    lines.push(
+      `  hard-failed cases      ${profile.hardFailedCases} ` +
+        `(machine ${profile.machineHardFailedCases}, human ${profile.humanHardFailedCases})`,
+    );
+    lines.push(`  review signals         ${profile.reviewSignals}`);
     lines.push('');
   }
   if (report.divergentCases.length > 0) {

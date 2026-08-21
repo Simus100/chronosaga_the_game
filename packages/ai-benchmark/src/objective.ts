@@ -12,11 +12,19 @@
  * evaluated by string matching here; what *is* evaluated is derived from the
  * structured half of the case — the delta, the character ids, the memory ids and
  * the tone vocabulary — where the answer is not a matter of opinion.
+ *
+ * **The invariant that governs this file:** a heuristic check may raise a review
+ * signal, and may never produce a machine hard fail on its own. Hard failures
+ * disqualify a generation, and nothing that can misfire is allowed to do that
+ * unaided. A model that says "l'acqua scende da 17" without naming 14 might be
+ * wrong or might be mid-sentence; a human decides. Only conditions established
+ * deterministically — an unrecoverable structured output after its retry, a
+ * memory id the case never granted — become machine hard fails.
  */
 
 import type { BenchmarkCase } from './case.js';
 import type { BenchmarkGeneration, NormalizedOutput } from './result.js';
-import type { HardFail } from './hard-fail.js';
+import type { HardFail, HardFailCategory } from './hard-fail.js';
 
 /**
  * How much weight a check carries.
@@ -34,12 +42,27 @@ export interface ObjectiveCheck {
   detail: string;
 }
 
+/** Something a human should look at, raised by a check that can misfire. */
+export interface ReviewSignal {
+  checkId: string;
+  detail: string;
+  /** The hard-fail category this would be, if a human confirms it. */
+  candidateCategory: HardFailCategory;
+}
+
 export interface ObjectiveEvaluation {
   generationId: string;
   caseId: string;
   checks: ObjectiveCheck[];
-  /** Machine-established disqualifications only. Humans may add more later. */
+  /**
+   * Machine-established disqualifications only, every one of them from a
+   * deterministic check. Human reviewers add their own separately.
+   */
   hardFails: HardFail[];
+  /**
+   * What a heuristic noticed. Never a disqualification: a queue for review.
+   */
+  reviewSignals: ReviewSignal[];
   deterministicFailures: number;
   heuristicWarnings: number;
 }
@@ -129,6 +152,7 @@ export function evaluateObjectively(
 ): ObjectiveEvaluation {
   const checks: ObjectiveCheck[] = [];
   const hardFails: HardFail[] = [];
+  const reviewSignals: ReviewSignal[] = [];
   const constraints = testCase.constraints;
 
   const add = (id: string, passed: boolean, confidence: CheckConfidence, detail: string) =>
@@ -161,6 +185,7 @@ export function evaluateObjectively(
       caseId: testCase.id,
       checks,
       hardFails,
+      reviewSignals,
       deterministicFailures: checks.filter(c => !c.passed && c.confidence === 'deterministic').length,
       heuristicWarnings: 0,
     };
@@ -257,10 +282,13 @@ export function evaluateObjectively(
         : `no stale claim detected for '${change.key}'`,
     );
     if (staleOnly) {
-      hardFails.push({
-        category: 'contradicts_state_delta',
-        detail: `'${change.key}' moved ${before} -> ${after}, but the output asserts ${before}`,
-        determinedBy: 'machine',
+      // A signal, not a verdict. Prose can legitimately mention only the old
+      // number while describing a fall, and a machine cannot tell the difference
+      // reliably. A human confirms this one.
+      reviewSignals.push({
+        checkId: `authoritative_value_current:${change.key}`,
+        detail: `'${change.key}' moved ${before} -> ${after}, but the output names only ${before}`,
+        candidateCategory: 'contradicts_state_delta',
       });
     }
   }
@@ -336,10 +364,12 @@ export function evaluateObjectively(
     `${Math.round(repetition * 100)}% of sentences are duplicates`,
   );
   if (repetition >= 0.5) {
-    hardFails.push({
-      category: 'systematically_unusable',
+    // Heavy repetition usually means unusable output, but "usually" is not
+    // "always": a litany can be deliberate. Raised for review, never enforced.
+    reviewSignals.push({
+      checkId: 'repetition_within_bounds',
       detail: `${Math.round(repetition * 100)}% of sentences repeat verbatim`,
-      determinedBy: 'machine',
+      candidateCategory: 'systematically_unusable',
     });
   }
 
@@ -374,6 +404,7 @@ export function evaluateObjectively(
     caseId: testCase.id,
     checks,
     hardFails,
+    reviewSignals,
     deterministicFailures: checks.filter(check => !check.passed && check.confidence === 'deterministic').length,
     heuristicWarnings: checks.filter(check => !check.passed && check.confidence === 'heuristic').length,
   };

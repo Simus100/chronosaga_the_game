@@ -35,7 +35,14 @@ export interface ContextConfiguration {
   contextSize: number;
   maxOutputTokens: number;
   temperature: number;
-  topP: number;
+  /**
+   * Null when the runtime default was used rather than an explicit value.
+   *
+   * The benchmark configures both explicitly, because "whatever the server
+   * happened to default to" is not something anyone can reproduce. The product
+   * smoke leaves them alone, and says so here rather than inventing a number.
+   */
+  topP: number | null;
   seed: number | null;
   /** `--reasoning off` in P0; recorded because it changes output shape. */
   reasoning: string;
@@ -72,6 +79,13 @@ export interface BenchmarkGeneration {
   profile: BenchmarkProfile;
   artifact: ArtifactIdentity;
   context: ContextConfiguration;
+  /**
+   * SHA-256 over the suite identity, the case and both prompts verbatim.
+   *
+   * Two profiles that answered the same case must carry the same fingerprint.
+   * That turns "they saw identical inputs" from an assumption into evidence.
+   */
+  inputFingerprint: string;
   /** 1 for the first try; a retry is a second row, never a mutation. */
   attempt: number;
   accepted: boolean;
@@ -136,6 +150,12 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
   if (!metadata.runtimeReleaseTag) {
     problems.push({ field: 'metadata.runtimeReleaseTag', message: 'the runtime release must be recorded' });
   }
+  if (!metadata.runnerVersion) {
+    problems.push({ field: 'metadata.runnerVersion', message: 'the runner version must be recorded' });
+  }
+  if (!metadata.host?.cpu || metadata.host.logicalCores <= 0) {
+    problems.push({ field: 'metadata.host', message: 'real host facts are required' });
+  }
 
   const seen = new Set<string>();
   for (const generation of run.generations) {
@@ -158,6 +178,12 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     }
 
     if (!generation.rawOutputPath) at('rawOutputPath', 'raw evidence must be referenced');
+    if (!SHA256.test(generation.inputFingerprint)) {
+      at('inputFingerprint', 'a generation must record what it was asked');
+    }
+    if (generation.context.contextSize <= 0) at('context.contextSize', 'must be positive');
+    if (generation.context.maxOutputTokens <= 0) at('context.maxOutputTokens', 'must be positive');
+    if (!generation.context.reasoning) at('context.reasoning', 'the reasoning mode must be recorded');
 
     if (generation.accepted) {
       if (generation.normalizedOutput === null) {

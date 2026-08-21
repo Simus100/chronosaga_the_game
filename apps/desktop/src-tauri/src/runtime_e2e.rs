@@ -76,6 +76,14 @@ fn manager() -> Option<Arc<LocalAiRuntimeManager>> {
 ///
 /// Generic over the profile id: Lite and Standard travel the identical path,
 /// which is the point of the dual-model architecture.
+/// Shared with [`crate::benchmark`], which needs the same verified identity it
+/// launches with rather than a second resolution that could disagree.
+pub(crate) fn verified_model_for_profile(
+    profile_id: &str,
+) -> Option<crate::model_lock::VerifiedModel> {
+    resolve_model_from_lock(profile_id)
+}
+
 fn resolve_model_from_lock(profile_id: &str) -> Option<crate::model_lock::VerifiedModel> {
     if !opted_in() {
         return None;

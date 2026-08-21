@@ -82,6 +82,7 @@ function generation(over: Partial<BenchmarkGeneration> = {}): BenchmarkGeneratio
       seed: null,
       reasoning: 'off',
     },
+    inputFingerprint: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
     attempt: 1,
     accepted: true,
     validatorErrors: [],
@@ -159,7 +160,11 @@ describe('the deterministic evaluator', () => {
       generation({ normalizedOutput: output({ narration: "L'acqua resta a 17 unita'." }) }),
     );
     expect(check(evaluation, 'authoritative_value_current:water').passed).toBe(false);
-    expect(evaluation.hardFails.map(fail => fail.category)).toContain('contradicts_state_delta');
+    // A heuristic raises a review signal; it never disqualifies on its own.
+    expect(evaluation.hardFails).toEqual([]);
+    expect(evaluation.reviewSignals.map(signal => signal.candidateCategory)).toContain(
+      'contradicts_state_delta',
+    );
   });
 
   it('accepts prose that names both the old and the new value', () => {
@@ -210,7 +215,10 @@ describe('the deterministic evaluator', () => {
       generation({ normalizedOutput: output({ narration: [line, line, line, line].join(' ') }) }),
     );
     expect(check(evaluation, 'repetition_within_bounds').passed).toBe(false);
-    expect(evaluation.hardFails.map(fail => fail.category)).toContain('systematically_unusable');
+    expect(evaluation.hardFails).toEqual([]);
+    expect(evaluation.reviewSignals.map(signal => signal.candidateCategory)).toContain(
+      'systematically_unusable',
+    );
   });
 
   it('still evaluates a rejected generation, and says why', () => {
@@ -240,6 +248,64 @@ describe('the deterministic evaluator', () => {
       }),
     );
     expect(evaluation.hardFails.map(fail => fail.category)).toContain('unrecoverable_structured_output');
+  });
+
+  it('never lets a heuristic create a hard fail on its own', () => {
+    // The invariant, checked across the whole committed suite rather than on one
+    // hand-picked example: for every generation whose only failing checks are
+    // heuristic, there must be no machine hard fail at all.
+    const loop = "La riserva d'acqua continua a scendere senza sosta.";
+    const shapes = [
+      output({ narration: "L'acqua resta a 17 unita'." }),
+      output({ narration: [loop, loop, loop, loop].join(' ') }),
+      output({ narration: "L'acqua resta a 17. " + [loop, loop, loop].join(' ') }),
+    ];
+
+    let exercised = 0;
+    for (const shape of shapes) {
+      const evaluation = evaluateObjectively(caseFixture(), generation({ normalizedOutput: shape }));
+      const failed = evaluation.checks.filter(entry => !entry.passed);
+      // Only meaningful when something failed and everything that failed was
+      // heuristic; an all-green generation proves nothing about the invariant.
+      if (failed.length === 0) continue;
+      if (!failed.every(entry => entry.confidence === 'heuristic')) continue;
+      exercised += 1;
+
+      expect(
+        evaluation.hardFails,
+        `heuristic-only failures produced hard fails: ${JSON.stringify(failed)}`,
+      ).toEqual([]);
+      expect(evaluation.reviewSignals.length).toBeGreaterThan(0);
+      for (const fail of evaluation.hardFails) {
+        expect(fail.determinedBy).toBe('machine');
+      }
+    }
+    expect(exercised, 'no heuristic-only shape was actually exercised').toBeGreaterThan(0);
+  });
+
+  it('still hard-fails on deterministically established conditions', () => {
+    // The other half of the invariant: deterministic conditions must still
+    // disqualify, or the rule would just be "nothing ever fails".
+    const memory = evaluateObjectively(
+      caseFixture(),
+      generation({ normalizedOutput: output({ narration: 'Ricorda mem_mara_convoy.' }) }),
+    );
+    expect(memory.hardFails.map(fail => fail.category)).toContain('incompatible_memory_attribution');
+    expect(memory.hardFails.every(fail => fail.determinedBy === 'machine')).toBe(true);
+
+    const testCase = caseFixture();
+    testCase.constraints.strictJsonOnly = true;
+    const structure = evaluateObjectively(
+      testCase,
+      generation({
+        accepted: false,
+        normalizedOutput: null,
+        validatorErrors: ['malformed JSON'],
+        attempt: 2,
+        retryUsed: true,
+      }),
+    );
+    expect(structure.hardFails.map(fail => fail.category)).toContain('unrecoverable_structured_output');
   });
 
   it('separates heuristic warnings from deterministic failures', () => {

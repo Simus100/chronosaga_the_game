@@ -63,14 +63,34 @@ pub struct StructuredNarration {
 }
 
 /// What the generation is allowed to contain.
+///
+/// Every permission defaults to the strictest production behaviour, so a caller
+/// that forgets to think about one gets the safe answer. Only a scene that
+/// deliberately permits something may relax it.
 #[derive(Debug, Clone)]
 pub struct OutputContract {
     /// Speakers the scene actually contains.
+    ///
+    /// An empty list means the scene has nobody to speak: a location
+    /// description, or a bare delta narration. `dialogue` remains a required
+    /// field in that case — the model must still produce the key — but the array
+    /// must then be empty, because there is nobody who could legitimately fill
+    /// it. Unknown-speaker rejection is untouched either way.
     pub known_speaker_ids: Vec<String>,
     /// Tone vocabulary the UI understands.
     pub allowed_tone_tags: Vec<String>,
     /// Upper bound on narration length, in characters.
     pub max_narration_chars: usize,
+    /// Whether the scene invited event proposals.
+    ///
+    /// False everywhere in the product: the plumbing that would apply a proposal
+    /// does not exist, so anything there is the model reaching for authority.
+    /// The P0.5 benchmark turns it on for the cases that ask for one, and even
+    /// then a proposal is a suggestion the Simulation Core may ignore. Nothing
+    /// in this crate can apply one to WorldState.
+    pub allow_event_proposals: bool,
+    /// Same contract as [`Self::allow_event_proposals`], for memory suggestions.
+    pub allow_memory_suggestions: bool,
 }
 
 impl Default for OutputContract {
@@ -85,6 +105,8 @@ impl Default for OutputContract {
                 "sollevato".to_string(),
             ],
             max_narration_chars: 1200,
+            allow_event_proposals: false,
+            allow_memory_suggestions: false,
         }
     }
 }
@@ -162,7 +184,17 @@ pub fn validate(raw: &str, contract: &OutputContract) -> Result<StructuredNarrat
             contract.max_narration_chars
         )));
     }
-    if parsed.dialogue.is_empty() {
+    // `dialogue` is always a required JSON field; whether it may be empty is a
+    // property of the scene. A scene with speakers that produces none has not
+    // answered; a scene with nobody in it that produces dialogue has invented
+    // people.
+    if contract.known_speaker_ids.is_empty() {
+        if !parsed.dialogue.is_empty() {
+            return Err(ValidationError::UnknownSpeaker(
+                parsed.dialogue[0].speaker_id.clone(),
+            ));
+        }
+    } else if parsed.dialogue.is_empty() {
         return Err(ValidationError::MissingField("dialogue".to_string()));
     }
 
@@ -184,16 +216,19 @@ pub fn validate(raw: &str, contract: &OutputContract) -> Result<StructuredNarrat
         }
     }
 
-    // P0.3-C accepts no proposals at all: the plumbing that would apply them
-    // does not exist yet, so anything here is the model reaching for authority.
-    if !parsed.event_proposals.is_empty() {
+    // The product accepts no proposals at all: the plumbing that would apply one
+    // does not exist, so anything there is the model reaching for authority. A
+    // scene may permit them — the P0.5 benchmark does, for the cases that ask —
+    // and even then they stay suggestions. Passing this validator gives a
+    // proposal no power whatsoever; nothing in this crate writes WorldState.
+    if !contract.allow_event_proposals && !parsed.event_proposals.is_empty() {
         return Err(ValidationError::AuthoritativeClaim(
-            "event_proposals are not accepted in P0.3-C".to_string(),
+            "event_proposals are not accepted by this contract".to_string(),
         ));
     }
-    if !parsed.memory_suggestions.is_empty() {
+    if !contract.allow_memory_suggestions && !parsed.memory_suggestions.is_empty() {
         return Err(ValidationError::AuthoritativeClaim(
-            "memory_suggestions are not accepted in P0.3-C".to_string(),
+            "memory_suggestions are not accepted by this contract".to_string(),
         ));
     }
 
@@ -265,6 +300,36 @@ impl SmokeScenario {
 // Local model provider
 // ---------------------------------------------------------------------------
 
+/// The sampling parameters a request actually uses.
+///
+/// Passed explicitly rather than hard-coded inside the request builder, so the
+/// values that reached `llama-server` and the values a benchmark records are the
+/// same values, from one place. `top_p` and `seed` are `Option` because leaving
+/// them to the server default is a legitimate choice for the product smoke — but
+/// then the record has to say so rather than invent a number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GenerationParameters {
+    pub temperature: f64,
+    pub max_output_tokens: u32,
+    pub top_p: Option<f64>,
+    pub seed: Option<i64>,
+}
+
+impl GenerationParameters {
+    /// What the product smoke has always used.
+    ///
+    /// Low temperature: it is a grounding test, not a creativity test. `top_p`
+    /// and `seed` stay at the runtime's defaults, which is why they are `None`.
+    pub const fn smoke() -> Self {
+        Self {
+            temperature: 0.3,
+            max_output_tokens: 400,
+            top_p: None,
+            seed: None,
+        }
+    }
+}
+
 /// Result of one real generation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -279,6 +344,11 @@ pub struct InferenceOutcome {
     pub narration: Option<String>,
     pub dialogue: Vec<DialogueLine>,
     pub tone_tags: Vec<String>,
+    /// Suggestions the scene permitted, carried as evidence. Never applied: no
+    /// code path in this crate writes WorldState from a generation.
+    pub event_proposals: Vec<serde_json::Value>,
+    /// Same contract as [`Self::event_proposals`].
+    pub memory_suggestions: Vec<serde_json::Value>,
     pub validation_error: Option<String>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
@@ -406,6 +476,7 @@ impl LocalModelProvider {
             &SmokeScenario::system_prompt(),
             &SmokeScenario::user_prompt(),
             &SmokeScenario::contract(),
+            GenerationParameters::smoke(),
         )
         .await
     }
@@ -420,15 +491,15 @@ impl LocalModelProvider {
         system_prompt: &str,
         user_prompt: &str,
         contract: &OutputContract,
+        parameters: GenerationParameters,
     ) -> Result<InferenceOutcome, String> {
-        let request = serde_json::json!({
+        let mut request = serde_json::json!({
             "messages": [
                 { "role": "system", "content": system_prompt },
                 { "role": "user", "content": user_prompt }
             ],
-            // Low temperature: this is a grounding test, not a creativity test.
-            "temperature": 0.3,
-            "max_tokens": 400,
+            "temperature": parameters.temperature,
+            "max_tokens": parameters.max_output_tokens,
             // Server-side constraint where the runtime honours it. The
             // application validator still runs on the result regardless.
             "response_format": { "type": "json_object" },
@@ -436,6 +507,15 @@ impl LocalModelProvider {
             // from the request instead of the command line.
             "chat_template_kwargs": { "enable_thinking": false }
         });
+
+        // Only sent when explicitly configured. Adding a default here would make
+        // the recorded parameters a lie about what the runtime actually did.
+        if let Some(top_p) = parameters.top_p {
+            request["top_p"] = serde_json::json!(top_p);
+        }
+        if let Some(seed) = parameters.seed {
+            request["seed"] = serde_json::json!(seed);
+        }
 
         let started = std::time::Instant::now();
         let response = self
@@ -480,6 +560,8 @@ impl LocalModelProvider {
             narration: None,
             dialogue: Vec::new(),
             tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
             validation_error: None,
             prompt_tokens: body["usage"]["prompt_tokens"].as_u64(),
             completion_tokens,
@@ -493,6 +575,8 @@ impl LocalModelProvider {
                 outcome.narration = Some(valid.narration);
                 outcome.dialogue = valid.dialogue;
                 outcome.tone_tags = valid.tone_tags;
+                outcome.event_proposals = valid.event_proposals;
+                outcome.memory_suggestions = valid.memory_suggestions;
             }
             Err(error) => outcome.validation_error = Some(error.message()),
         }
@@ -503,6 +587,171 @@ impl LocalModelProvider {
 
 #[cfg(test)]
 mod tests {
+    /// A scene with nobody in it, which is what a location description is.
+    fn empty_scene_contract() -> OutputContract {
+        OutputContract {
+            known_speaker_ids: Vec::new(),
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            ..OutputContract::default()
+        }
+    }
+
+    fn payload(dialogue: &str, proposals: &str, suggestions: &str) -> String {
+        format!(
+            "{{\"narration\": \"Helios Reach tace.\", \"dialogue\": [{dialogue}], \
+             \"tone_tags\": [\"tense\"], \"event_proposals\": [{proposals}], \
+             \"memory_suggestions\": [{suggestions}]}}"
+        )
+    }
+
+    #[test]
+    fn a_scene_with_no_speakers_accepts_an_empty_dialogue_array() {
+        // Before this, a location description was impossible to answer: the
+        // prompt said "produce no dialogue" and the validator rejected every
+        // empty array. The field stays required; only its contents may be empty.
+        let valid = validate(&payload("", "", ""), &empty_scene_contract())
+            .expect("an empty scene must accept empty dialogue");
+        assert!(valid.dialogue.is_empty());
+        assert_eq!(valid.narration, "Helios Reach tace.");
+    }
+
+    #[test]
+    fn a_scene_with_no_speakers_still_rejects_invented_dialogue() {
+        // The permission is "nobody speaks", not "anybody may speak". Unknown
+        // speaker rejection is untouched.
+        let error = validate(
+            &payload("{\"speakerId\": \"mara_001\", \"text\": \"Ciao.\"}", "", ""),
+            &empty_scene_contract(),
+        )
+        .expect_err("nobody is in this scene");
+        assert!(matches!(error, ValidationError::UnknownSpeaker(ref who) if who == "mara_001"));
+    }
+
+    #[test]
+    fn a_scene_with_speakers_still_requires_them_to_speak() {
+        let contract = OutputContract {
+            known_speaker_ids: vec!["mara_001".to_string()],
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            ..OutputContract::default()
+        };
+        let error = validate(&payload("", "", ""), &contract).expect_err("silence is not an answer");
+        assert!(matches!(error, ValidationError::MissingField(ref field) if field == "dialogue"));
+    }
+
+    #[test]
+    fn the_default_contract_still_refuses_proposals_and_suggestions() {
+        // The production answer is unchanged: nothing may reach for authority.
+        let contract = OutputContract {
+            known_speaker_ids: vec!["mara_001".to_string()],
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            ..OutputContract::default()
+        };
+        assert!(!contract.allow_event_proposals);
+        assert!(!contract.allow_memory_suggestions);
+
+        let line = "{\"speakerId\": \"mara_001\", \"text\": \"Ciao.\"}";
+        let proposal = validate(&payload(line, "{\"templateId\": \"x\"}", ""), &contract)
+            .expect_err("proposals are not accepted by default");
+        assert!(matches!(proposal, ValidationError::AuthoritativeClaim(_)));
+
+        let suggestion = validate(&payload(line, "", "\"ricorda\""), &contract)
+            .expect_err("suggestions are not accepted by default");
+        assert!(matches!(suggestion, ValidationError::AuthoritativeClaim(_)));
+    }
+
+    #[test]
+    fn a_contract_that_invited_a_proposal_may_accept_one() {
+        let contract = OutputContract {
+            known_speaker_ids: vec!["mara_001".to_string()],
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            allow_event_proposals: true,
+            allow_memory_suggestions: false,
+        };
+        let valid = validate(
+            &payload(
+                "{\"speakerId\": \"mara_001\", \"text\": \"Ciao.\"}",
+                "{\"templateId\": \"water_ration\", \"tags\": [\"water\"]}",
+                "",
+            ),
+            &contract,
+        )
+        .expect("a permitted proposal must pass the structural validator");
+
+        assert_eq!(valid.event_proposals.len(), 1);
+        // Permitting one does not permit the other.
+        assert!(valid.memory_suggestions.is_empty());
+    }
+
+    #[test]
+    fn a_contract_that_invited_a_memory_suggestion_may_accept_one() {
+        let contract = OutputContract {
+            known_speaker_ids: vec!["mara_001".to_string()],
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            allow_event_proposals: false,
+            allow_memory_suggestions: true,
+        };
+        let valid = validate(
+            &payload(
+                "{\"speakerId\": \"mara_001\", \"text\": \"Ciao.\"}",
+                "",
+                "\"Mara ha firmato il razionamento.\"",
+            ),
+            &contract,
+        )
+        .expect("a permitted suggestion must pass the structural validator");
+
+        assert_eq!(valid.memory_suggestions.len(), 1);
+        assert!(valid.event_proposals.is_empty());
+    }
+
+    #[test]
+    fn accepting_a_proposal_grants_it_no_power_over_state() {
+        // The point of the permission is evidence, not authority. A validated
+        // proposal is inert data: this crate exposes no function that turns one
+        // into a change, and `validate` returns a plain value with no handle to
+        // anything. If that ever stops being true, this test is where it should
+        // become visible.
+        let contract = OutputContract {
+            known_speaker_ids: Vec::new(),
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            allow_event_proposals: true,
+            allow_memory_suggestions: true,
+        };
+        let valid = validate(
+            &payload("", "{\"templateId\": \"seize_relay\"}", "\"ricorda\""),
+            &contract,
+        )
+        .expect("permitted");
+
+        // Everything that came back is owned, inert JSON.
+        assert_eq!(valid.event_proposals.len(), 1);
+        assert_eq!(valid.memory_suggestions.len(), 1);
+        assert!(valid.event_proposals[0].is_object());
+
+        // Access is what imports grant, so imports are what this checks. Prose
+        // may discuss WorldState; a `use` line would be able to touch it.
+        let imports: Vec<&str> = include_str!("inference.rs")
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("use "))
+            .collect();
+        assert!(!imports.is_empty(), "the scan must actually be looking at something");
+        for import in imports {
+            for forbidden in ["game_core", "game_types", "state", "persistence"] {
+                assert!(
+                    !import.contains(forbidden),
+                    "the inference boundary must not import {forbidden}: {import}"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     /// Unwrap the error side with a message naming the case under test.
@@ -774,6 +1023,8 @@ mod tests {
             narration: None,
             dialogue: Vec::new(),
             tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
             validation_error: Some("rejected".to_string()),
             prompt_tokens: None,
             completion_tokens: None,

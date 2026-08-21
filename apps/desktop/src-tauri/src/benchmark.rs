@@ -54,7 +54,7 @@ pub struct BenchmarkSuite {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BenchmarkCase {
     pub id: String,
     pub task: String,
@@ -69,7 +69,7 @@ pub struct BenchmarkCase {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BenchmarkCharacter {
     pub id: String,
     pub name: String,
@@ -77,10 +77,17 @@ pub struct BenchmarkCharacter {
     pub stress: i64,
     pub morale: i64,
     pub traits: Vec<String>,
+    /// Present in the suite and in the TypeScript type. Without these the model
+    /// is told who someone is but not whose side they are on or where they
+    /// stand, which is half the grounding a political case depends on.
+    #[serde(default)]
+    pub faction_id: Option<String>,
+    #[serde(default)]
+    pub location_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BenchmarkMemory {
     pub id: String,
     pub summary: String,
@@ -89,7 +96,7 @@ pub struct BenchmarkMemory {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BenchmarkDelta {
     pub turn: i64,
     pub source: String,
@@ -97,7 +104,7 @@ pub struct BenchmarkDelta {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BenchmarkChange {
     #[serde(rename = "type")]
     pub change_type: String,
@@ -107,7 +114,7 @@ pub struct BenchmarkChange {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BenchmarkConstraints {
     pub language: String,
     pub known_speaker_ids: Vec<String>,
@@ -154,6 +161,10 @@ pub fn case_contract(case: &BenchmarkCase) -> OutputContract {
         known_speaker_ids: case.constraints.known_speaker_ids.clone(),
         allowed_tone_tags: case.constraints.allowed_tone_tags.clone(),
         max_narration_chars: case.constraints.max_narration_chars,
+        // Derived from the case, never assumed: a case that does not invite a
+        // proposal gets exactly the production rejection.
+        allow_event_proposals: case.constraints.allow_event_proposals,
+        allow_memory_suggestions: case.constraints.allow_memory_suggestions,
     }
 }
 
@@ -235,7 +246,7 @@ pub fn user_prompt(case: &BenchmarkCase) -> String {
             .characters
             .iter()
             .map(|character| {
-                format!(
+                let mut line = format!(
                     "- {} ({}), ruolo {}, stress {}, morale {}, tratti: {}",
                     character.id,
                     character.name,
@@ -243,7 +254,14 @@ pub fn user_prompt(case: &BenchmarkCase) -> String {
                     character.stress,
                     character.morale,
                     character.traits.join(", ")
-                )
+                );
+                if let Some(faction) = &character.faction_id {
+                    line.push_str(&format!(", fazione {faction}"));
+                }
+                if let Some(location) = &character.location_id {
+                    line.push_str(&format!(", si trova a {location}"));
+                }
+                line
             })
             .collect();
         sections.push(format!("PERSONAGGI:\n{}", lines.join("\n")));
@@ -310,6 +328,98 @@ pub fn user_prompt(case: &BenchmarkCase) -> String {
     }
 
     sections.join("\n\n")
+}
+
+/// The one generation configuration a benchmark run uses.
+///
+/// This is the source of truth in both directions: it builds the request that
+/// reaches `llama-server`, and it builds the `context` block recorded with every
+/// generation. There is deliberately no second place where a temperature or a
+/// token budget is written down, because the moment there is, the evidence stops
+/// describing the run.
+///
+/// `top_p` and `seed` are configured explicitly rather than left to the server.
+/// A comparison between two models is only worth reading if the sampling was the
+/// same for both, and "whatever the runtime happened to default to" is not a
+/// value anyone can reproduce next month.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextConfiguration {
+    pub context_size: u32,
+    pub max_output_tokens: u32,
+    pub temperature: f64,
+    pub top_p: Option<f64>,
+    pub seed: Option<i64>,
+    pub reasoning: String,
+}
+
+/// Sampling the P0.5 suite runs at.
+pub const BENCHMARK_TEMPERATURE: f64 = 0.3;
+pub const BENCHMARK_MAX_OUTPUT_TOKENS: u32 = 400;
+pub const BENCHMARK_TOP_P: f64 = 0.9;
+pub const BENCHMARK_SEED: i64 = 7419;
+/// Matches `--reasoning off` on the launch contract.
+pub const BENCHMARK_REASONING: &str = "off";
+
+/// The recorded configuration for a run at a given context size.
+///
+/// Context size is not a constant here: it comes from the verified model's
+/// locked `contextTarget`, which is also what the launch contract passes as
+/// `--ctx-size`. Writing it twice is exactly the drift this function prevents.
+pub fn benchmark_context(context_size: u32) -> ContextConfiguration {
+    ContextConfiguration {
+        context_size,
+        max_output_tokens: BENCHMARK_MAX_OUTPUT_TOKENS,
+        temperature: BENCHMARK_TEMPERATURE,
+        top_p: Some(BENCHMARK_TOP_P),
+        seed: Some(BENCHMARK_SEED),
+        reasoning: BENCHMARK_REASONING.to_string(),
+    }
+}
+
+/// The same configuration as request parameters.
+///
+/// Derived, never re-typed: if the two ever disagree the recorded evidence is
+/// wrong, and a test asserts they cannot.
+pub fn request_parameters(context: &ContextConfiguration) -> crate::inference::GenerationParameters {
+    crate::inference::GenerationParameters {
+        temperature: context.temperature,
+        max_output_tokens: context.max_output_tokens,
+        top_p: context.top_p,
+        seed: context.seed,
+    }
+}
+
+/// Exactly which artifact answered, taken from the verified model.
+///
+/// Every field comes from the authoritative lock by way of `VerifiedModel`, so
+/// nothing here is inferred from a path or a profile name. A record that cannot
+/// name the bytes it measured is not evidence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactIdentity {
+    pub profile_id: String,
+    pub family: String,
+    pub quantization: String,
+    pub artifact_filename: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub source: String,
+    pub release_approved: bool,
+}
+
+pub fn artifact_identity(verified: &crate::model_lock::VerifiedModel) -> ArtifactIdentity {
+    let model = verified.model();
+    ArtifactIdentity {
+        profile_id: model.profile_id().to_string(),
+        family: model.family().to_string(),
+        quantization: model.quantization().to_string(),
+        artifact_filename: model.artifact_filename().to_string(),
+        size_bytes: model.size_bytes(),
+        sha256: model.expected_sha256().to_string(),
+        source: model.source().label().to_string(),
+        release_approved: model.release_approved(),
+    }
 }
 
 /// Everything needed to reproduce a run, minus the weights themselves.
@@ -404,6 +514,11 @@ pub struct GenerationRecord {
     pub case_id: String,
     pub task: String,
     pub profile: String,
+    pub artifact: ArtifactIdentity,
+    pub context: ContextConfiguration,
+    /// SHA-256 over the exact prompts and case identity, so "the same inputs"
+    /// is evidence rather than an assumption.
+    pub input_fingerprint: String,
     pub attempt: u32,
     pub accepted: bool,
     pub validator_errors: Vec<String>,
@@ -437,6 +552,8 @@ pub fn record_generation(
     case: &BenchmarkCase,
     profile: &str,
     attempt: u32,
+    artifact: ArtifactIdentity,
+    context: ContextConfiguration,
     outcome: &crate::inference::InferenceOutcome,
 ) -> GenerationRecord {
     GenerationRecord {
@@ -445,6 +562,9 @@ pub fn record_generation(
         case_id: case.id.clone(),
         task: case.task.clone(),
         profile: profile.to_string(),
+        artifact,
+        context,
+        input_fingerprint: input_fingerprint(case),
         attempt,
         accepted: outcome.accepted,
         validator_errors: outcome
@@ -463,12 +583,70 @@ pub fn record_generation(
             narration: outcome.narration.clone().unwrap_or_default(),
             dialogue: outcome.dialogue.clone(),
             tone_tags: outcome.tone_tags.clone(),
-            // P0 keeps both arrays empty by contract; the shape is carried so the
-            // reader does not have to special-case a missing key.
-            event_proposals: Vec::new(),
-            memory_suggestions: Vec::new(),
+            event_proposals: outcome.event_proposals.clone(),
+            memory_suggestions: outcome.memory_suggestions.clone(),
         }),
     }
+}
+
+/// SHA-256 over the exact inputs a case presents to a model.
+///
+/// Covers the suite identity, the case id and the two prompts verbatim. Two
+/// profiles that answered the same case must carry the same fingerprint; if they
+/// do not, something changed between the runs and the comparison is not a
+/// comparison. Cheap to compute and impossible to fake by accident.
+pub fn input_fingerprint(case: &BenchmarkCase) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(SUITE_RELATIVE_PATH.as_bytes());
+    hasher.update([0]);
+    hasher.update(case.id.as_bytes());
+    hasher.update([0]);
+    hasher.update(case.task.as_bytes());
+    hasher.update([0]);
+    hasher.update(system_prompt(case).as_bytes());
+    hasher.update([0]);
+    hasher.update(user_prompt(case).as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Write the run metadata beside the rows it describes.
+///
+/// A run directory without this is unattributable, so it is written before the
+/// first generation rather than at the end: a crashed run still says what it was.
+pub fn persist_metadata(
+    run_directory: &std::path::Path,
+    metadata: &RunMetadata,
+) -> Result<(), String> {
+    fs::create_dir_all(run_directory)
+        .map_err(|error| format!("unable to create {}: {error}", run_directory.display()))?;
+    let path = run_directory.join("metadata.json");
+    let body = serde_json::to_string_pretty(metadata)
+        .map_err(|error| format!("unserialisable metadata: {error}"))?;
+    fs::write(&path, body).map_err(|error| format!("unable to write {}: {error}", path.display()))
+}
+
+/// Whether a run may be published as comparable evidence.
+///
+/// A dirty checkout cannot be reproduced by anyone else, so it must not quietly
+/// become an official result. Smoke passes and unit fixtures may still be dirty:
+/// they prove the plumbing, not the models.
+pub fn official_run_verdict(metadata: &RunMetadata) -> Result<(), String> {
+    if metadata.git_dirty {
+        return Err(format!(
+            "refusing to record run {} as comparable evidence: the checkout is dirty at {}, \
+             so nobody else can reproduce it. Commit or stash first, or run it as a smoke pass.",
+            metadata.run_id, metadata.git_commit
+        ));
+    }
+    if metadata.git_commit.trim().is_empty() {
+        return Err("refusing an official run with no commit to attribute it to".to_string());
+    }
+    Ok(())
 }
 
 /// Write one generation's raw text and its result row.
@@ -497,6 +675,93 @@ pub fn persist(
     writeln!(file, "{line}").map_err(|error| format!("unable to append to {}: {error}", rows.display()))
 }
 
+/// Which cases a smoke pass runs.
+///
+/// Named ids when asked for, otherwise the first `count`. P0.5-A needs to reach
+/// specific shapes — a zero-speaker description, a proposal, a suggestion — and
+/// taking the first three would only ever exercise dialogue.
+fn cases_to_run(suite: &BenchmarkSuite, count: usize) -> Vec<&BenchmarkCase> {
+    match env::var("CHRONOSAGA_BENCHMARK_CASE_IDS") {
+        Ok(ids) if !ids.trim().is_empty() => ids
+            .split(',')
+            .map(str::trim)
+            .filter_map(|id| suite.cases.iter().find(|case| case.id == id))
+            .collect(),
+        _ => suite.cases.iter().take(count).collect(),
+    }
+}
+
+/// When a run started, as a timestamp a human can read.
+///
+/// Recorded as UTC seconds since the epoch rendered in RFC 3339 shape. A bare
+/// integer is technically a timestamp and practically useless in a report.
+fn started_at() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default();
+    let days = seconds.div_euclid(86_400);
+    let time = seconds.rem_euclid(86_400);
+    // Civil-from-days, Howard Hinnant's algorithm. No date crate for one field.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{year:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        time / 3600,
+        (time % 3600) / 60,
+        time % 60
+    )
+}
+
+/// The commit a run was made from, or nothing when git cannot be asked.
+fn git_commit() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../"))
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Whether the checkout had uncommitted changes when the run started.
+fn git_dirty() -> bool {
+    std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../"))
+        .output()
+        .map(|output| !output.stdout.is_empty())
+        .unwrap_or(true)
+}
+
+/// Real facts about the machine that produced a run.
+fn host_facts() -> HostFacts {
+    use sysinfo::System;
+    let mut system = System::new_all();
+    system.refresh_all();
+    HostFacts {
+        os: System::long_os_version().unwrap_or_else(|| "unknown".to_string()),
+        arch: std::env::consts::ARCH.to_string(),
+        cpu: system
+            .cpus()
+            .first()
+            .map(|cpu| cpu.brand().trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        logical_cores: system.cpus().len(),
+        total_ram_mb: system.total_memory() / 1024 / 1024,
+    }
+}
+
 fn enabled() -> bool {
     env::var(BENCHMARK_ENV).ok().as_deref() == Some("1")
         && env::var(WORKSPACE_ENV).is_ok_and(|value| !value.trim().is_empty())
@@ -505,6 +770,320 @@ fn enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The locked identity of a profile, for tests that need a real-shaped one.
+    fn test_artifact(profile: &str) -> ArtifactIdentity {
+        let (family, filename, size, sha) = if profile == "lite" {
+            (
+                "Qwen3-1.7B",
+                "Qwen3-1.7B-Q4_K_M.gguf",
+                1_282_439_264u64,
+                "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+            )
+        } else {
+            (
+                "SmolLM3-3B",
+                "SmolLM3-Q4_K_M.gguf",
+                1_915_305_312u64,
+                "8334b850b7bd46238c16b0c550df2138f0889bf433809008cc17a8b05761863e",
+            )
+        };
+        ArtifactIdentity {
+            profile_id: profile.to_string(),
+            family: family.to_string(),
+            quantization: "Q4_K_M".to_string(),
+            artifact_filename: filename.to_string(),
+            size_bytes: size,
+            sha256: sha.to_string(),
+            source: "user model library".to_string(),
+            release_approved: false,
+        }
+    }
+
+    fn test_metadata(dirty: bool) -> RunMetadata {
+        let suite = load_suite().unwrap();
+        new_run_metadata(
+            "run_001",
+            "2026-08-21T00:00:00Z",
+            &suite,
+            "9599f38d846f29907286e53200f51a703af4f53c",
+            dirty,
+            "b10343",
+            Some("a".repeat(64)),
+            HostFacts {
+                os: "Windows 11".to_string(),
+                arch: "x86_64".to_string(),
+                cpu: "i7-13700KF".to_string(),
+                logical_cores: 24,
+                total_ram_mb: 65536,
+            },
+        )
+    }
+
+    #[test]
+    fn the_recorded_configuration_is_the_configuration_that_was_requested() {
+        // The whole point of P1-A: one source, two consumers. If these ever
+        // disagree, the evidence describes a run that did not happen.
+        let context = benchmark_context(4096);
+        let parameters = request_parameters(&context);
+
+        assert_eq!(parameters.temperature, context.temperature);
+        assert_eq!(parameters.max_output_tokens, context.max_output_tokens);
+        assert_eq!(parameters.top_p, context.top_p);
+        assert_eq!(parameters.seed, context.seed);
+
+        // Explicitly configured rather than left to the runtime, so another
+        // machine can reproduce the sampling.
+        assert_eq!(context.top_p, Some(BENCHMARK_TOP_P));
+        assert_eq!(context.seed, Some(BENCHMARK_SEED));
+        assert_eq!(context.reasoning, BENCHMARK_REASONING);
+    }
+
+    #[test]
+    fn the_context_size_comes_from_the_model_not_from_a_constant() {
+        assert_eq!(benchmark_context(4096).context_size, 4096);
+        assert_eq!(benchmark_context(8192).context_size, 8192);
+    }
+
+    #[test]
+    fn the_product_smoke_keeps_its_own_parameters_and_says_so() {
+        // The smoke deliberately leaves top_p and seed to the runtime. That is a
+        // legitimate choice; recording an invented value for them would not be.
+        let smoke = crate::inference::GenerationParameters::smoke();
+        assert_eq!(smoke.temperature, 0.3);
+        assert_eq!(smoke.max_output_tokens, 400);
+        assert_eq!(smoke.top_p, None);
+        assert_eq!(smoke.seed, None);
+    }
+
+    #[test]
+    fn an_official_run_refuses_a_dirty_checkout() {
+        // Nobody else can reproduce a run made from uncommitted code, so it must
+        // not quietly become comparable evidence.
+        let refused = official_run_verdict(&test_metadata(true))
+            .expect_err("a dirty checkout cannot be official");
+        assert!(refused.contains("dirty"), "{refused}");
+        assert!(refused.contains("reproduce"), "{refused}");
+
+        official_run_verdict(&test_metadata(false)).expect("a clean checkout is fine");
+    }
+
+    #[test]
+    fn metadata_lands_beside_the_rows_it_describes() {
+        let directory = std::env::temp_dir().join("chronosaga-benchmark-metadata");
+        let _ = fs::remove_dir_all(&directory);
+        persist_metadata(&directory, &test_metadata(false)).expect("must persist");
+
+        let written = fs::read_to_string(directory.join("metadata.json")).unwrap();
+        for required in [
+            "gitCommit",
+            "gitDirty",
+            "suiteVersion",
+            "suiteSchemaVersion",
+            "runnerVersion",
+            "runtimeReleaseTag",
+            "runtimeExecutableSha256",
+            "host",
+        ] {
+            assert!(written.contains(required), "metadata.json lacks {required}");
+        }
+        assert!(!written.contains(".gguf"), "metadata carries identity, not payload");
+    }
+
+    #[test]
+    fn the_same_case_fingerprints_identically_for_every_profile() {
+        // "Same inputs" becomes evidence: the fingerprint covers the suite, the
+        // case and both prompts verbatim, and no profile is part of it.
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let first = input_fingerprint(case);
+        assert_eq!(first, input_fingerprint(case));
+        assert_eq!(first.len(), 64);
+
+        let other = input_fingerprint(&suite.cases[1]);
+        assert_ne!(first, other, "different cases must fingerprint differently");
+    }
+
+    #[test]
+    fn a_changed_prompt_changes_the_fingerprint() {
+        let suite = load_suite().unwrap();
+        let mut case = suite.cases[0].clone();
+        let before = input_fingerprint(&case);
+        case.constraints.max_narration_chars += 1;
+        assert_ne!(before, input_fingerprint(&case));
+    }
+
+    #[test]
+    fn a_record_names_the_exact_artifact_and_configuration() {
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 1,
+            raw: "{}".to_string(),
+            narration: Some("ok".to_string()),
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+        let record = record_generation(
+            "run_001",
+            case,
+            "lite",
+            1,
+            test_artifact("lite"),
+            benchmark_context(4096),
+            &outcome,
+        );
+
+        assert_eq!(record.artifact.profile_id, "lite");
+        assert_eq!(record.artifact.sha256.len(), 64);
+        assert!(!record.artifact.release_approved);
+        assert_eq!(record.context.context_size, 4096);
+        assert_eq!(record.input_fingerprint, input_fingerprint(case));
+    }
+
+    #[test]
+    fn artifact_identity_comes_from_the_verified_model() {
+        // Not from the path, not from the profile name: from the lock, by way of
+        // the model that actually passed its digest.
+        let directory = std::env::temp_dir().join("chronosaga-benchmark-identity");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"pretend weights".to_vec();
+        let path = directory.join("Qwen3-1.7B-Q4_K_M.gguf");
+        fs::write(&path, &bytes).unwrap();
+
+        use sha2::{Digest, Sha256};
+        let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+        let resolved = crate::model_lock::ResolvedModel::for_test_with(
+            "lite",
+            path,
+            4096,
+            bytes.len() as u64,
+            &digest,
+        );
+        let verified = resolved.verify_integrity().expect("must verify");
+        let identity = artifact_identity(&verified);
+
+        assert_eq!(identity.profile_id, "lite");
+        assert_eq!(identity.family, "Qwen3-1.7B");
+        assert_eq!(identity.quantization, "Q4_K_M");
+        assert_eq!(identity.artifact_filename, "Qwen3-1.7B-Q4_K_M.gguf");
+        assert_eq!(identity.sha256, digest);
+        assert_eq!(identity.size_bytes, bytes.len() as u64);
+        assert!(!identity.release_approved);
+    }
+
+    /// The exact bytes a run writes, as one object the TypeScript side can read.
+    fn interop_fixture() -> serde_json::Value {
+        let suite = load_suite().unwrap();
+        let case = suite.cases.iter().find(|case| case.id == "ai_case_001").unwrap();
+        let accepted = crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 8916,
+            raw: "{}".to_string(),
+            narration: Some("La riserva d'acqua scende.".to_string()),
+            dialogue: vec![crate::inference::DialogueLine {
+                speaker_id: "mara_001".to_string(),
+                text: "Dobbiamo razionare.".to_string(),
+            }],
+            tone_tags: vec!["tense".to_string()],
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: Some(512),
+            completion_tokens: Some(161),
+            tokens_per_second: Some(18.1),
+            model: Some("lite".to_string()),
+        };
+        let rejected = crate::inference::InferenceOutcome {
+            accepted: false,
+            duration_ms: 26326,
+            raw: "...".to_string(),
+            narration: None,
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: Some("unknown tone tag: epico".to_string()),
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+
+        serde_json::json!({
+            "metadata": test_metadata(false),
+            "generations": [
+                record_generation("run_001", case, "lite", 1,
+                    test_artifact("lite"), benchmark_context(4096), &accepted),
+                record_generation("run_001", case, "standard", 1,
+                    test_artifact("standard"), benchmark_context(4096), &rejected),
+            ],
+        })
+    }
+
+    #[test]
+    fn what_rust_writes_is_what_typescript_validates() {
+        // A contract test in the literal sense: the fixture under
+        // packages/ai-benchmark/tests/fixtures is produced by this serializer and
+        // consumed by the TypeScript validateRun. If the Rust shape drifts, this
+        // fails here; if the TypeScript contract drifts, it fails there. Neither
+        // side can move alone.
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/ai-benchmark/tests/fixtures/rust-run.json");
+        let produced = serde_json::to_string_pretty(&interop_fixture()).unwrap() + "\n";
+
+        if env::var("CHRONOSAGA_UPDATE_FIXTURES").ok().as_deref() == Some("1") {
+            fs::create_dir_all(fixture_path.parent().unwrap()).unwrap();
+            fs::write(&fixture_path, &produced).unwrap();
+            return;
+        }
+
+        let committed = fs::read_to_string(&fixture_path).unwrap_or_else(|error| {
+            panic!(
+                "missing {}: {error}. Regenerate with CHRONOSAGA_UPDATE_FIXTURES=1",
+                fixture_path.display()
+            )
+        });
+        assert_eq!(
+            committed.replace("\r\n", "\n"),
+            produced,
+            "the Rust result shape changed; regenerate the fixture and check the \
+             TypeScript contract still accepts it"
+        );
+    }
+
+    #[test]
+    fn a_record_carries_every_field_the_typescript_contract_requires() {
+        let value = interop_fixture();
+        let generation = &value["generations"][0];
+        for required in [
+            "id", "runId", "caseId", "task", "profile", "artifact", "context",
+            "inputFingerprint", "attempt", "accepted", "validatorErrors", "retryUsed",
+            "fallbackUsed", "fallbackProfile", "latencyMs", "tokensGenerated",
+            "tokensPerSecond", "rawOutputPath", "normalizedOutput",
+        ] {
+            assert!(!generation[required].is_null() || required == "fallbackProfile",
+                "generation lacks {required}");
+        }
+        for required in [
+            "profileId", "family", "quantization", "artifactFilename", "sizeBytes",
+            "sha256", "source", "releaseApproved",
+        ] {
+            assert!(!generation["artifact"][required].is_null(), "artifact lacks {required}");
+        }
+        for required in ["contextSize", "maxOutputTokens", "temperature", "reasoning"] {
+            assert!(!generation["context"][required].is_null(), "context lacks {required}");
+        }
+    }
 
     #[test]
     fn the_committed_suite_parses_with_the_runner_types() {
@@ -552,6 +1131,63 @@ mod tests {
         assert!(user.contains(&change.after.to_string()), "{user}");
         assert!(user.contains("superati"), "{user}");
         assert!(system_prompt(case).contains("sola lettura"), "{case:?}");
+    }
+
+    #[test]
+    fn a_characters_faction_and_location_survive_json_to_prompt() {
+        // serde was silently discarding both, so the model was told who someone
+        // was but not whose side they were on. A political case cannot be
+        // grounded without that.
+        let suite = load_suite().unwrap();
+        let case = suite
+            .cases
+            .iter()
+            .find(|case| case.characters.iter().any(|c| c.faction_id.is_some()))
+            .expect("the committed suite gives characters a faction");
+
+        let character = case
+            .characters
+            .iter()
+            .find(|c| c.faction_id.is_some())
+            .unwrap();
+        let faction = character.faction_id.as_deref().unwrap();
+        let location = character
+            .location_id
+            .as_deref()
+            .expect("the same characters carry a location");
+
+        assert_eq!(faction, "faction_compact");
+        assert_eq!(location, "settlement_helios");
+
+        let prompt = user_prompt(case);
+        assert!(prompt.contains(faction), "the prompt drops the faction: {prompt}");
+        assert!(prompt.contains(location), "the prompt drops the location: {prompt}");
+    }
+
+    #[test]
+    fn an_unknown_field_in_a_case_fails_loudly() {
+        // Cross-language drift must not be silent. If TypeScript grows a field
+        // the runner does not know about, parsing stops rather than quietly
+        // sending the model less context than the case describes.
+        let broken = r#"{
+            "schemaVersion": 1,
+            "suiteVersion": "test",
+            "cases": [{
+                "id": "x", "task": "single_npc_dialogue", "notes": "n",
+                "worldStateSlice": {}, "characters": [], "relevantMemories": [],
+                "recentDelta": {"turn": 1, "source": "s", "changes": []},
+                "constraints": {
+                    "language": "it", "knownSpeakerIds": [], "allowedToneTags": ["t"],
+                    "maxNarrationChars": 100, "structuredOutput": true,
+                    "authoritativeNumbersReadOnly": true
+                },
+                "expectedFacts": ["a"], "forbiddenClaims": ["b"],
+                "somethingNew": 1
+            }]
+        }"#;
+        let error = serde_json::from_str::<BenchmarkSuite>(broken)
+            .expect_err("an unknown case field must be refused");
+        assert!(error.to_string().contains("somethingNew"), "{error}");
     }
 
     #[test]
@@ -691,6 +1327,8 @@ mod tests {
             narration: Some("Nulla di rilevante.".to_string()),
             dialogue: Vec::new(),
             tone_tags: vec!["tense".to_string()],
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
             validation_error: None,
             prompt_tokens: Some(400),
             completion_tokens: Some(120),
@@ -698,7 +1336,7 @@ mod tests {
             model: Some("lite".to_string()),
         };
 
-        let record = record_generation("run_001", case, "lite", 1, &outcome);
+        let record = record_generation("run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096), &outcome);
         assert!(record.accepted);
         assert!(record.validator_errors.is_empty());
         assert!(record.normalized_output.is_some());
@@ -717,6 +1355,8 @@ mod tests {
             narration: None,
             dialogue: Vec::new(),
             tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
             validation_error: Some("unknown tone tag: epico".to_string()),
             prompt_tokens: None,
             completion_tokens: None,
@@ -724,7 +1364,7 @@ mod tests {
             model: None,
         };
 
-        let record = record_generation("run_001", case, "standard", 2, &outcome);
+        let record = record_generation("run_001", case, "standard", 2, test_artifact("standard"), benchmark_context(4096), &outcome);
         assert!(!record.accepted);
         assert_eq!(record.validator_errors, vec!["unknown tone tag: epico"]);
         assert!(record.normalized_output.is_none());
@@ -746,13 +1386,15 @@ mod tests {
             narration: None,
             dialogue: Vec::new(),
             tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
             validation_error: Some("malformed JSON".to_string()),
             prompt_tokens: None,
             completion_tokens: None,
             tokens_per_second: None,
             model: None,
         };
-        let record = record_generation("run_001", case, "lite", 1, &outcome);
+        let record = record_generation("run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096), &outcome);
         persist(&directory, &record, &outcome.raw).expect("must persist");
 
         let raw = fs::read_to_string(directory.join(&record.raw_output_path)).unwrap();
@@ -764,7 +1406,7 @@ mod tests {
         assert!(rows.contains("rawOutputPath"));
 
         // A second attempt appends rather than replacing the first.
-        persist(&directory, &record_generation("run_001", case, "lite", 2, &outcome), "second")
+        persist(&directory, &record_generation("run_001", case, "lite", 2, test_artifact("lite"), benchmark_context(4096), &outcome), "second")
             .unwrap();
         let rows = fs::read_to_string(directory.join("generations.jsonl")).unwrap();
         assert_eq!(rows.lines().count(), 2);
@@ -804,7 +1446,29 @@ mod tests {
                 .unwrap_or_default()
         );
         let directory = run_directory(&workspace, &run_id);
-        fs::create_dir_all(&directory).expect("the run directory must be creatable");
+
+        // Identity comes from the model that actually passed its digest, so the
+        // rows can name the exact bytes that answered.
+        let verified = crate::runtime_e2e::verified_model_for_profile(&profile)
+            .expect("the profile resolved, so it must verify");
+        let artifact = artifact_identity(&verified);
+        let context = benchmark_context(verified.model().context_target());
+
+        let metadata = new_run_metadata(
+            &run_id,
+            &started_at(),
+            &suite,
+            &git_commit().unwrap_or_default(),
+            git_dirty(),
+            "b10343",
+            None,
+            host_facts(),
+        );
+        persist_metadata(&directory, &metadata).expect("metadata must persist");
+        // A smoke pass is allowed to run dirty; it proves plumbing, not models.
+        if let Err(reason) = official_run_verdict(&metadata) {
+            eprintln!("note: not comparable evidence - {reason}");
+        }
 
         let mut watcher =
             crate::runtime_watcher::RuntimeWatcher::spawn(manager.clone()).expect("watcher");
@@ -826,16 +1490,25 @@ mod tests {
         let mut accepted = 0usize;
         let mut attempted = 0usize;
 
-        for case in suite.cases.iter().take(smoke_size) {
+        for case in cases_to_run(&suite, smoke_size) {
             let contract = case_contract(case);
             let outcome = tauri::async_runtime::block_on(provider.generate(
                 &system_prompt(case),
                 &user_prompt(case),
                 &contract,
+                request_parameters(&context),
             ))
             .expect("the request must reach the local runtime");
 
-            let record = record_generation(&run_id, case, &profile, 1, &outcome);
+            let record = record_generation(
+                &run_id,
+                case,
+                &profile,
+                1,
+                artifact.clone(),
+                context.clone(),
+                &outcome,
+            );
             persist(&directory, &record, &outcome.raw).expect("evidence must persist");
 
             attempted += 1;
@@ -866,6 +1539,32 @@ mod tests {
         // rows and left no orphan has done its job even at 0 acceptance.
         let rows = fs::read_to_string(directory.join("generations.jsonl")).expect("rows");
         assert_eq!(rows.lines().count(), attempted);
+    }
+
+    #[test]
+    fn a_run_records_a_timestamp_a_human_can_read() {
+        let stamp = started_at();
+        assert!(
+            regex_like_rfc3339(&stamp),
+            "expected an RFC 3339 timestamp, got {stamp}"
+        );
+        assert!(stamp.starts_with("20"), "{stamp}");
+    }
+
+    fn regex_like_rfc3339(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        value.len() == 20
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes[10] == b'T'
+            && bytes[13] == b':'
+            && bytes[16] == b':'
+            && bytes[19] == b'Z'
+            && value
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .count()
+                == 14
     }
 
     #[test]

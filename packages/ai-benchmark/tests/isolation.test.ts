@@ -49,6 +49,7 @@ function generation(caseId: string): BenchmarkGeneration {
       seed: null,
       reasoning: 'off',
     },
+    inputFingerprint: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
     attempt: 1,
     accepted: true,
     validatorErrors: [],

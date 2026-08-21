@@ -14,5 +14,6 @@ export * from './result.js';
 export * from './objective.js';
 export * from './scoring.js';
 export * from './hard-fail.js';
+export * from './human-review.js';
 export * from './report.js';
 export * from './suite.js';
