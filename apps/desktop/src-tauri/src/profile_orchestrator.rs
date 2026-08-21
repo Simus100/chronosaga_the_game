@@ -98,11 +98,102 @@ pub struct AutoDecision {
 /// `standard_available` reflects whether the Standard artifact is actually
 /// present and verified. AUTO must not choose a model that cannot be loaded, or
 /// the first thing the player sees is a fallback.
+/// Provisional planning minimum for Lite, in MB.
+///
+/// From `docs/LOCAL_AI_MODEL_PROFILES_v0.1.md` section 4, which marks these as
+/// planning values to be replaced by the P0 benchmark. Deliberately **not** an
+/// AUTO floor: AUTO applies no floor to Lite, because Lite is the profile that
+/// has to run wherever Chronosaga runs. The two numbers answer different
+/// questions and must not be conflated — reading `hardware_floor("lite")` as
+/// "Lite needs no RAM" is exactly the mistake this constant exists to prevent.
+pub const LITE_PLANNING_MIN_RAM_MB: u64 = 8 * 1024;
+
+/// Provisional planning recommendation for Lite, in MB.
+pub const LITE_PLANNING_RECOMMENDED_RAM_MB: u64 = 16 * 1024;
+
+/// Provisional planning core target for Lite.
+pub const LITE_PLANNING_MIN_CORES: usize = 4;
+
+/// Provisional planning recommendation for Standard, in MB.
+///
+/// The document gives a 16–32 GB range; this is the middle of it, and the same
+/// number the earlier planning material carried.
+pub const STANDARD_PLANNING_RECOMMENDED_RAM_MB: u64 = 24 * 1024;
+
+/// What a player needs to know about a profile *before* choosing it.
+///
+/// Required by `docs/LOCAL_AI_MODEL_PROFILES_v0.1.md` section 5: disk size,
+/// minimum RAM, recommended RAM, whether a GPU is mandatory, and a short
+/// quality/speed trade-off. Disk size comes from the model lock, because that is
+/// a fact about the artifact. Everything here is product guidance about the
+/// hardware, which is why it lives beside the AUTO logic rather than in a second
+/// JSON file or in React.
+///
+/// All values are provisional P0 planning targets. P0.5 has not finalised
+/// hardware requirements, and nothing here should be read as if it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileGuidance {
+    pub min_ram_mb: u64,
+    pub recommended_ram_mb: u64,
+    pub min_logical_cores: usize,
+    pub gpu_required: bool,
+    /// One line the player can actually decide on.
+    pub trade_off: &'static str,
+}
+
+/// Player-facing guidance for a locked profile.
+///
+/// Standard's minimum is not a separate constant: it *is* the AUTO threshold,
+/// reused. If AUTO would refuse Standard below 16 GB, telling the player
+/// anything else would be a lie, and two constants would eventually drift into
+/// exactly that lie.
+pub fn guidance(profile_id: &str) -> Option<ProfileGuidance> {
+    match profile_id {
+        "lite" => Some(ProfileGuidance {
+            min_ram_mb: LITE_PLANNING_MIN_RAM_MB,
+            recommended_ram_mb: LITE_PLANNING_RECOMMENDED_RAM_MB,
+            min_logical_cores: LITE_PLANNING_MIN_CORES,
+            gpu_required: false,
+            trade_off: "Faster and lighter. Short dialogue and minor narration, \
+                        on modest machines.",
+        }),
+        "standard" => Some(ProfileGuidance {
+            min_ram_mb: AUTO_STANDARD_MIN_RAM_MB,
+            recommended_ram_mb: STANDARD_PLANNING_RECOMMENDED_RAM_MB,
+            min_logical_cores: AUTO_STANDARD_MIN_CORES,
+            gpu_required: false,
+            trade_off: "Better dialogue and richer scenes. Slower, and asks more \
+                        of the machine.",
+        }),
+        _ => None,
+    }
+}
+
+/// The hardware floor AUTO applies to a profile, as `(min RAM MB, min cores)`.
+///
+/// The readiness panel shows these numbers and [`resolve_auto`] enforces them,
+/// so they are read from one place. P0.4-D5 exists because they used to live
+/// twice: once here and once in a hand-maintained JSON manifest that had drifted
+/// to a different context size and to filenames that no longer existed.
+///
+/// Lite has no floor by design. It is the profile that has to run wherever
+/// Chronosaga runs; if it cannot, the answer is Safe Mode, not a smaller model.
+pub fn hardware_floor(profile_id: &str) -> (u64, usize) {
+    match profile_id {
+        "standard" => (AUTO_STANDARD_MIN_RAM_MB, AUTO_STANDARD_MIN_CORES),
+        _ => (0, 0),
+    }
+}
+
 pub fn resolve_auto(
     hardware: HardwareSnapshot,
     standard_available: bool,
 ) -> AutoDecision {
     let ram_gb = hardware.total_ram_mb as f64 / 1024.0;
+    // Read the floor through the same accessor the selection screen derives
+    // from, so the number enforced here and the number shown there cannot drift.
+    let (min_ram_mb, min_cores) = hardware_floor("standard");
 
     if !standard_available {
         return AutoDecision {
@@ -110,20 +201,20 @@ pub fn resolve_auto(
             reason: "Standard is not installed or not verified on this machine".to_string(),
         };
     }
-    if hardware.total_ram_mb < AUTO_STANDARD_MIN_RAM_MB {
+    if hardware.total_ram_mb < min_ram_mb {
         return AutoDecision {
             resolved_profile: "lite".to_string(),
             reason: format!(
                 "{ram_gb:.0} GB RAM is below the {} GB Standard target",
-                AUTO_STANDARD_MIN_RAM_MB / 1024
+                min_ram_mb / 1024
             ),
         };
     }
-    if hardware.logical_cores < AUTO_STANDARD_MIN_CORES {
+    if hardware.logical_cores < min_cores {
         return AutoDecision {
             resolved_profile: "lite".to_string(),
             reason: format!(
-                "{} logical cores are below the {AUTO_STANDARD_MIN_CORES} Standard target",
+                "{} logical cores are below the {min_cores} Standard target",
                 hardware.logical_cores
             ),
         };
@@ -332,6 +423,93 @@ mod tests {
             );
             assert!(!decision.reason.is_empty(), "the choice must be explainable");
         }
+    }
+
+    #[test]
+    fn the_displayed_floor_is_the_enforced_floor() {
+        // One source of truth: whatever the readiness panel shows for Standard
+        // has to be exactly what AUTO refuses to go below.
+        let (min_ram, min_cores) = hardware_floor("standard");
+        assert_eq!(min_ram, AUTO_STANDARD_MIN_RAM_MB);
+        assert_eq!(min_cores, AUTO_STANDARD_MIN_CORES);
+
+        let just_below = HardwareSnapshot {
+            total_ram_mb: min_ram - 1,
+            logical_cores: min_cores,
+        };
+        assert_eq!(resolve_auto(just_below, true).resolved_profile, "lite");
+
+        let too_few_cores = HardwareSnapshot {
+            total_ram_mb: min_ram,
+            logical_cores: min_cores - 1,
+        };
+        assert_eq!(resolve_auto(too_few_cores, true).resolved_profile, "lite");
+
+        let exactly_at_the_floor = HardwareSnapshot {
+            total_ram_mb: min_ram,
+            logical_cores: min_cores,
+        };
+        assert_eq!(
+            resolve_auto(exactly_at_the_floor, true).resolved_profile,
+            "standard"
+        );
+    }
+
+    #[test]
+    fn the_standard_minimum_shown_is_the_threshold_auto_enforces() {
+        // One number, not two. If these could drift, the selection screen would
+        // eventually promise a machine something AUTO refuses to give it.
+        let standard = guidance("standard").expect("standard is a locked profile");
+        assert_eq!(standard.min_ram_mb, AUTO_STANDARD_MIN_RAM_MB);
+        assert_eq!(standard.min_logical_cores, AUTO_STANDARD_MIN_CORES);
+        assert_eq!(hardware_floor("standard"), (standard.min_ram_mb, standard.min_logical_cores));
+    }
+
+    #[test]
+    fn lites_planning_minimum_is_not_its_auto_floor() {
+        // The distinction the review caught: AUTO applies no floor to Lite, and
+        // that must never be shown to a player as "Lite needs no RAM".
+        let lite = guidance("lite").expect("lite is a locked profile");
+        assert_eq!(hardware_floor("lite"), (0, 0), "AUTO still refuses nothing for Lite");
+        assert_eq!(lite.min_ram_mb, LITE_PLANNING_MIN_RAM_MB);
+        assert!(lite.min_ram_mb > 0, "a player must see a real minimum");
+        assert!(lite.min_ram_mb < AUTO_STANDARD_MIN_RAM_MB, "Lite asks for less than Standard");
+    }
+
+    #[test]
+    fn both_profiles_carry_everything_the_selection_screen_must_show() {
+        // docs/LOCAL_AI_MODEL_PROFILES_v0.1.md section 5: minimum RAM,
+        // recommended RAM, whether a GPU is mandatory, and a trade-off line.
+        // Disk size is a fact about the artifact and comes from the lock.
+        for id in ["lite", "standard"] {
+            let g = guidance(id).unwrap_or_else(|| panic!("{id} needs guidance"));
+            assert!(g.min_ram_mb > 0, "{id}");
+            assert!(g.recommended_ram_mb >= g.min_ram_mb, "{id}");
+            assert!(g.min_logical_cores > 0, "{id}");
+            assert!(!g.gpu_required, "{id}: the offline build must run CPU-only");
+            assert!(g.trade_off.len() > 20, "{id}: the trade-off must say something");
+        }
+        assert!(guidance("auto").is_none(), "AUTO is not an artifact");
+        assert!(guidance("safe").is_none(), "Safe Mode is not an artifact");
+    }
+
+    #[test]
+    fn guidance_never_decides_anything() {
+        // Guidance describes; resolve_auto decides. A machine below Lite's
+        // planning minimum still gets Lite rather than being refused, because
+        // the alternative is no game at all.
+        let tiny = HardwareSnapshot {
+            total_ram_mb: LITE_PLANNING_MIN_RAM_MB / 2,
+            logical_cores: 2,
+        };
+        assert_eq!(resolve_auto(tiny, true).resolved_profile, "lite");
+    }
+
+    #[test]
+    fn lite_carries_no_hardware_floor() {
+        // Lite must remain reachable on any machine that can run the game.
+        assert_eq!(hardware_floor("lite"), (0, 0));
+        assert_eq!(hardware_floor("anything-else"), (0, 0));
     }
 
     #[test]

@@ -16,31 +16,53 @@ export interface P0SystemInfo {
   gpuProbeStatus: string;
 }
 
+/**
+ * One locked profile as the readiness panel shows it.
+ *
+ * Derived in Rust from `config/local-ai-models.lock.json` plus the AUTO
+ * thresholds, so there is nothing here for the interface to keep in sync.
+ */
 export interface P0ModelProfile {
   id: string;
   label: string;
-  parameterClass: string;
-  candidateFamily: string;
+  family: string;
+  quantization: string;
+  /** The exact locked filename a player must place in the model directory. */
   file: string;
   contextTarget: number;
-  modelSizeMinMb: number;
-  modelSizeMaxMb: number;
+  sizeBytes: number;
+  license: string;
+  status: string;
+  releaseApproved: boolean;
+  /** Provisional P0 planning guidance, not a finalised requirement. */
   minRamMb: number;
   recommendedRamMb: number;
   minLogicalCores: number;
   gpuRequired: boolean;
-  usefulVramMb?: number | null;
+  /** One line of quality/speed trade-off. */
+  tradeOff: string;
+  available: boolean;
+  /** "packaged", "user model library" or "development workspace". */
+  source?: string | null;
+  problem?: string | null;
 }
 
 export interface P0RuntimeStatus {
   resourceDir: string;
-  modelManifestPath: string;
-  modelManifestPresent: boolean;
+  /** Where the authoritative model lock was read from, or why it could not be. */
+  modelLockPath: string;
+  modelLockPresent: boolean;
+  /** Where a player may place model files. */
+  userModelsDir: string;
+  /** The packaged model directory, empty until Full Offline ships weights. */
+  packagedModelsDir: string;
   llamaServerPath: string;
   llamaServerPresent: boolean;
   /** "packaged", "development workspace", or why resolution failed. */
   llamaServerSource: string;
+  /** What AUTO would choose now, from the one authoritative resolver. */
   recommendedAiProfile: string;
+  autoReason: string;
   profiles: P0ModelProfile[];
 }
 

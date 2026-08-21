@@ -20,9 +20,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "resources": {
-      "../../../models/manifest.json": "models/manifest.json"
-    }
+    "targets": ["nsis"]
   }
 }

@@ -26,7 +26,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Disks, System};
-use tauri::{path::BaseDirectory, AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 const DATABASE_SCHEMA_VERSION: u32 = 1;
 const DATABASE_FILE_NAME: &str = "chronosaga-p0.sqlite3";
@@ -49,90 +49,61 @@ struct SystemInfo {
     gpu_probe_status: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelManifest {
-    profiles: Vec<ModelProfile>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelProfile {
-    id: String,
-    label: String,
-    parameter_class: String,
-    candidate_family: String,
-    file: String,
-    context_target: u32,
-    planning: ModelPlanning,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelPlanning {
-    model_size_mb: ModelSizeMb,
-    min_ram_mb: u64,
-    recommended_ram_mb: u64,
-    min_logical_cores: usize,
-    gpu_required: bool,
-    useful_vram_mb: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelSizeMb {
-    min: u64,
-    max: u64,
-}
-
+/// One locked profile, as the readiness panel shows it.
+///
+/// Derived from `config/local-ai-models.lock.json` and from the AUTO thresholds
+/// in [`profile_orchestrator`]. Nothing here is hand-maintained, which is the
+/// point: the panel used to be fed by a separate planning manifest that had
+/// drifted to placeholder filenames and a context size the runtime never used.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelProfileSummary {
     id: String,
     label: String,
-    parameter_class: String,
-    candidate_family: String,
+    family: String,
+    quantization: String,
+    /// The exact locked artifact filename, which is also what a player must
+    /// place in the user model directory.
     file: String,
     context_target: u32,
-    model_size_min_mb: u64,
-    model_size_max_mb: u64,
+    size_bytes: u64,
+    license: String,
+    status: String,
+    release_approved: bool,
+    /// Provisional planning guidance the player needs before choosing. Not the
+    /// AUTO floor: for Lite those are different numbers with different meanings.
     min_ram_mb: u64,
     recommended_ram_mb: u64,
     min_logical_cores: usize,
     gpu_required: bool,
-    useful_vram_mb: Option<u64>,
-}
-
-impl From<&ModelProfile> for ModelProfileSummary {
-    fn from(profile: &ModelProfile) -> Self {
-        Self {
-            id: profile.id.clone(),
-            label: profile.label.clone(),
-            parameter_class: profile.parameter_class.clone(),
-            candidate_family: profile.candidate_family.clone(),
-            file: profile.file.clone(),
-            context_target: profile.context_target,
-            model_size_min_mb: profile.planning.model_size_mb.min,
-            model_size_max_mb: profile.planning.model_size_mb.max,
-            min_ram_mb: profile.planning.min_ram_mb,
-            recommended_ram_mb: profile.planning.recommended_ram_mb,
-            min_logical_cores: profile.planning.min_logical_cores,
-            gpu_required: profile.planning.gpu_required,
-            useful_vram_mb: profile.planning.useful_vram_mb,
-        }
-    }
+    trade_off: String,
+    /// Whether the artifact is where one of the ordered sources can see it.
+    available: bool,
+    /// Which source holds it, when one does.
+    source: Option<String>,
+    /// Why it is unavailable, when it is.
+    problem: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeStatus {
     resource_dir: String,
-    model_manifest_path: String,
-    model_manifest_present: bool,
+    /// Where the authoritative model lock was read from.
+    model_lock_path: String,
+    model_lock_present: bool,
+    /// The directory a player may place models in.
+    user_models_dir: String,
+    /// The packaged model directory, when this build shipped one.
+    packaged_models_dir: String,
     llama_server_path: String,
     llama_server_present: bool,
     /// Where the runtime was resolved from, or why it could not be.
     llama_server_source: String,
+    /// What AUTO would choose right now, from the one authoritative resolver.
     recommended_ai_profile: String,
+    /// The reason that resolver gives, in the words the player sees.
+    auto_reason: String,
     profiles: Vec<ModelProfileSummary>,
 }
 
@@ -213,34 +184,6 @@ fn sidecar_log_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_local_data_dir(app)?.join("local-ai-runtime.log"))
 }
 
-fn manifest_path(app: &AppHandle) -> PathBuf {
-    let bundled = app
-        .path()
-        .resolve("models/manifest.json", BaseDirectory::Resource)
-        .ok();
-
-    if let Some(path) = bundled {
-        if path.exists() {
-            return path;
-        }
-    }
-
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../models/manifest.json")
-}
-
-fn load_manifest(app: &AppHandle) -> Result<Option<(PathBuf, ModelManifest)>, String> {
-    let path = manifest_path(app);
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("Unable to read model manifest {}: {error}", as_string(&path)))?;
-    let manifest = serde_json::from_str::<ModelManifest>(&contents)
-        .map_err(|error| format!("Unable to parse model manifest {}: {error}", as_string(&path)))?;
-    Ok(Some((path, manifest)))
-}
-
 fn free_storage_mb(path: &Path) -> Option<u64> {
     let disks = Disks::new_with_refreshed_list();
     disks
@@ -278,42 +221,71 @@ fn collect_system_info(app: &AppHandle) -> Result<SystemInfo, String> {
     })
 }
 
-fn profile_fits(profile: &ModelProfile, system: &SystemInfo) -> bool {
-    let storage_ok = system
-        .free_storage_mb
-        .map(|free| free >= profile.planning.model_size_mb.min)
-        .unwrap_or(true);
-
-    system.total_ram_mb >= profile.planning.min_ram_mb
-        && system.logical_cores >= profile.planning.min_logical_cores
-        && storage_ok
-}
-
-fn recommend_profile(profiles: &[ModelProfile], system: &SystemInfo) -> String {
-    for id in ["standard", "lite"] {
-        if profiles
-            .iter()
-            .find(|profile| profile.id == id)
-            .is_some_and(|profile| profile_fits(profile, system))
-        {
-            return id.to_string();
-        }
-    }
-    "procedural".to_string()
-}
-
 #[tauri::command]
 fn get_system_info(app: AppHandle) -> Result<SystemInfo, String> {
     collect_system_info(&app)
 }
 
+/// Whether Standard can be located at all, without hashing it.
+///
+/// The single availability input AUTO is allowed to consider. Resolution only:
+/// hashing a 1.9 GB artifact to answer "could we?" would cost seconds on every
+/// status refresh, and the digest is checked anyway before anything is served.
+/// If a located Standard later fails verification, the fallback chain handles it.
+fn standard_is_available(app: &AppHandle) -> bool {
+    model_lock::resolve_for_app(app, model_lock::STANDARD_PROFILE_ID).is_ok()
+}
+
+/// What AUTO would choose right now, from the one authoritative resolver.
+fn auto_decision(app: &AppHandle) -> profile_orchestrator::AutoDecision {
+    profile_orchestrator::resolve_auto(hardware_snapshot(app), standard_is_available(app))
+}
+
+/// Build the readiness view of every locked profile from the lock itself.
+fn profile_summaries(app: &AppHandle, lock: &model_lock::ModelLock) -> Vec<ModelProfileSummary> {
+    model_lock::KNOWN_PROFILE_IDS
+        .iter()
+        .filter_map(|id| lock.profiles.get(*id).map(|locked| (*id, locked)))
+        .map(|(id, locked)| {
+            // Player-facing planning guidance, which for Standard *is* the AUTO
+            // threshold reused rather than a second constant. Reading the AUTO
+            // floor directly would tell a player Lite needs no RAM at all.
+            let guidance = profile_orchestrator::guidance(id);
+            let (available, source, problem) = match model_lock::resolve_for_app(app, id) {
+                Ok(resolved) => (true, Some(resolved.source().label().to_string()), None),
+                Err(error) => (false, None, Some(error.message().to_string())),
+            };
+            ModelProfileSummary {
+                id: id.to_string(),
+                label: format!("{} {}", locked.family, locked.quantization),
+                family: locked.family.clone(),
+                quantization: locked.quantization.clone(),
+                file: locked.artifact_filename.clone(),
+                context_target: locked.context_target,
+                size_bytes: locked.size_bytes,
+                license: locked.license.clone(),
+                status: locked.status.clone(),
+                release_approved: locked.release_approved,
+                min_ram_mb: guidance.map(|g| g.min_ram_mb).unwrap_or_default(),
+                recommended_ram_mb: guidance.map(|g| g.recommended_ram_mb).unwrap_or_default(),
+                min_logical_cores: guidance.map(|g| g.min_logical_cores).unwrap_or_default(),
+                gpu_required: guidance.is_some_and(|g| g.gpu_required),
+                trade_off: guidance.map(|g| g.trade_off.to_string()).unwrap_or_default(),
+                available,
+                source,
+                problem,
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn get_runtime_status(app: AppHandle) -> Result<RuntimeStatus, String> {
-    let system = collect_system_info(&app)?;
     let resource_dir = app
         .path()
         .resource_dir()
         .map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
+
     // One source of truth: exactly what the lifecycle manager resolves.
     let (llama_server_path, llama_server_present, llama_server_source) =
         match runtime_lock::resolve(&app) {
@@ -325,29 +297,34 @@ fn get_runtime_status(app: AppHandle) -> Result<RuntimeStatus, String> {
             Err(reason) => (String::new(), false, reason),
         };
 
-    let fallback_manifest_path = manifest_path(&app);
-    let manifest = load_manifest(&app)?;
-    let (manifest_path, profiles, recommended_ai_profile) = match manifest {
-        Some((path, manifest)) => {
-            let recommended = recommend_profile(&manifest.profiles, &system);
-            let summaries = manifest
-                .profiles
-                .iter()
-                .map(ModelProfileSummary::from)
-                .collect();
-            (path, summaries, recommended)
-        }
-        None => (fallback_manifest_path, Vec::new(), "procedural".to_string()),
-    };
+    // A build with no packaged lock is incomplete, but it must still boot and
+    // say so rather than refusing to render the diagnostics at all.
+    let (model_lock_path, model_lock_present, profiles) =
+        match model_lock::lock_path(&app) {
+            Ok(path) => match model_lock::load_lock(&app) {
+                Ok(lock) => (as_string(&path), true, profile_summaries(&app, &lock)),
+                Err(reason) => (reason, false, Vec::new()),
+            },
+            Err(reason) => (reason, false, Vec::new()),
+        };
+
+    let decision = auto_decision(&app);
 
     Ok(RuntimeStatus {
         resource_dir: as_string(&resource_dir),
-        model_manifest_present: manifest_path.exists(),
-        model_manifest_path: as_string(&manifest_path),
+        model_lock_path,
+        model_lock_present,
+        user_models_dir: model_lock::user_models_dir(&app)
+            .map(|dir| as_string(&dir))
+            .unwrap_or_default(),
+        packaged_models_dir: model_lock::packaged_models_dir(&app)
+            .map(|dir| as_string(&dir))
+            .unwrap_or_default(),
         llama_server_present,
         llama_server_path,
         llama_server_source,
-        recommended_ai_profile,
+        recommended_ai_profile: decision.resolved_profile,
+        auto_reason: decision.reason,
         profiles,
     })
 }
@@ -444,6 +421,9 @@ fn get_local_ai_runtime_status(runtime: State<'_, LocalAiRuntimeState>) -> Local
 fn start_local_ai_runtime(
     runtime: State<'_, LocalAiRuntimeState>,
 ) -> Result<LocalAiRuntimeSnapshot, String> {
+    // Refuse before the spawn, not after: llama-server happily starts in router
+    // mode with no model and reports itself healthy.
+    local_ai_runtime::serving_start_verdict(runtime.launch_spec().model().is_some())?;
     runtime.start()
 }
 
@@ -600,22 +580,15 @@ fn verify_profile(
         }
     }
 
-    let resolved = model_lock::resolve_for_app(app, profile_id).map_err(|error| {
-        let message = error.message().to_string();
-        cache
-            .0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .problems
-            .insert(profile_id.to_string(), message.clone());
-        message
-    })?;
-
-    let label = resolved.label();
-    match resolved.verify_integrity() {
+    // The digest-aware walk: it tries every source in order and only stops at a
+    // copy whose bytes match. A corrupt copy in an earlier source is skipped, so
+    // a damaged packaged model cannot make a good user copy unreachable.
+    match model_lock::verify_for_app(app, profile_id) {
         Ok(verified) => {
             eprintln!(
-                "local AI model verified: {profile_id} = {label} (sha256 in {} ms)",
+                "local AI model verified: {profile_id} = {} from the {} (sha256 in {} ms)",
+                verified.model().label(),
+                verified.model().source().label(),
                 verified.verification_ms()
             );
             let mut guard = cache.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -626,14 +599,15 @@ fn verify_profile(
             Ok(verified)
         }
         Err(error) => {
-            eprintln!("local AI model {profile_id} integrity check failed: {}", error.message);
+            let message = error.message().to_string();
+            eprintln!("local AI model {profile_id} could not be verified: {message}");
             cache
                 .0
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .problems
-                .insert(profile_id.to_string(), error.message.clone());
-            Err(error.message)
+                .insert(profile_id.to_string(), message.clone());
+            Err(message)
         }
     }
 }
@@ -730,7 +704,9 @@ fn apply_local_ai_profile(
     // Never start a second sidecar on top of a live one.
     stop_and_confirm_reaped(&runtime)?;
 
-    let standard_available = verify_profile(&app, &cache, model_lock::STANDARD_PROFILE_ID).is_ok();
+    // The same availability input the readiness panel uses, so the recommendation
+    // the player is shown and the decision actually taken cannot disagree.
+    let standard_available = standard_is_available(&app);
     let decision = profile_orchestrator::resolve_request(
         requested,
         hardware_snapshot(&app),

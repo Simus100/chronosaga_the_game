@@ -1,11 +1,18 @@
 {
   "schemaVersion": 3,
+  "authoritative": false,
+  "supersededBy": "config/local-ai-models.lock.json",
+  "note": "Planning document, not a runtime input. Since P0.4-D the desktop application reads profiles, artifact filenames, sizes, digests and context targets only from config/local-ai-models.lock.json, and AUTO is decided only by profile_orchestrator::resolve_auto. The candidate filenames, quantizations and context values below were planning placeholders and never matched the locked artifacts. This file is no longer packaged into the installer.",
   "status": "candidate-profiles-before-p0-benchmark",
   "selection": {
     "defaultMode": "auto",
     "allowUserOverride": true,
     "loadOneModelAtATime": true,
-    "fallbackOrder": ["selected", "lite", "procedural"]
+    "fallbackOrder": [
+      "selected",
+      "lite",
+      "procedural"
+    ]
   },
   "profiles": [
     {
@@ -82,7 +89,10 @@
     "automaticModelDownload": false,
     "firstTargetProfile": "lite",
     "standardProfile": "hardware-dependent",
-    "fallbackModes": ["server-ai", "procedural"]
+    "fallbackModes": [
+      "server-ai",
+      "procedural"
+    ]
   },
   "notes": [
     "All hardware values are provisional until P0 benchmark.",
