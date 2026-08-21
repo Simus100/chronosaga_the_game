@@ -402,11 +402,29 @@ impl LocalModelProvider {
 
     /// Run the smoke generation and validate the result.
     pub async fn generate_smoke(&self) -> Result<InferenceOutcome, String> {
-        let contract = SmokeScenario::contract();
+        self.generate(
+            &SmokeScenario::system_prompt(),
+            &SmokeScenario::user_prompt(),
+            &SmokeScenario::contract(),
+        )
+        .await
+    }
+
+    /// One generation against an arbitrary prompt pair and contract.
+    ///
+    /// The single request path: the smoke scenario and the P0.5 benchmark both
+    /// go through here, so a benchmark measures exactly what the product does
+    /// rather than a parallel implementation that drifted.
+    pub async fn generate(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        contract: &OutputContract,
+    ) -> Result<InferenceOutcome, String> {
         let request = serde_json::json!({
             "messages": [
-                { "role": "system", "content": SmokeScenario::system_prompt() },
-                { "role": "user", "content": SmokeScenario::user_prompt() }
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_prompt }
             ],
             // Low temperature: this is a grounding test, not a creativity test.
             "temperature": 0.3,
@@ -469,7 +487,7 @@ impl LocalModelProvider {
             model: body["model"].as_str().map(str::to_string),
         };
 
-        match validate(&raw, &contract) {
+        match validate(&raw, contract) {
             Ok(valid) => {
                 outcome.accepted = true;
                 outcome.narration = Some(valid.narration);

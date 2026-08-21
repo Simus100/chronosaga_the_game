@@ -51,3 +51,10 @@ models/*.onnx
 
 # Architecture example is intentionally tracked.
 !config/runtime-assets.example.json
+
+# P0.5 benchmark evidence.
+# Runs write raw model prose and JSONL rows under the development workspace
+# (D:\Chronosaga\benchmarks\p0.5), never into the checkout. These two entries
+# exist so a stray run inside the repository can never be committed by accident.
+benchmarks/
+packages/ai-benchmark/results/

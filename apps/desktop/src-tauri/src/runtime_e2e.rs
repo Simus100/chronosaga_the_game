@@ -29,11 +29,23 @@ use std::{
 
 const E2E_ENV: &str = "CHRONOSAGA_RUNTIME_E2E";
 const WORKSPACE_ENV: &str = "CHRONOSAGA_WORKSPACE_ROOT";
+const BENCHMARK_ENV: &str = "CHRONOSAGA_BENCHMARK";
+
+/// Whether the caller has asked to use the real local payload.
+fn opted_in() -> bool {
+    [E2E_ENV, BENCHMARK_ENV]
+        .iter()
+        .any(|name| env::var(name).ok().as_deref() == Some("1"))
+}
 
 /// Resolve the runtime exactly as the application does: from the lock plus the
 /// workspace variable, with nothing hard-coded here.
 fn resolve_from_lock() -> Option<(PathBuf, PathBuf)> {
-    if env::var(E2E_ENV).ok().as_deref() != Some("1") {
+    // Either opt-in flag means the same thing: this machine has the verified
+    // payload and the caller has asked to use it. The P0.5 benchmark drives the
+    // same runtime through this helper, and should not have to claim to be an
+    // end-to-end lifecycle test to do so.
+    if !opted_in() {
         return None;
     }
     let workspace = env::var(WORKSPACE_ENV).ok().filter(|v| !v.trim().is_empty())?;
@@ -65,7 +77,7 @@ fn manager() -> Option<Arc<LocalAiRuntimeManager>> {
 /// Generic over the profile id: Lite and Standard travel the identical path,
 /// which is the point of the dual-model architecture.
 fn resolve_model_from_lock(profile_id: &str) -> Option<crate::model_lock::VerifiedModel> {
-    if env::var(E2E_ENV).ok().as_deref() != Some("1") {
+    if !opted_in() {
         return None;
     }
     let workspace = env::var(WORKSPACE_ENV).ok()?;
@@ -108,7 +120,9 @@ fn manager_with_model() -> Option<Arc<LocalAiRuntimeManager>> {
 }
 
 /// The same manager for any locked profile.
-fn manager_for_profile(profile_id: &str) -> Option<Arc<LocalAiRuntimeManager>> {
+/// Shared with [`crate::benchmark`]: both drive the same real runtime, and a
+/// second way of starting it would be a second thing to keep correct.
+pub(crate) fn manager_for_profile(profile_id: &str) -> Option<Arc<LocalAiRuntimeManager>> {
     let (directory, executable) = resolve_from_lock()?;
     let model = resolve_model_from_lock(profile_id)?;
     let log_path = env::temp_dir().join(format!("chronosaga-e2e-{profile_id}.log"));

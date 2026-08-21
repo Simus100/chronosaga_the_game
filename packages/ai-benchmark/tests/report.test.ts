@@ -1,0 +1,151 @@
+import { describe, expect, it } from 'vitest';
+import { buildComparison, inputParityProblems, renderComparison } from '../src/report.js';
+import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
+import { loadSuite } from '../src/suite.js';
+
+const suite = loadSuite();
+const SHA = {
+  lite: 'd2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5',
+  standard: '8334b850b7bd46238c16b0c550df2138f0889bf433809008cc17a8b05761863e',
+};
+
+function generationFor(
+  caseId: string,
+  profile: BenchmarkProfile,
+  accepted: boolean,
+  over: Partial<BenchmarkGeneration> = {},
+): BenchmarkGeneration {
+  const testCase = suite.cases.find(entry => entry.id === caseId)!;
+  return {
+    id: `run:${caseId}:${profile}:1`,
+    runId: 'run',
+    caseId,
+    task: testCase.task,
+    profile,
+    artifact: {
+      profileId: profile,
+      family: profile === 'lite' ? 'Qwen3-1.7B' : 'SmolLM3-3B',
+      quantization: 'Q4_K_M',
+      artifactFilename: profile === 'lite' ? 'Qwen3-1.7B-Q4_K_M.gguf' : 'SmolLM3-Q4_K_M.gguf',
+      sizeBytes: profile === 'lite' ? 1282439264 : 1915305312,
+      sha256: SHA[profile],
+      source: 'user model library',
+      releaseApproved: false,
+    },
+    context: {
+      contextSize: 4096,
+      maxOutputTokens: 512,
+      temperature: 0.7,
+      topP: 0.95,
+      seed: null,
+      reasoning: 'off',
+    },
+    attempt: 1,
+    accepted,
+    validatorErrors: accepted ? [] : ['unknown tone tag'],
+    retryUsed: false,
+    fallbackUsed: false,
+    fallbackProfile: null,
+    latencyMs: profile === 'lite' ? 8000 : 12000,
+    tokensGenerated: 120,
+    tokensPerSecond: profile === 'lite' ? 18 : 12,
+    rawOutputPath: `raw/${caseId}.${profile}.1.txt`,
+    normalizedOutput: accepted
+      ? {
+          narration: 'Nulla di rilevante.',
+          dialogue: testCase.constraints.knownSpeakerIds.map(speakerId => ({ speakerId, text: 'Ok.' })),
+          toneTags: [testCase.constraints.allowedToneTags[0]!],
+          eventProposals: testCase.constraints.allowEventProposals ? [{ templateId: 't' }] : [],
+          memorySuggestions: testCase.constraints.allowMemorySuggestions ? ['m'] : [],
+        }
+      : null,
+    ...over,
+  };
+}
+
+function twoProfileRun(caseIds: string[]): BenchmarkRun {
+  const generations: BenchmarkGeneration[] = [];
+  for (const caseId of caseIds) {
+    generations.push(generationFor(caseId, 'lite', false));
+    generations.push(generationFor(caseId, 'standard', true));
+  }
+  return {
+    metadata: {
+      runId: 'run',
+      startedAt: '2026-08-21T00:00:00.000Z',
+      gitCommit: '9599f38',
+      gitDirty: false,
+      suiteVersion: suite.suiteVersion,
+      suiteSchemaVersion: 1,
+      runnerVersion: '0.1.0',
+      runtimeReleaseTag: 'b10343',
+      runtimeExecutableSha256: null,
+      host: { os: 'Windows 11', arch: 'x86_64', cpu: 'i7-13700KF', logicalCores: 24, totalRamMb: 65536 },
+    },
+    generations,
+  };
+}
+
+const caseIds = suite.cases.slice(0, 4).map(entry => entry.id);
+
+describe('the Lite vs Standard comparison', () => {
+  it('reports both profiles over the same cases', () => {
+    const report = buildComparison(suite, twoProfileRun(caseIds));
+    expect(report.profiles.map(profile => profile.profile)).toEqual(['lite', 'standard']);
+    for (const profile of report.profiles) {
+      expect(profile.casesAttempted).toBe(caseIds.length);
+    }
+  });
+
+  it('refuses to compare profiles that did not see identical inputs', () => {
+    const run = twoProfileRun(caseIds);
+    run.generations = run.generations.filter(
+      generation => !(generation.profile === 'lite' && generation.caseId === caseIds[0]),
+    );
+    expect(inputParityProblems(run, ['lite', 'standard'])).toHaveLength(1);
+    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+  });
+
+  it('names the cases where the profiles disagreed', () => {
+    const report = buildComparison(suite, twoProfileRun(caseIds));
+    expect(report.divergentCases).toHaveLength(caseIds.length);
+    for (const divergent of report.divergentCases) {
+      expect(divergent.acceptedBy).toEqual(['standard']);
+    }
+  });
+
+  it('separates acceptance from hard failures', () => {
+    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const standard = report.profiles.find(profile => profile.profile === 'standard')!;
+    expect(standard.casesAccepted).toBe(caseIds.length);
+    expect(standard.hardFailedCases).toBe(0);
+  });
+
+  it('carries the exact artifact identity into the summary', () => {
+    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const lite = report.profiles.find(profile => profile.profile === 'lite')!;
+    expect(lite.artifactFilename).toBe('Qwen3-1.7B-Q4_K_M.gguf');
+    expect(lite.sha256).toBe(SHA.lite);
+  });
+
+  it('breaks acceptance down by task', () => {
+    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const standard = report.profiles.find(profile => profile.profile === 'standard')!;
+    const attempted = Object.values(standard.acceptanceByTask).reduce((sum, entry) => sum + entry.attempted, 0);
+    expect(attempted).toBe(caseIds.length);
+  });
+
+  it('renders a table a human can read', () => {
+    const rendered = renderComparison(buildComparison(suite, twoProfileRun(caseIds)));
+    expect(rendered).toContain('LITE');
+    expect(rendered).toContain('STANDARD');
+    expect(rendered).toContain('median latency');
+  });
+
+  it('is stable: the same run renders identically twice', () => {
+    const run = twoProfileRun(caseIds);
+    expect(renderComparison(buildComparison(suite, run))).toBe(
+      renderComparison(buildComparison(suite, run)),
+    );
+  });
+});
