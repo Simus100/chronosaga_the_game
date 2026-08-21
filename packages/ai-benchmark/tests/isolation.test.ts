@@ -60,12 +60,17 @@ function generation(caseId: string): BenchmarkGeneration {
     tokensGenerated: 100,
     tokensPerSecond: 12,
     rawOutputPath: `raw/${caseId}.lite.1.txt`,
+    rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
       narration: 'Nulla di rilevante.',
       dialogue: testCase.constraints.knownSpeakerIds.map(speakerId => ({ speakerId, text: 'Ok.' })),
       toneTags: [testCase.constraints.allowedToneTags[0]!],
-      eventProposals: testCase.constraints.allowEventProposals ? [{ templateId: 't' }] : [],
-      memorySuggestions: testCase.constraints.allowMemorySuggestions ? ['m'] : [],
+      eventProposals: testCase.constraints.allowEventProposals
+        ? [{ subjectId: testCase.characters[0]?.id ?? 'settlement_helios', topic: 't', rationale: 'r' }]
+        : [],
+      memorySuggestions: testCase.constraints.allowMemorySuggestions
+        ? [{ characterId: testCase.characters[0]?.id ?? 'mara_001', summary: 's' }]
+        : [],
     },
   };
 }

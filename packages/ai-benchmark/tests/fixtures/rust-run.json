@@ -42,6 +42,11 @@
         ]
       },
       "profile": "lite",
+      "rawFormat": {
+        "bareJson": true,
+        "codeFencePresent": false,
+        "wrapperTextPresent": false
+      },
       "rawOutputPath": "raw/ai_case_001.lite.1.txt",
       "retryUsed": false,
       "runId": "run_001",
@@ -79,6 +84,11 @@
       "latencyMs": 26326,
       "normalizedOutput": null,
       "profile": "standard",
+      "rawFormat": {
+        "bareJson": false,
+        "codeFencePresent": true,
+        "wrapperTextPresent": true
+      },
       "rawOutputPath": "raw/ai_case_001.standard.1.txt",
       "retryUsed": false,
       "runId": "run_001",

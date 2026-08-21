@@ -148,7 +148,6 @@ function repeatedSentenceRatio(text: string): number {
 export function evaluateObjectively(
   testCase: BenchmarkCase,
   generation: BenchmarkGeneration,
-  rawOutput = '',
 ): ObjectiveEvaluation {
   const checks: ObjectiveCheck[] = [];
   const hardFails: HardFail[] = [];
@@ -387,16 +386,29 @@ export function evaluateObjectively(
     generation.fallbackUsed ? `fell back to ${generation.fallbackProfile}` : 'no fallback',
   );
 
-  // Raw output is referenced but not required to be loaded; when it is, an
-  // accepted generation that wrapped its JSON in prose is still worth knowing.
-  if (rawOutput.length > 0 && constraints.strictJsonOnly) {
-    const clean = rawOutput.trim().startsWith('{') && rawOutput.trim().endsWith('}');
-    add(
-      'raw_output_is_bare_json',
-      clean,
-      'deterministic',
-      clean ? 'raw output is a bare JSON object' : 'raw output carries text around the JSON object',
-    );
+  // A strict-JSON case asked for a bare object. The application validator
+  // unwraps ```json fences by design, so an accepted generation can still have
+  // violated the instruction — and would otherwise look perfectly compliant.
+  // The check reads the observation recorded with the evidence rather than the
+  // prose, so the report layer never touches the filesystem.
+  if (constraints.strictJsonOnly) {
+    const observed = generation.rawFormat;
+    if (observed === undefined || observed === null) {
+      // Fail closed. Missing evidence is not evidence of compliance.
+      add(
+        'raw_output_is_bare_json',
+        false,
+        'deterministic',
+        'no raw-format evidence was recorded, so bare-JSON compliance is unknown',
+      );
+    } else {
+      const detail = observed.bareJson
+        ? 'raw output is a bare JSON object'
+        : observed.codeFencePresent
+          ? 'raw output was wrapped in a markdown code fence'
+          : 'raw output carries text around the JSON object';
+      add('raw_output_is_bare_json', observed.bareJson, 'deterministic', detail);
+    }
   }
 
   return {

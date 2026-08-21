@@ -165,7 +165,45 @@ pub fn case_contract(case: &BenchmarkCase) -> OutputContract {
         // proposal gets exactly the production rejection.
         allow_event_proposals: case.constraints.allow_event_proposals,
         allow_memory_suggestions: case.constraints.allow_memory_suggestions,
+        // Grounding for suggestions, from the case's own slice. A proposal about
+        // an invented settlement is refused rather than counted.
+        allowed_subject_ids: case_subject_ids(case),
+        known_character_ids: case.characters.iter().map(|c| c.id.clone()).collect(),
     }
+}
+
+/// Every entity a proposal may legitimately be about.
+///
+/// The same notion of "in this scene" the evaluator uses: the characters, what
+/// they belong to and where they are, and whatever the authoritative delta
+/// touched.
+fn case_subject_ids(case: &BenchmarkCase) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut push = |value: &str| {
+        if !value.is_empty() && !ids.iter().any(|existing| existing == value) {
+            ids.push(value.to_string());
+        }
+    };
+    for character in &case.characters {
+        push(&character.id);
+        if let Some(faction) = &character.faction_id {
+            push(faction);
+        }
+        if let Some(location) = &character.location_id {
+            push(location);
+        }
+    }
+    for change in &case.recent_delta.changes {
+        for part in change.key.split('.') {
+            push(part);
+        }
+    }
+    if let Some(settlement) = case.world_state_slice.get("settlement") {
+        if let Some(id) = settlement.get("id").and_then(|value| value.as_str()) {
+            push(id);
+        }
+    }
+    ids
 }
 
 /// The system prompt, identical for every profile.
@@ -180,13 +218,16 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
     } else {
         case.constraints.known_speaker_ids.join(", ")
     };
+    // The model is told the exact permitted item shape. Asking for "an object"
+    // and then rejecting whatever arrives would measure the prompt, not the
+    // model.
     let proposals = if case.constraints.allow_event_proposals {
-        "puoi proporre eventi in event_proposals; sono suggerimenti, mai effetti applicati"
+        "event_proposals puo' contenere oggetti di questa forma esatta e di nessun'altra:          {\"subjectId\": \"<id presente nella scena>\", \"topic\": \"<poche parole>\",          \"rationale\": \"<perche'>\"}. Sono suggerimenti per il motore, mai effetti          applicati: niente numeri, niente cambi di stato"
     } else {
         "event_proposals deve essere un array vuoto"
     };
     let memories = if case.constraints.allow_memory_suggestions {
-        "puoi proporre memorie in memory_suggestions, solo per i personaggi presenti"
+        "memory_suggestions puo' contenere oggetti di questa forma esatta e di nessun'altra:          {\"characterId\": \"<id di un personaggio presente>\", \"summary\": \"<cosa ricorda>\"}"
     } else {
         "memory_suggestions deve essere un array vuoto"
     };
@@ -529,6 +570,8 @@ pub struct GenerationRecord {
     pub tokens_generated: Option<u64>,
     pub tokens_per_second: Option<f64>,
     pub raw_output_path: String,
+    /// Deterministic observation of the bytes at `raw_output_path`.
+    pub raw_format: RawFormat,
     pub normalized_output: Option<NormalizedOutput>,
 }
 
@@ -538,8 +581,45 @@ pub struct NormalizedOutput {
     pub narration: String,
     pub dialogue: Vec<crate::inference::DialogueLine>,
     pub tone_tags: Vec<String>,
-    pub event_proposals: Vec<serde_json::Value>,
-    pub memory_suggestions: Vec<serde_json::Value>,
+    pub event_proposals: Vec<crate::inference::EventProposal>,
+    pub memory_suggestions: Vec<crate::inference::MemorySuggestion>,
+}
+
+/// What the raw response looked like, before the validator normalised it.
+///
+/// The application validator deliberately unwraps ```json fences, which is right
+/// for the product and wrong for a benchmark case that asked for bare JSON: a
+/// fenced answer would be accepted and the report would record full compliance.
+///
+/// A small deterministic observation is recorded here instead of the prose
+/// itself. The text stays in `raw/<case>.<profile>.<attempt>.txt`; duplicating
+/// it into every row would bloat the evidence for no gain, and making the
+/// TypeScript report layer read files to find it out would put filesystem I/O
+/// somewhere it does not belong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawFormat {
+    /// The response is exactly one JSON object and nothing else.
+    pub bare_json: bool,
+    /// A markdown code fence was present anywhere in the response.
+    pub code_fence_present: bool,
+    /// Text appeared outside the JSON object.
+    pub wrapper_text_present: bool,
+}
+
+/// Observe the shape of a raw model response.
+///
+/// Structural only, and deliberately blunt: it answers "was this bare JSON?"
+/// and, when it was not, which of the two usual reasons applied.
+pub fn observe_raw_format(raw: &str) -> RawFormat {
+    let trimmed = raw.trim();
+    let code_fence_present = trimmed.contains("```");
+    let bare_json = !code_fence_present && trimmed.starts_with('{') && trimmed.ends_with('}');
+    RawFormat {
+        bare_json,
+        code_fence_present,
+        wrapper_text_present: !bare_json && !trimmed.is_empty(),
+    }
 }
 
 /// Turn one real inference outcome into a result row.
@@ -583,6 +663,9 @@ pub fn record_generation(
         tokens_generated: outcome.completion_tokens,
         tokens_per_second: outcome.tokens_per_second,
         raw_output_path: raw_output_path(&case.id, profile, attempt),
+        // Derived from the same string that is about to be written to disk, so
+        // the observation and the file can never describe different bytes.
+        raw_format: observe_raw_format(&outcome.raw),
         normalized_output: outcome.accepted.then(|| NormalizedOutput {
             narration: outcome.narration.clone().unwrap_or_default(),
             dialogue: outcome.dialogue.clone(),
@@ -1247,7 +1330,12 @@ mod tests {
         let rejected = crate::inference::InferenceOutcome {
             accepted: false,
             duration_ms: 26326,
-            raw: "...".to_string(),
+            // Fenced on purpose: the fixture has to carry a row whose raw shape
+            // differs from bare JSON, or the strict-JSON evidence would never be
+            // exercised across the language boundary.
+            raw: "```json
+{\"narration\": \"...\"}
+```".to_string(),
             narration: None,
             dialogue: Vec::new(),
             tone_tags: Vec::new(),
@@ -1302,6 +1390,62 @@ mod tests {
             "the Rust result shape changed; regenerate the fixture and check the \
              TypeScript contract still accepts it"
         );
+    }
+
+    #[test]
+    fn bare_json_is_recognised_as_bare() {
+        let observed = observe_raw_format("{\"narration\": \"ok\"}");
+        assert!(observed.bare_json);
+        assert!(!observed.code_fence_present);
+        assert!(!observed.wrapper_text_present);
+    }
+
+    #[test]
+    fn a_code_fence_is_recorded_even_though_the_validator_unwraps_it() {
+        // The exact gap: the product validator accepts this, and the benchmark
+        // case that demanded bare JSON must still be able to see the fence.
+        let observed = observe_raw_format("```json\n{\"narration\": \"ok\"}\n```");
+        assert!(!observed.bare_json);
+        assert!(observed.code_fence_present);
+    }
+
+    #[test]
+    fn prose_around_the_object_is_recorded_as_wrapper_text() {
+        let observed = observe_raw_format("Ecco la scena:\n{\"narration\": \"ok\"}\nSpero vada bene.");
+        assert!(!observed.bare_json);
+        assert!(!observed.code_fence_present);
+        assert!(observed.wrapper_text_present);
+    }
+
+    #[test]
+    fn the_raw_format_describes_the_bytes_that_were_written() {
+        // Row and file must agree: both come from the same string.
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let fenced = "```json\n{\"narration\": \"ok\"}\n```";
+        let outcome = crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 1,
+            raw: fenced.to_string(),
+            narration: Some("ok".to_string()),
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+        let record = record_generation(
+            "run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &outcome,
+        );
+
+        assert_eq!(record.raw_format, observe_raw_format(fenced));
+        assert!(record.raw_format.code_fence_present);
+        assert!(!record.raw_format.bare_json);
     }
 
     #[test]

@@ -93,6 +93,7 @@ function generation(over: Partial<BenchmarkGeneration> = {}): BenchmarkGeneratio
     tokensGenerated: 120,
     tokensPerSecond: 15,
     rawOutputPath: 'raw/fixture_001.lite.1.txt',
+    rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: output(),
     ...over,
   };
@@ -180,7 +181,7 @@ describe('the deterministic evaluator', () => {
   it('rejects proposals in a case that does not permit them', () => {
     const evaluation = evaluateObjectively(
       caseFixture(),
-      generation({ normalizedOutput: output({ eventProposals: [{ templateId: 'x' }] }) }),
+      generation({ normalizedOutput: output({ eventProposals: [{ subjectId: 'settlement_helios', topic: 't', rationale: 'r' }] }) }),
     );
     expect(check(evaluation, 'event_proposals_within_contract').passed).toBe(false);
   });
@@ -315,6 +316,80 @@ describe('the deterministic evaluator', () => {
     }
   });
 
+  it('A: a strict case answered with bare JSON passes the raw-format check', () => {
+    const testCase = caseFixture();
+    testCase.constraints.strictJsonOnly = true;
+    const evaluation = evaluateObjectively(testCase, generation());
+    expect(check(evaluation, 'raw_output_is_bare_json').passed).toBe(true);
+  });
+
+  it('B: a fenced answer is accepted by the validator and still fails the strict check', () => {
+    // The whole point. The application validator unwraps ```json on purpose, so
+    // the generation is `accepted`; the benchmark asked for bare JSON and must
+    // still record that it did not get it.
+    const testCase = caseFixture();
+    testCase.constraints.strictJsonOnly = true;
+    const evaluation = evaluateObjectively(
+      testCase,
+      generation({
+        accepted: true,
+        rawFormat: { bareJson: false, codeFencePresent: true, wrapperTextPresent: true },
+      }),
+    );
+    expect(evaluation.checks.find(c => c.id === 'schema_valid')!.passed).toBe(true);
+    const strict = check(evaluation, 'raw_output_is_bare_json');
+    expect(strict.passed).toBe(false);
+    expect(strict.confidence).toBe('deterministic');
+    expect(strict.detail).toContain('code fence');
+  });
+
+  it('C: prose around the object fails the strict check', () => {
+    const testCase = caseFixture();
+    testCase.constraints.strictJsonOnly = true;
+    const evaluation = evaluateObjectively(
+      testCase,
+      generation({
+        rawFormat: { bareJson: false, codeFencePresent: false, wrapperTextPresent: true },
+      }),
+    );
+    expect(check(evaluation, 'raw_output_is_bare_json').passed).toBe(false);
+    expect(check(evaluation, 'raw_output_is_bare_json').detail).toContain('text around');
+  });
+
+  it('D: a non-strict case is not disqualified for a code fence', () => {
+    // Ordinary cases never asked for bare JSON, so the check must not exist.
+    const evaluation = evaluateObjectively(
+      caseFixture(),
+      generation({
+        rawFormat: { bareJson: false, codeFencePresent: true, wrapperTextPresent: true },
+      }),
+    );
+    expect(evaluation.checks.some(entry => entry.id === 'raw_output_is_bare_json')).toBe(false);
+    expect(evaluation.deterministicFailures).toBe(0);
+  });
+
+  it('G: missing raw-format evidence fails closed for a strict case', () => {
+    // Absent evidence is not evidence of compliance.
+    const testCase = caseFixture();
+    testCase.constraints.strictJsonOnly = true;
+    const record = generation();
+    delete (record as unknown as Record<string, unknown>).rawFormat;
+
+    const evaluation = evaluateObjectively(testCase, record);
+    const strict = check(evaluation, 'raw_output_is_bare_json');
+    expect(strict.passed).toBe(false);
+    expect(strict.detail).toContain('unknown');
+  });
+
+  it('F: the report actually runs the strict raw-format check', () => {
+    // It was silently skipped in every report before, because buildComparison
+    // never passed raw text. Now the evidence travels with the row.
+    const testCase = caseFixture();
+    testCase.constraints.strictJsonOnly = true;
+    const evaluation = evaluateObjectively(testCase, generation());
+    expect(evaluation.checks.map(entry => entry.id)).toContain('raw_output_is_bare_json');
+  });
+
   it('runs against every committed case without throwing', () => {
     for (const testCase of suite.cases) {
       const evaluation = evaluateObjectively(
@@ -326,8 +401,12 @@ describe('the deterministic evaluator', () => {
             narration: 'Nulla di rilevante.',
             dialogue: testCase.constraints.knownSpeakerIds.map(speakerId => ({ speakerId, text: 'Ok.' })),
             toneTags: [testCase.constraints.allowedToneTags[0]!],
-            eventProposals: testCase.constraints.allowEventProposals ? [{ templateId: 't' }] : [],
-            memorySuggestions: testCase.constraints.allowMemorySuggestions ? ['m'] : [],
+            eventProposals: testCase.constraints.allowEventProposals
+        ? [{ subjectId: testCase.characters[0]?.id ?? 'settlement_helios', topic: 't', rationale: 'r' }]
+        : [],
+            memorySuggestions: testCase.constraints.allowMemorySuggestions
+        ? [{ characterId: testCase.characters[0]?.id ?? 'mara_001', summary: 's' }]
+        : [],
           },
         }),
       );

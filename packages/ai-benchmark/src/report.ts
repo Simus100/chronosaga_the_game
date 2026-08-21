@@ -10,8 +10,14 @@ import type { BenchmarkCase, BenchmarkSuite, BenchmarkTask } from './case.js';
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from './result.js';
 import { evaluateObjectively } from './objective.js';
 import { HARD_FAIL_CATEGORIES, type HardFailCategory } from './hard-fail.js';
-import { meanByAxis, scoresForProfile, type ScoreAxis, type ScoreSheet } from './scoring.js';
-import { asHardFails, type HumanReview } from './human-review.js';
+import {
+  meanByAxis,
+  scoresForProfile,
+  validateScoreSheet,
+  type ScoreAxis,
+  type ScoreSheet,
+} from './scoring.js';
+import { asHardFails, validateHumanReview, type HumanReview } from './human-review.js';
 
 export interface ProfileSummary {
   profile: BenchmarkProfile;
@@ -246,6 +252,52 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
 }
 
 /**
+ * Every well-formedness problem in the judgement supplied for a run.
+ *
+ * Delegates to the validators that already own these rules rather than
+ * restating them; this function's job is to run them against the run's real
+ * generation ids and to render the results as readable lines. Invalid judgement
+ * is refused, never quietly filtered: silently dropping a malformed score would
+ * change a mean without telling anyone.
+ */
+export function judgementProblems(
+  run: BenchmarkRun,
+  sheet: ScoreSheet | null,
+  review: HumanReview | null,
+): string[] {
+  const known = new Set(run.generations.map(generation => generation.id));
+  const problems: string[] = [];
+
+  const render = (what: string, entries: Array<{ generationId?: string; field: string; message: string }>) =>
+    entries.map(entry =>
+      entry.generationId
+        ? `${what} ${entry.generationId} ${entry.field}: ${entry.message}`
+        : `${what} ${entry.field}: ${entry.message}`,
+    );
+
+  if (sheet) problems.push(...render('score sheet', validateScoreSheet(sheet, known)));
+  if (review) problems.push(...render('human review', validateHumanReview(review, known)));
+
+  // The review schema gives a reviewer one verdict per generation and category;
+  // the same person filing it twice would double a tally that is meant to count
+  // disqualified cases.
+  if (review) {
+    const seen = new Set<string>();
+    for (const fail of review.hardFails) {
+      const key = `${fail.generationId}|${fail.category}|${fail.reviewedBy}`;
+      if (seen.has(key)) {
+        problems.push(
+          `human review ${fail.generationId} category: '${fail.category}' recorded twice by ${fail.reviewedBy}`,
+        );
+      }
+      seen.add(key);
+    }
+  }
+
+  return problems;
+}
+
+/**
  * Whether the supplied suite is the suite the run was executed against.
  *
  * `taskMismatches` compares ids and task names, which stay stable across an
@@ -464,6 +516,17 @@ export function buildComparison(
   ];
   if (attribution.length > 0) {
     throw new Error(`refusing judgement that belongs to another run: ${attribution.join('; ')}`);
+  }
+
+  // Attribution and well-formedness are separate invariants, and both are
+  // required. A sheet can belong to this run and still be nonsense: a duplicate
+  // entry skews a mean, an unknown generation id vanishes without trace, and an
+  // invalid hard-fail category indexes a tally that was never initialised for
+  // it, turning a disqualification into NaN. These structures arrive as external
+  // JSON, so they are validated rather than trusted.
+  const malformed = judgementProblems(run, sheet, review);
+  if (malformed.length > 0) {
+    throw new Error(`refusing malformed judgement: ${malformed.join('; ')}`);
   }
 
   const mismatches = taskMismatches(suite, run);

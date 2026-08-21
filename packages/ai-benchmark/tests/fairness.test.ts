@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildComparison,
   inputParityProblems,
+  judgementProblems,
   suiteBindingProblems,
   taskMismatches,
 } from '../src/report.js';
@@ -58,12 +59,17 @@ function generationFor(
     tokensGenerated: 120,
     tokensPerSecond: 15,
     rawOutputPath: `raw/${caseId}.${profile}.1.txt`,
+    rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
       narration: 'Nulla di rilevante.',
       dialogue: testCase.constraints.knownSpeakerIds.map(speakerId => ({ speakerId, text: 'Ok.' })),
       toneTags: [testCase.constraints.allowedToneTags[0]!],
-      eventProposals: testCase.constraints.allowEventProposals ? [{ templateId: 't' }] : [],
-      memorySuggestions: testCase.constraints.allowMemorySuggestions ? ['m'] : [],
+      eventProposals: testCase.constraints.allowEventProposals
+        ? [{ subjectId: testCase.characters[0]?.id ?? 'settlement_helios', topic: 't', rationale: 'r' }]
+        : [],
+      memorySuggestions: testCase.constraints.allowMemorySuggestions
+        ? [{ characterId: testCase.characters[0]?.id ?? 'mara_001', summary: 's' }]
+        : [],
     },
     ...over,
   };
@@ -388,6 +394,127 @@ describe('judgement is bound to the run it judges', () => {
     expect(() =>
       buildComparison(suite, fairRun(), ['lite', 'standard'], sheet({ suiteVersion: 'p0.4-old' })),
     ).toThrow(/suite/);
+  });
+});
+
+describe('judgement must be well formed before it is aggregated', () => {
+  const first = caseIds[0]!;
+  const validId = `run:${first}:lite:1`;
+
+  const axes = {
+    italian_fluency: 4, grounding: 4, character_consistency: 4, memory_use: 4,
+    instruction_adherence: 4, schema_compliance: 4, non_contradiction: 4,
+    narrative_usefulness: 4, repetition_resistance: 4, latency_acceptability: 4,
+  } as const;
+
+  const sheetWith = (scores: ScoreSheet['scores']): ScoreSheet => ({
+    runId: 'run',
+    suiteVersion: suite.suiteVersion,
+    scores,
+  });
+
+  const score = (over: Partial<ScoreSheet['scores'][number]> = {}) => ({
+    generationId: validId,
+    scoredBy: 'simone',
+    scoredAt: '2026-08-21T00:00:00.000Z',
+    scores: { ...axes },
+    ...over,
+  });
+
+  const reviewWith = (hardFails: HumanReview['hardFails']): HumanReview => ({
+    runId: 'run',
+    suiteVersion: suite.suiteVersion,
+    hardFails,
+  });
+
+  const fail = (over: Partial<HumanReview['hardFails'][number]> = {}) => ({
+    generationId: validId,
+    category: 'contradicts_state_delta' as const,
+    detail: 'Says the shortage ended; the delta says water fell.',
+    reviewedBy: 'simone',
+    reviewedAt: '2026-08-21T00:00:00.000Z',
+    ...over,
+  });
+
+  it('A: valid judgement passes', () => {
+    expect(judgementProblems(fairRun(), sheetWith([score()]), reviewWith([fail()]))).toEqual([]);
+    expect(() =>
+      buildComparison(suite, fairRun(), ['lite', 'standard'], sheetWith([score()]), reviewWith([fail()])),
+    ).not.toThrow();
+  });
+
+  it('B: a score for a generation the run does not contain is refused', () => {
+    // Previously it disappeared silently, which is worse than a wrong number.
+    const sheet = sheetWith([score({ generationId: 'run:ghost:lite:1' })]);
+    expect(judgementProblems(fairRun(), sheet, null).some(p => p.includes('run:ghost:lite:1'))).toBe(true);
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], sheet)).toThrow(/malformed judgement/);
+  });
+
+  it('C: the same generation scored twice is refused', () => {
+    const sheet = sheetWith([score(), score()]);
+    expect(judgementProblems(fairRun(), sheet, null).some(p => p.includes('scored twice'))).toBe(true);
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], sheet)).toThrow();
+  });
+
+  it('D: an out-of-range or unknown axis is refused', () => {
+    const outOfRange = sheetWith([score()]);
+    (outOfRange.scores[0]!.scores as Record<string, number>).grounding = 9;
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], outOfRange)).toThrow(/grounding/);
+
+    const unknownAxis = sheetWith([score()]);
+    (unknownAxis.scores[0]!.scores as Record<string, number>).vibes = 5;
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], unknownAxis)).toThrow(/vibes/);
+  });
+
+  it('E: a hard fail against an unknown generation is refused', () => {
+    const review = reviewWith([fail({ generationId: 'run:ghost:lite:1' })]);
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow(
+      /malformed judgement/,
+    );
+  });
+
+  it('F: a hard-fail category outside the five locked ones is refused', () => {
+    const review = reviewWith([fail()]);
+    (review.hardFails[0] as unknown as Record<string, unknown>).category = 'bad_vibes';
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow(
+      /bad_vibes/,
+    );
+  });
+
+  it('G: malformed judgement can no longer produce NaN in the report', () => {
+    // The concrete failure: an invalid category indexed a tally that was never
+    // initialised for it, so the count became NaN and travelled into the report.
+    const review = reviewWith([fail()]);
+    (review.hardFails[0] as unknown as Record<string, unknown>).category = 'bad_vibes';
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow();
+
+    // And a report built from valid judgement contains no NaN anywhere.
+    const report = buildComparison(
+      suite, fairRun(), ['lite', 'standard'], sheetWith([score()]), reviewWith([fail()]),
+    );
+    const numbers: number[] = [];
+    const walk = (value: unknown): void => {
+      if (typeof value === 'number') numbers.push(value);
+      else if (Array.isArray(value)) value.forEach(walk);
+      else if (value && typeof value === 'object') Object.values(value).forEach(walk);
+    };
+    walk(report);
+    expect(numbers.length).toBeGreaterThan(0);
+    expect(numbers.every(Number.isFinite)).toBe(true);
+  });
+
+  it('H: attribution still fails independently of well-formedness', () => {
+    // A perfectly valid sheet from another run must still be refused, and for
+    // the attribution reason rather than a validation one.
+    const foreign = { ...sheetWith([score()]), runId: 'other_run' };
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], foreign)).toThrow(
+      /belongs to another run/,
+    );
+  });
+
+  it('refuses the same verdict filed twice by the same reviewer', () => {
+    const review = reviewWith([fail(), fail()]);
+    expect(judgementProblems(fairRun(), null, review).some(p => p.includes('recorded twice'))).toBe(true);
   });
 });
 

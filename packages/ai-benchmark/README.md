@@ -97,6 +97,14 @@ live in a separate sheet keyed by generation id, so scoring can never alter the
 recorded evidence: a run can be re-scored, scored twice, or left unscored, and
 the model output stays byte-identical.
 
+Judgement arrives as external JSON, so `buildComparison` validates it before
+aggregating anything. Attribution and well-formedness are separate invariants and
+both are required: a sheet can belong to this run and still be nonsense. A
+duplicate entry would skew a mean, an unknown generation id would vanish without
+trace, and an invalid hard-fail category would index a tally never initialised
+for it and turn a disqualification into `NaN`. Invalid judgement is refused, not
+silently filtered.
+
 **Hard failures** (`src/hard-fail.ts`) are separate from both. A well-written
 paragraph that mutates a Game Core number is not "a 2 out of 5"; it is
 disqualifying, and averaging it into a score would let good prose pay for a
@@ -149,8 +157,37 @@ passed into `record_generation`, which never rebuilds prompts of its own. P0.5-B
 introduces retry wording, and a fingerprint that quietly recomputed the original
 would claim two different questions were the same one.
 
+Each row also carries a `rawFormat` observation — `bareJson`,
+`codeFencePresent`, `wrapperTextPresent` — derived at recording time from the
+same string that is written to `raw/`. The application validator unwraps
+markdown JSON fences on purpose, which is right for the product and wrong for a
+case that demanded bare JSON: a fenced answer would be accepted and the report
+would show full compliance. The evaluator reads the recorded observation, so the
+report layer never touches the filesystem, and a strict case with no such
+evidence **fails closed** rather than counting as a pass.
+
 `tests/fixtures/rust-run.json` is produced by the Rust serializer and consumed by
 the TypeScript `validateRun`. Neither side can change shape alone.
+
+## Suggestions are typed, and still inert
+
+`event_proposals` and `memory_suggestions` were `Vec<serde_json::Value>`, so
+`[null]`, `[42]` and `[{}]` all counted as accepted structured proposals — which
+made the phrase meaningless. They are now
+`EventProposal { subjectId, topic, rationale }` and
+`MemorySuggestion { characterId, summary }`, with `deny_unknown_fields`,
+non-empty required strings, and grounding: a proposal must be about an entity
+the scene contains, and a memory must belong to a character who is in it. The
+benchmark prompt states the exact permitted shape rather than asking for an
+unspecified object.
+
+Deliberately the smallest useful shape, and deliberately **not** a second
+gameplay schema: no effects, no deltas, no numbers of any kind. Production
+defaults stay fail-closed (`allow_event_proposals` and
+`allow_memory_suggestions` are `false`), and passing the validator gives a
+suggestion no power whatsoever — no code path in this crate writes WorldState
+from a generation, and a test asserts the inference boundary imports nothing
+that could.
 
 ## A run is bound to its suite, and its sidecar to its guard
 

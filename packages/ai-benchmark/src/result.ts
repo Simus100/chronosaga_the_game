@@ -104,8 +104,43 @@ export interface BenchmarkGeneration {
    * two profiles times retries is a lot of prose nobody will diff.
    */
   rawOutputPath: string;
+  /**
+   * What the raw response looked like before the validator normalised it.
+   *
+   * The application validator unwraps ```json fences on purpose, which is right
+   * for the product and wrong for a case that demanded bare JSON. Recording the
+   * structural observation at evidence time lets the evaluator check that
+   * without the report layer reading files.
+   */
+  rawFormat: RawFormat;
   /** The validated object, when the validator accepted it. */
   normalizedOutput: NormalizedOutput | null;
+}
+
+/** Deterministic observation of one raw response's shape. */
+export interface RawFormat {
+  bareJson: boolean;
+  codeFencePresent: boolean;
+  wrapperTextPresent: boolean;
+}
+
+/**
+ * A non-authoritative suggestion that the Core might raise an event.
+ *
+ * The smallest useful shape and deliberately not a second gameplay schema: no
+ * effects, no deltas, no numbers. `unknown[]` used to sit here, which meant
+ * `[null]` and `[42]` counted as accepted structured proposals.
+ */
+export interface EventProposalSuggestion {
+  subjectId: string;
+  topic: string;
+  rationale: string;
+}
+
+/** A non-authoritative suggestion that a character might remember something. */
+export interface MemorySuggestionItem {
+  characterId: string;
+  summary: string;
 }
 
 /** The application's structured contract, as the validator returns it. */
@@ -113,8 +148,8 @@ export interface NormalizedOutput {
   narration: string;
   dialogue: Array<{ speakerId: string; text: string }>;
   toneTags: string[];
-  eventProposals: unknown[];
-  memorySuggestions: unknown[];
+  eventProposals: EventProposalSuggestion[];
+  memorySuggestions: MemorySuggestionItem[];
 }
 
 export interface BenchmarkRun {
@@ -178,6 +213,9 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     }
 
     if (!generation.rawOutputPath) at('rawOutputPath', 'raw evidence must be referenced');
+    if (typeof generation.rawFormat?.bareJson !== 'boolean') {
+      at('rawFormat', 'the shape of the raw response must be recorded');
+    }
     if (!SHA256.test(generation.inputFingerprint)) {
       at('inputFingerprint', 'a generation must record what it was asked');
     }

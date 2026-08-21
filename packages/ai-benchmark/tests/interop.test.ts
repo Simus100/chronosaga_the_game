@@ -106,6 +106,36 @@ describe('evidence written by the Rust runner', () => {
     expect(fields).toContain('metadata.host');
   });
 
+  it('carries the raw-format evidence the strict check needs', () => {
+    for (const generation of run.generations) {
+      expect(typeof generation.rawFormat.bareJson).toBe('boolean');
+      expect(typeof generation.rawFormat.codeFencePresent).toBe('boolean');
+      expect(typeof generation.rawFormat.wrapperTextPresent).toBe('boolean');
+    }
+    // The fenced fixture row proves the observation survives the round trip.
+    expect(run.generations.some(generation => generation.rawFormat.codeFencePresent)).toBe(true);
+  });
+
+  it('would notice missing raw-format evidence', () => {
+    const broken = structuredClone(run);
+    delete (broken.generations[0] as unknown as Record<string, unknown>).rawFormat;
+    expect(validateRun(broken).some(problem => problem.field === 'rawFormat')).toBe(true);
+  });
+
+  it('carries typed suggestions rather than arbitrary JSON', () => {
+    for (const generation of run.generations) {
+      for (const proposal of generation.normalizedOutput?.eventProposals ?? []) {
+        expect(typeof proposal.subjectId).toBe('string');
+        expect(typeof proposal.topic).toBe('string');
+        expect(typeof proposal.rationale).toBe('string');
+      }
+      for (const suggestion of generation.normalizedOutput?.memorySuggestions ?? []) {
+        expect(typeof suggestion.characterId).toBe('string');
+        expect(typeof suggestion.summary).toBe('string');
+      }
+    }
+  });
+
   it('would notice a missing input fingerprint', () => {
     const broken = structuredClone(run);
     broken.generations[0]!.inputFingerprint = '';

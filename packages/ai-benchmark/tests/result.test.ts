@@ -41,6 +41,7 @@ function generation(over: Partial<BenchmarkGeneration> = {}): BenchmarkGeneratio
     tokensGenerated: 100,
     tokensPerSecond: 12,
     rawOutputPath: 'raw/c1.lite.1.txt',
+    rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
       narration: 'ok',
       dialogue: [],

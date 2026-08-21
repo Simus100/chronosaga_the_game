@@ -51,13 +51,18 @@ function generationFor(
     tokensGenerated: 120,
     tokensPerSecond: profile === 'lite' ? 18 : 12,
     rawOutputPath: `raw/${caseId}.${profile}.1.txt`,
+    rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: accepted
       ? {
           narration: 'Nulla di rilevante.',
           dialogue: testCase.constraints.knownSpeakerIds.map(speakerId => ({ speakerId, text: 'Ok.' })),
           toneTags: [testCase.constraints.allowedToneTags[0]!],
-          eventProposals: testCase.constraints.allowEventProposals ? [{ templateId: 't' }] : [],
-          memorySuggestions: testCase.constraints.allowMemorySuggestions ? ['m'] : [],
+          eventProposals: testCase.constraints.allowEventProposals
+        ? [{ subjectId: testCase.characters[0]?.id ?? 'settlement_helios', topic: 't', rationale: 'r' }]
+        : [],
+          memorySuggestions: testCase.constraints.allowMemorySuggestions
+        ? [{ characterId: testCase.characters[0]?.id ?? 'mara_001', summary: 's' }]
+        : [],
         }
       : null,
     ...over,
