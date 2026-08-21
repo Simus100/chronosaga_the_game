@@ -110,6 +110,18 @@ pub struct RuntimeLock {
     pub release_tag: String,
     pub external_path_relative_to_workspace_root: String,
     pub expected_executable_name: String,
+    /// Digest of the `llama-server.exe` this release is locked to.
+    ///
+    /// Already verified by `pnpm verify:local-ai-runtime`; carried here so a
+    /// benchmark run can record which runtime produced its numbers without
+    /// re-deriving it or, worse, writing it down by hand somewhere else.
+    ///
+    /// The P0.5 benchmark is its only consumer and is test-only for P0.5-A, so
+    /// the field is gated the same way. Promoting the runner to production in
+    /// P0.5-B means deleting this attribute, which is a visible edit rather than
+    /// a silent one.
+    #[cfg(test)]
+    pub executable_sha256: String,
 }
 
 /// Which copy of the runtime was resolved.
@@ -199,9 +211,16 @@ pub fn resolve_from(
 
 /// Read the lock, preferring the copy the installer shipped.
 pub fn load_lock(app: &AppHandle) -> Result<RuntimeLock, String> {
-    let path = packaged_metadata_path(app, LOCK_RELATIVE_PATH)?;
+    read_lock(&packaged_metadata_path(app, LOCK_RELATIVE_PATH)?)
+}
 
-    let contents = fs::read_to_string(&path)
+/// Read and parse the runtime lock from a path.
+///
+/// The single interpretation of this file. Test harnesses that need the same
+/// facts call this rather than reaching for `serde_json::Value` and picking out
+/// keys by hand, which is how two readers of one file start to disagree.
+pub fn read_lock(path: &Path) -> Result<RuntimeLock, String> {
+    let contents = fs::read_to_string(path)
         .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
     serde_json::from_str(&contents)
         .map_err(|error| format!("Unable to parse {}: {error}", path.display()))
@@ -230,7 +249,21 @@ mod tests {
             external_path_relative_to_workspace_root:
                 "runtime-assets/runtime/llama.cpp/b10343/win-cpu-x64".to_string(),
             expected_executable_name: "llama-server.exe".to_string(),
+            executable_sha256:
+                "7a110e56e47fab319791c1f450321ecb77449a372e4c75db68d69069e7cd531e".to_string(),
         }
+    }
+
+    #[test]
+    fn the_shipped_lock_declares_the_executable_digest() {
+        // Benchmark provenance reads this field, so it has to exist in the real
+        // file rather than only in a fixture.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../config/local-ai-runtime.lock.json");
+        let shipped = read_lock(&path).expect("the shipped runtime lock must parse");
+        assert_eq!(shipped.executable_sha256.len(), 64);
+        assert!(shipped.executable_sha256.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!shipped.release_tag.is_empty());
     }
 
     /// Build a throwaway directory containing a fake executable and DLL, so the

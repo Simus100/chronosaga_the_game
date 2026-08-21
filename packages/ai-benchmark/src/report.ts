@@ -100,17 +100,36 @@ function controlledSignature(generation: BenchmarkGeneration): string {
  * checked, each of which has silently ruined somebody's benchmark before:
  *
  * 1. **Coverage** — both profiles saw every case.
- * 2. **Identical inputs** — the recorded fingerprint over the prompts matches.
- *    Same case id with a different prompt is not the same question.
+ * 2. **Identical inputs, per attempt** — the recorded fingerprint matches for
+ *    each `(case, attempt)` pair. Comparing whole cases would be wrong: a retry
+ *    legitimately asks a different question, and a retry that happened for only
+ *    one profile is itself a finding rather than a defect. What may never differ
+ *    is what the two profiles were asked *on the same attempt number*.
  * 3. **One artifact per profile** — a run that swapped models halfway measures
  *    neither of them.
  * 4. **Controlled settings** — the sampling and context were held equal where
  *    the comparison claims to hold them equal.
  *
+ * Duplicate `(case, profile, attempt)` rows are rejected outright: two rows
+ * claiming to be the same attempt make every count downstream ambiguous.
+ *
  * Returns human-readable problems; empty means the comparison is fair.
  */
 export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfile[]): string[] {
   const problems: string[] = [];
+
+  // Duplicates first: everything below counts rows, and a duplicated attempt
+  // would quietly double one of those counts.
+  const attemptKeys = new Set<string>();
+  for (const generation of run.generations) {
+    const key = `${generation.caseId}|${generation.profile}|${generation.attempt}`;
+    if (attemptKeys.has(key)) {
+      problems.push(
+        `duplicate attempt recorded: ${generation.caseId} / ${generation.profile} / attempt ${generation.attempt}`,
+      );
+    }
+    attemptKeys.add(key);
+  }
 
   // 3 and 4 apply to a single profile too: a run that changed model or settings
   // mid-flight is incoherent even before anything is compared against it.
@@ -145,13 +164,25 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
       continue;
     }
 
-    const fingerprints = new Set(
-      run.generations
-        .filter(generation => generation.caseId === caseId && profiles.includes(generation.profile))
-        .map(generation => generation.inputFingerprint),
+    // Compare within an attempt number, not across the whole case. Attempt 1
+    // must match; a shared attempt 2 must match; an attempt only one profile
+    // made is valid evidence and is left alone.
+    const rows = run.generations.filter(
+      generation => generation.caseId === caseId && profiles.includes(generation.profile),
     );
-    if (fingerprints.size > 1) {
-      problems.push(`${caseId} was asked differently of each profile: ${fingerprints.size} fingerprints`);
+    const attempts = new Set(rows.map(generation => generation.attempt));
+    for (const attempt of [...attempts].sort((a, b) => a - b)) {
+      const forAttempt = rows.filter(generation => generation.attempt === attempt);
+      const profilesPresent = new Set(forAttempt.map(generation => generation.profile));
+      if (profilesPresent.size < 2) continue;
+
+      const fingerprints = new Set(forAttempt.map(generation => generation.inputFingerprint));
+      if (fingerprints.size > 1) {
+        problems.push(
+          `${caseId} attempt ${attempt} was asked differently of each profile: ` +
+            `${fingerprints.size} fingerprints`,
+        );
+      }
     }
   }
 
@@ -167,6 +198,32 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
   }
 
   return problems.sort();
+}
+
+/**
+ * Whether a score sheet or review actually belongs to the run being reported.
+ *
+ * Both structures already carry `runId` and `suiteVersion`; this makes those
+ * fields load-bearing instead of decorative.
+ */
+export function attributionProblems(
+  what: string,
+  judgement: { runId: string; suiteVersion: string } | null,
+  run: BenchmarkRun,
+): string[] {
+  if (judgement === null) return [];
+  const problems: string[] = [];
+  if (judgement.runId !== run.metadata.runId) {
+    problems.push(
+      `the ${what} was written for run '${judgement.runId}', not '${run.metadata.runId}'`,
+    );
+  }
+  if (judgement.suiteVersion !== run.metadata.suiteVersion) {
+    problems.push(
+      `the ${what} scored suite '${judgement.suiteVersion}', not '${run.metadata.suiteVersion}'`,
+    );
+  }
+  return problems;
 }
 
 /**
@@ -315,6 +372,17 @@ export function buildComparison(
   sheet: ScoreSheet | null = null,
   review: HumanReview | null = null,
 ): ComparisonReport {
+  // Judgement from another run must never leak into this one. Generation ids are
+  // stable and human-typeable, so an id alone is not proof of belonging: the run
+  // and the suite version have to agree as well.
+  const attribution = [
+    ...attributionProblems('score sheet', sheet, run),
+    ...attributionProblems('human review', review, run),
+  ];
+  if (attribution.length > 0) {
+    throw new Error(`refusing judgement that belongs to another run: ${attribution.join('; ')}`);
+  }
+
   const mismatches = taskMismatches(suite, run);
   if (mismatches.length > 0) {
     throw new Error(

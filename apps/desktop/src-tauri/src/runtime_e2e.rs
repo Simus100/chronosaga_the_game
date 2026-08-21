@@ -38,6 +38,16 @@ fn opted_in() -> bool {
         .any(|name| env::var(name).ok().as_deref() == Some("1"))
 }
 
+/// The runtime lock as it sits in the checkout.
+///
+/// Parsed by [`crate::runtime_lock::read_lock`], the same code the application
+/// uses, so the harness cannot develop its own opinion about this file.
+pub(crate) fn checkout_runtime_lock() -> Option<crate::runtime_lock::RuntimeLock> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../config/local-ai-runtime.lock.json");
+    crate::runtime_lock::read_lock(&path).ok()
+}
+
 /// Resolve the runtime exactly as the application does: from the lock plus the
 /// workspace variable, with nothing hard-coded here.
 fn resolve_from_lock() -> Option<(PathBuf, PathBuf)> {
@@ -50,13 +60,9 @@ fn resolve_from_lock() -> Option<(PathBuf, PathBuf)> {
     }
     let workspace = env::var(WORKSPACE_ENV).ok().filter(|v| !v.trim().is_empty())?;
 
-    let lock_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../config/local-ai-runtime.lock.json");
-    let lock: serde_json::Value = serde_json::from_str(&fs::read_to_string(lock_path).ok()?).ok()?;
-
-    let directory = PathBuf::from(workspace)
-        .join(lock["externalPathRelativeToWorkspaceRoot"].as_str()?);
-    let executable = directory.join(lock["expectedExecutableName"].as_str()?);
+    let lock = checkout_runtime_lock()?;
+    let directory = PathBuf::from(workspace).join(&lock.external_path_relative_to_workspace_root);
+    let executable = directory.join(&lock.expected_executable_name);
     executable.is_file().then_some((directory, executable))
 }
 

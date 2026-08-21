@@ -148,6 +148,107 @@ describe('comparison fairness', () => {
   });
 });
 
+describe('retries and fairness', () => {
+  const RETRY = 'b'.repeat(64);
+  const first = caseIds[0]!;
+
+  function retryRow(profile: BenchmarkProfile, fingerprint = RETRY): BenchmarkGeneration {
+    return generationFor(first, profile, {
+      id: `run:${first}:${profile}:2`,
+      attempt: 2,
+      retryUsed: true,
+      inputFingerprint: fingerprint,
+      rawOutputPath: `raw/${first}.${profile}.2.txt`,
+    });
+  }
+
+  it('A: first attempts that match are fair', () => {
+    expect(inputParityProblems(fairRun(), ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('B: a retry only one profile needed is valid evidence, not a defect', () => {
+    // Lite failing and being retried while Standard succeeded first time is
+    // precisely the kind of thing the benchmark exists to observe.
+    const run = fairRun();
+    run.generations.push(retryRow('lite'));
+    expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+
+  it('C: both profiles retried with the same wording is fair', () => {
+    const run = fairRun();
+    run.generations.push(retryRow('lite'), retryRow('standard'));
+    expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('D: both profiles retried with different wording is refused', () => {
+    const run = fairRun();
+    run.generations.push(retryRow('lite'), retryRow('standard', 'c'.repeat(64)));
+
+    const problems = inputParityProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+  });
+
+  it('E: a retry may legitimately differ from attempt 1', () => {
+    // The retry prompt is supposed to say something new. Comparing across
+    // attempt numbers would flag every retry in the suite.
+    const run = fairRun();
+    run.generations.push(retryRow('lite'), retryRow('standard'));
+
+    const attemptOne = run.generations.find(
+      generation => generation.caseId === first && generation.attempt === 1,
+    )!;
+    expect(attemptOne.inputFingerprint).not.toBe(RETRY);
+    expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('F: a duplicated case/profile/attempt is refused', () => {
+    const run = fairRun();
+    run.generations.push({ ...run.generations[0]!, id: 'run:copy' });
+
+    const problems = inputParityProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('duplicate attempt recorded'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+});
+
+describe('judgement is bound to the run it judges', () => {
+  const sheet = (over: Partial<ScoreSheet> = {}): ScoreSheet => ({
+    runId: 'run',
+    suiteVersion: suite.suiteVersion,
+    scores: [
+      {
+        generationId: `run:${caseIds[0]}:lite:1`,
+        scoredBy: 'simone',
+        scoredAt: '2026-08-21T00:00:00.000Z',
+        scores: {
+          italian_fluency: 4, grounding: 4, character_consistency: 4, memory_use: 4,
+          instruction_adherence: 4, schema_compliance: 4, non_contradiction: 4,
+          narrative_usefulness: 4, repetition_resistance: 4, latency_acceptability: 4,
+        },
+      },
+    ],
+    ...over,
+  });
+
+  it('accepts a score sheet written for this run', () => {
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], sheet())).not.toThrow();
+  });
+
+  it('refuses a score sheet from another run, even with a copied generation id', () => {
+    expect(() =>
+      buildComparison(suite, fairRun(), ['lite', 'standard'], sheet({ runId: 'other_run' })),
+    ).toThrow(/belongs to another run/);
+  });
+
+  it('refuses a score sheet written against another suite version', () => {
+    expect(() =>
+      buildComparison(suite, fairRun(), ['lite', 'standard'], sheet({ suiteVersion: 'p0.4-old' })),
+    ).toThrow(/suite/);
+  });
+});
+
 describe('human hard failures', () => {
   const known = new Set(fairRun().generations.map(generation => generation.id));
 
@@ -212,6 +313,21 @@ describe('human hard failures', () => {
 
     // The other profile is untouched by a review of the first.
     expect(standard.hardFailedCases).toBe(0);
+  });
+
+  it('is refused when it was written for another run', () => {
+    // Generation ids are stable and typeable, so an id alone proves nothing.
+    const foreign = review({ runId: 'some_other_run' });
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, foreign)).toThrow(
+      /belongs to another run/,
+    );
+  });
+
+  it('is refused when it scored a different suite version', () => {
+    const stale = review({ suiteVersion: 'p0.4-old' });
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, stale)).toThrow(
+      /suite/,
+    );
   });
 
   it('cannot be erased by a good prose score', () => {

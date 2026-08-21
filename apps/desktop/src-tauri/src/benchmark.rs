@@ -544,6 +544,9 @@ pub struct NormalizedOutput {
 
 /// Turn one real inference outcome into a result row.
 ///
+/// `input_fingerprint` is a parameter rather than something recomputed here, so
+/// a retry cannot be recorded as if it had asked the original question.
+///
 /// Rejections keep their reason and lose their output; acceptances keep their
 /// output and carry no error. The asymmetry is deliberate and is what the
 /// TypeScript result validator enforces.
@@ -554,6 +557,7 @@ pub fn record_generation(
     attempt: u32,
     artifact: ArtifactIdentity,
     context: ContextConfiguration,
+    input_fingerprint: String,
     outcome: &crate::inference::InferenceOutcome,
 ) -> GenerationRecord {
     GenerationRecord {
@@ -564,7 +568,7 @@ pub fn record_generation(
         profile: profile.to_string(),
         artifact,
         context,
-        input_fingerprint: input_fingerprint(case),
+        input_fingerprint,
         attempt,
         accepted: outcome.accepted,
         validator_errors: outcome
@@ -589,13 +593,19 @@ pub fn record_generation(
     }
 }
 
-/// SHA-256 over the exact inputs a case presents to a model.
+/// SHA-256 over the exact inputs one attempt presents to a model.
 ///
-/// Covers the suite identity, the case id and the two prompts verbatim. Two
-/// profiles that answered the same case must carry the same fingerprint; if they
-/// do not, something changed between the runs and the comparison is not a
-/// comparison. Cheap to compute and impossible to fake by accident.
-pub fn input_fingerprint(case: &BenchmarkCase) -> String {
+/// Covers the suite identity, the case id and the two prompts **verbatim as
+/// sent**. The prompts are parameters rather than something this function
+/// regenerates, and that is the whole point: P0.5-B introduces retry prompts,
+/// and a fingerprint that quietly recomputed the original wording would claim
+/// two attempts were identical when they were not.
+///
+/// Two profiles answering the same case on the same attempt number must carry
+/// the same fingerprint. A retry is allowed to differ from attempt 1 — that is
+/// what makes it a retry — but if both profiles retried, they must have been
+/// retried with the same words.
+pub fn input_fingerprint(case: &BenchmarkCase, system: &str, user: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(SUITE_RELATIVE_PATH.as_bytes());
@@ -604,14 +614,19 @@ pub fn input_fingerprint(case: &BenchmarkCase) -> String {
     hasher.update([0]);
     hasher.update(case.task.as_bytes());
     hasher.update([0]);
-    hasher.update(system_prompt(case).as_bytes());
+    hasher.update(system.as_bytes());
     hasher.update([0]);
-    hasher.update(user_prompt(case).as_bytes());
+    hasher.update(user.as_bytes());
     hasher
         .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// The fingerprint of a case's first attempt, which uses the suite's own prompts.
+pub fn first_attempt_fingerprint(case: &BenchmarkCase) -> String {
+    input_fingerprint(case, &system_prompt(case), &user_prompt(case))
 }
 
 /// Write the run metadata beside the rows it describes.
@@ -636,17 +651,43 @@ pub fn persist_metadata(
 /// become an official result. Smoke passes and unit fixtures may still be dirty:
 /// they prove the plumbing, not the models.
 pub fn official_run_verdict(metadata: &RunMetadata) -> Result<(), String> {
+    let mut missing = Vec::new();
+
     if metadata.git_dirty {
-        return Err(format!(
-            "refusing to record run {} as comparable evidence: the checkout is dirty at {}, \
-             so nobody else can reproduce it. Commit or stash first, or run it as a smoke pass.",
-            metadata.run_id, metadata.git_commit
+        missing.push("the checkout was dirty, so nobody else can reproduce it".to_string());
+    }
+    if metadata.git_commit.len() != 40
+        || !metadata.git_commit.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        missing.push(format!(
+            "the commit '{}' is not a full 40-character SHA",
+            metadata.git_commit
         ));
     }
-    if metadata.git_commit.trim().is_empty() {
-        return Err("refusing an official run with no commit to attribute it to".to_string());
+    if metadata.runtime_release_tag.trim().is_empty() {
+        missing.push("the runtime release tag is absent".to_string());
     }
-    Ok(())
+    match metadata.runtime_executable_sha256.as_deref() {
+        Some(digest) if digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()) => {}
+        Some(digest) => missing.push(format!("the runtime digest '{digest}' is not a SHA-256")),
+        None => missing.push("the runtime executable digest is absent".to_string()),
+    }
+    if metadata.host.cpu.trim().is_empty()
+        || metadata.host.logical_cores == 0
+        || metadata.host.total_ram_mb == 0
+    {
+        missing.push("the host facts are incomplete".to_string());
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to record run {} as comparable evidence: {}. Commit first, or accept it as a \
+         smoke pass, which proves plumbing rather than models.",
+        metadata.run_id,
+        missing.join("; ")
+    ))
 }
 
 /// Write one generation's raw text and its result row.
@@ -802,14 +843,15 @@ mod tests {
 
     fn test_metadata(dirty: bool) -> RunMetadata {
         let suite = load_suite().unwrap();
+        let lock = crate::runtime_e2e::checkout_runtime_lock().expect("the lock must parse");
         new_run_metadata(
             "run_001",
             "2026-08-21T00:00:00Z",
             &suite,
             "9599f38d846f29907286e53200f51a703af4f53c",
             dirty,
-            "b10343",
-            Some("a".repeat(64)),
+            &lock.release_tag,
+            Some(lock.executable_sha256.clone()),
             HostFacts {
                 os: "Windows 11".to_string(),
                 arch: "x86_64".to_string(),
@@ -857,6 +899,53 @@ mod tests {
     }
 
     #[test]
+    fn runtime_identity_is_read_from_the_authoritative_lock() {
+        // Not a literal anywhere in the runner: the same file the launcher and
+        // `pnpm verify:local-ai-runtime` agree on.
+        let lock = crate::runtime_e2e::checkout_runtime_lock().expect("the lock must parse");
+        assert_eq!(lock.release_tag, "b10343");
+        assert_eq!(lock.executable_sha256.len(), 64);
+
+        let metadata = test_metadata(false);
+        assert_eq!(metadata.runtime_release_tag, lock.release_tag);
+        assert_eq!(
+            metadata.runtime_executable_sha256.as_deref(),
+            Some(lock.executable_sha256.as_str())
+        );
+    }
+
+    #[test]
+    fn an_official_run_needs_a_runtime_digest_even_when_everything_else_is_clean() {
+        // The case the previous verdict let through: a spotless run that cannot
+        // say which llama-server binary produced it.
+        let mut metadata = test_metadata(false);
+        metadata.runtime_executable_sha256 = None;
+        let refused = official_run_verdict(&metadata).expect_err("no digest, no evidence");
+        assert!(refused.contains("runtime executable digest is absent"), "{refused}");
+
+        metadata.runtime_executable_sha256 = Some("not-a-digest".to_string());
+        let refused = official_run_verdict(&metadata).expect_err("a stub is not a digest");
+        assert!(refused.contains("not a SHA-256"), "{refused}");
+    }
+
+    #[test]
+    fn an_official_run_needs_a_full_commit_and_real_host_facts() {
+        let mut metadata = test_metadata(false);
+        metadata.git_commit = "9599f38".to_string();
+        let refused = official_run_verdict(&metadata).expect_err("a short sha is not attribution");
+        assert!(refused.contains("40-character"), "{refused}");
+
+        let mut metadata = test_metadata(false);
+        metadata.runtime_release_tag = String::new();
+        assert!(official_run_verdict(&metadata).is_err());
+
+        let mut metadata = test_metadata(false);
+        metadata.host.logical_cores = 0;
+        let refused = official_run_verdict(&metadata).expect_err("host facts are required");
+        assert!(refused.contains("host facts"), "{refused}");
+    }
+
+    #[test]
     fn an_official_run_refuses_a_dirty_checkout() {
         // Nobody else can reproduce a run made from uncommitted code, so it must
         // not quietly become comparable evidence.
@@ -896,11 +985,11 @@ mod tests {
         // case and both prompts verbatim, and no profile is part of it.
         let suite = load_suite().unwrap();
         let case = &suite.cases[0];
-        let first = input_fingerprint(case);
-        assert_eq!(first, input_fingerprint(case));
+        let first = first_attempt_fingerprint(case);
+        assert_eq!(first, first_attempt_fingerprint(case));
         assert_eq!(first.len(), 64);
 
-        let other = input_fingerprint(&suite.cases[1]);
+        let other = first_attempt_fingerprint(&suite.cases[1]);
         assert_ne!(first, other, "different cases must fingerprint differently");
     }
 
@@ -908,9 +997,68 @@ mod tests {
     fn a_changed_prompt_changes_the_fingerprint() {
         let suite = load_suite().unwrap();
         let mut case = suite.cases[0].clone();
-        let before = input_fingerprint(&case);
+        let before = first_attempt_fingerprint(&case);
         case.constraints.max_narration_chars += 1;
-        assert_ne!(before, input_fingerprint(&case));
+        assert_ne!(before, first_attempt_fingerprint(&case));
+    }
+
+    #[test]
+    fn a_retry_prompt_fingerprints_differently_from_the_first_attempt() {
+        // The reason the prompts are parameters. When P0.5-B retries a case with
+        // corrective wording, the record must say it asked something else.
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let system = system_prompt(case);
+        let user = user_prompt(case);
+
+        let first = input_fingerprint(case, &system, &user);
+        let retry = input_fingerprint(
+            case,
+            &system,
+            &format!("{user}\n\nIl tuo output precedente non era valido. Riprova."),
+        );
+
+        assert_ne!(first, retry, "a retry that asked more must not look identical");
+        assert_eq!(first, first_attempt_fingerprint(case));
+    }
+
+    #[test]
+    fn the_fingerprint_cannot_be_regenerated_behind_the_callers_back() {
+        // record_generation takes the fingerprint; it does not rebuild prompts.
+        // If it ever did, this record would silently disagree with what was sent.
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = crate::inference::InferenceOutcome {
+            accepted: false,
+            duration_ms: 1,
+            raw: String::new(),
+            narration: None,
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: Some("bad".to_string()),
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+
+        let retry_fingerprint = input_fingerprint(case, "system", "retry user prompt");
+        let record = record_generation(
+            "run_001",
+            case,
+            "lite",
+            2,
+            test_artifact("lite"),
+            benchmark_context(4096),
+            retry_fingerprint.clone(),
+            &outcome,
+        );
+
+        assert_eq!(record.input_fingerprint, retry_fingerprint);
+        assert_ne!(record.input_fingerprint, first_attempt_fingerprint(case));
+        assert!(record.retry_used);
     }
 
     #[test]
@@ -939,6 +1087,7 @@ mod tests {
             1,
             test_artifact("lite"),
             benchmark_context(4096),
+            first_attempt_fingerprint(case),
             &outcome,
         );
 
@@ -946,7 +1095,7 @@ mod tests {
         assert_eq!(record.artifact.sha256.len(), 64);
         assert!(!record.artifact.release_approved);
         assert_eq!(record.context.context_size, 4096);
-        assert_eq!(record.input_fingerprint, input_fingerprint(case));
+        assert_eq!(record.input_fingerprint, first_attempt_fingerprint(case));
     }
 
     #[test]
@@ -1023,9 +1172,11 @@ mod tests {
             "metadata": test_metadata(false),
             "generations": [
                 record_generation("run_001", case, "lite", 1,
-                    test_artifact("lite"), benchmark_context(4096), &accepted),
+                    test_artifact("lite"), benchmark_context(4096),
+                    first_attempt_fingerprint(case), &accepted),
                 record_generation("run_001", case, "standard", 1,
-                    test_artifact("standard"), benchmark_context(4096), &rejected),
+                    test_artifact("standard"), benchmark_context(4096),
+                    first_attempt_fingerprint(case), &rejected),
             ],
         })
     }
@@ -1336,7 +1487,7 @@ mod tests {
             model: Some("lite".to_string()),
         };
 
-        let record = record_generation("run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096), &outcome);
+        let record = record_generation("run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096), first_attempt_fingerprint(case), &outcome);
         assert!(record.accepted);
         assert!(record.validator_errors.is_empty());
         assert!(record.normalized_output.is_some());
@@ -1364,7 +1515,7 @@ mod tests {
             model: None,
         };
 
-        let record = record_generation("run_001", case, "standard", 2, test_artifact("standard"), benchmark_context(4096), &outcome);
+        let record = record_generation("run_001", case, "standard", 2, test_artifact("standard"), benchmark_context(4096), first_attempt_fingerprint(case), &outcome);
         assert!(!record.accepted);
         assert_eq!(record.validator_errors, vec!["unknown tone tag: epico"]);
         assert!(record.normalized_output.is_none());
@@ -1394,7 +1545,7 @@ mod tests {
             tokens_per_second: None,
             model: None,
         };
-        let record = record_generation("run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096), &outcome);
+        let record = record_generation("run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096), first_attempt_fingerprint(case), &outcome);
         persist(&directory, &record, &outcome.raw).expect("must persist");
 
         let raw = fs::read_to_string(directory.join(&record.raw_output_path)).unwrap();
@@ -1406,7 +1557,7 @@ mod tests {
         assert!(rows.contains("rawOutputPath"));
 
         // A second attempt appends rather than replacing the first.
-        persist(&directory, &record_generation("run_001", case, "lite", 2, test_artifact("lite"), benchmark_context(4096), &outcome), "second")
+        persist(&directory, &record_generation("run_001", case, "lite", 2, test_artifact("lite"), benchmark_context(4096), first_attempt_fingerprint(case), &outcome), "second")
             .unwrap();
         let rows = fs::read_to_string(directory.join("generations.jsonl")).unwrap();
         assert_eq!(rows.lines().count(), 2);
@@ -1454,14 +1605,19 @@ mod tests {
         let artifact = artifact_identity(&verified);
         let context = benchmark_context(verified.model().context_target());
 
+        // Runtime provenance comes from the authoritative lock, never from a
+        // literal in this file. A benchmark that cannot say which llama-server
+        // produced its numbers is not evidence about a runtime.
+        let runtime_lock = crate::runtime_e2e::checkout_runtime_lock()
+            .expect("the runtime resolved, so its lock must parse");
         let metadata = new_run_metadata(
             &run_id,
             &started_at(),
             &suite,
             &git_commit().unwrap_or_default(),
             git_dirty(),
-            "b10343",
-            None,
+            &runtime_lock.release_tag,
+            Some(runtime_lock.executable_sha256.clone()),
             host_facts(),
         );
         persist_metadata(&directory, &metadata).expect("metadata must persist");
@@ -1492,9 +1648,15 @@ mod tests {
 
         for case in cases_to_run(&suite, smoke_size) {
             let contract = case_contract(case);
+            // Built once, sent once, fingerprinted once. The three must be the
+            // same strings or the evidence describes a different question.
+            let system = system_prompt(case);
+            let user = user_prompt(case);
+            let fingerprint = input_fingerprint(case, &system, &user);
+
             let outcome = tauri::async_runtime::block_on(provider.generate(
-                &system_prompt(case),
-                &user_prompt(case),
+                &system,
+                &user,
                 &contract,
                 request_parameters(&context),
             ))
@@ -1507,6 +1669,7 @@ mod tests {
                 1,
                 artifact.clone(),
                 context.clone(),
+                fingerprint,
                 &outcome,
             );
             persist(&directory, &record, &outcome.raw).expect("evidence must persist");

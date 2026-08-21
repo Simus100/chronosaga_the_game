@@ -54,9 +54,16 @@ D:\Chronosaga\benchmarks\p0.5\<runId>\
 ```
 
 `metadata.json` is written before the first generation, so a crashed run still
-says what it was. A run made from a dirty checkout records `gitDirty: true`, and
-`official_run_verdict` refuses to treat it as comparable evidence — a smoke pass
-may still be dirty, because it proves plumbing rather than models.
+says what it was. Runtime provenance — release tag and the expected
+`llama-server.exe` digest — is read from `config/local-ai-runtime.lock.json`
+through the same parser the launcher uses, never written down again in the
+runner.
+
+`official_run_verdict` decides whether a run may be published as comparable
+evidence. It requires a clean checkout, a full 40-character commit, a release
+tag, a 64-character runtime digest, and real host facts. A smoke pass may fail
+any of these and still be useful, because it proves plumbing rather than models —
+it simply must never masquerade as official evidence.
 
 Rows are appended as JSON Lines so a crashed run still leaves usable evidence,
 and each attempt gets its own raw file so a retry never overwrites what it
@@ -95,8 +102,12 @@ and never merges either into a score.
 
 1. both profiles saw every case;
 2. the recorded **input fingerprint** — SHA-256 over the suite identity, the case
-   and both prompts verbatim — matches for each case across profiles, so "same
-   inputs" is evidence rather than an assumption;
+   and both prompts *verbatim as sent* — matches for each `(case, attempt)` pair,
+   so "same inputs" is evidence rather than an assumption. Per attempt, not per
+   case: a retry legitimately asks a different question, and a retry only one
+   profile needed is a finding rather than a defect. What may never differ is
+   what the two profiles were asked on the same attempt number. Duplicate
+   `(case, profile, attempt)` rows are refused outright;
 3. each profile used **one** artifact identity for the whole run;
 4. the controlled settings — context size, token budget, temperature, top-p,
    seed, reasoning mode — were held equal. Context size is included on purpose:
@@ -120,8 +131,21 @@ and `seed` are configured explicitly rather than left to the server, because
 its own parameters and records `null` for the two it does not set, rather than
 inventing values.
 
+The fingerprint is computed from the strings actually handed to the provider and
+passed into `record_generation`, which never rebuilds prompts of its own. P0.5-B
+introduces retry wording, and a fingerprint that quietly recomputed the original
+would claim two different questions were the same one.
+
 `tests/fixtures/rust-run.json` is produced by the Rust serializer and consumed by
 the TypeScript `validateRun`. Neither side can change shape alone.
+
+## Judgement is bound to the run it judges
+
+`ScoreSheet` and `HumanReview` both carry `runId` and `suiteVersion`, and
+`buildComparison` refuses any whose values disagree with the run's. Generation
+ids are stable and easy to copy by hand, so an id alone is not proof of
+belonging: scores or disqualifications from another run can never drift into a
+comparison.
 
 ## Status
 
