@@ -124,8 +124,19 @@ pub struct BenchmarkConstraints {
     pub authoritative_numbers_read_only: bool,
     #[serde(default)]
     pub allow_event_proposals: bool,
+    /// Whether the case *demands* a proposal, as opposed to tolerating one.
+    ///
+    /// Permission and requirement are different things and were conflated: the
+    /// prompt said an array "may" contain proposals while the evaluator counted
+    /// an empty one as a deterministic failure, so a model could obey the
+    /// instruction it was given and still be marked down.
+    #[serde(default)]
+    pub require_event_proposal: bool,
     #[serde(default)]
     pub allow_memory_suggestions: bool,
+    /// Symmetric with [`Self::require_event_proposal`].
+    #[serde(default)]
+    pub require_memory_suggestion: bool,
     #[serde(default)]
     pub strict_json_only: bool,
     #[serde(default)]
@@ -221,15 +232,36 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
     // The model is told the exact permitted item shape. Asking for "an object"
     // and then rejecting whatever arrives would measure the prompt, not the
     // model.
-    let proposals = if case.constraints.allow_event_proposals {
+    // Permission and requirement are said differently, because a model can only
+    // obey the instruction it is actually given. A case that demands a proposal
+    // says "devi"; one that merely tolerates it says "puoi".
+    let proposals = if case.constraints.require_event_proposal {
+        "event_proposals DEVE contenere almeno un oggetto di questa forma esatta e di          nessun'altra: {\"subjectId\": \"<id presente nella scena>\",          \"topic\": \"<poche parole>\", \"rationale\": \"<perche'>\"}. Resta un          suggerimento per il motore, mai un effetto applicato: niente numeri, niente          cambi di stato"
+    } else if case.constraints.allow_event_proposals {
         "event_proposals puo' contenere oggetti di questa forma esatta e di nessun'altra:          {\"subjectId\": \"<id presente nella scena>\", \"topic\": \"<poche parole>\",          \"rationale\": \"<perche'>\"}. Sono suggerimenti per il motore, mai effetti          applicati: niente numeri, niente cambi di stato"
     } else {
         "event_proposals deve essere un array vuoto"
     };
-    let memories = if case.constraints.allow_memory_suggestions {
+    let memories = if case.constraints.require_memory_suggestion {
+        "memory_suggestions DEVE contenere almeno un oggetto di questa forma esatta e di          nessun'altra: {\"characterId\": \"<id di un personaggio presente>\",          \"summary\": \"<cosa ricorda>\"}"
+    } else if case.constraints.allow_memory_suggestions {
         "memory_suggestions puo' contenere oggetti di questa forma esatta e di nessun'altra:          {\"characterId\": \"<id di un personaggio presente>\", \"summary\": \"<cosa ricorda>\"}"
     } else {
         "memory_suggestions deve essere un array vuoto"
+    };
+
+    // The worked example has to agree with the instruction. Showing an empty
+    // array to a case that demands a proposal contradicts the sentence above it,
+    // and the example is what a small model copies.
+    let proposal_example = if case.constraints.require_event_proposal {
+        "[{\"subjectId\": \"...\", \"topic\": \"...\", \"rationale\": \"...\"}]"
+    } else {
+        "[]"
+    };
+    let memory_example = if case.constraints.require_memory_suggestion {
+        "[{\"characterId\": \"...\", \"summary\": \"...\"}]"
+    } else {
+        "[]"
     };
 
     let structure = if case.constraints.strict_json_only {
@@ -259,7 +291,7 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
          - {memories}.{structure}\n\n\
          Rispondi con un solo oggetto JSON, senza testo attorno e senza blocchi di codice:\n\
          {{\"narration\": \"...\", \"dialogue\": [{{\"speakerId\": \"...\", \"text\": \"...\"}}], \
-         \"tone_tags\": [\"...\"], \"event_proposals\": [], \"memory_suggestions\": []}}",
+         \"tone_tags\": [\"...\"], \"event_proposals\": {proposal_example}, \"memory_suggestions\": {memory_example}}}",
         language = case.constraints.language,
         speakers = speakers,
         tags = tags,
@@ -268,6 +300,8 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
         memories = memories,
         numbers = numbers,
         structure = structure,
+        proposal_example = proposal_example,
+        memory_example = memory_example,
     )
 }
 
@@ -501,26 +535,67 @@ pub struct CoverageRequirement {
     pub required_profiles: Vec<String>,
 }
 
-/// What a finished run actually covered.
+/// What a finished run actually covered, as `(profile, case)` pairs.
+///
+/// Two independent sets are not coverage. `lite/A` plus `standard/B` yields
+/// profiles `{lite, standard}` and cases `{A, B}`, which satisfies "both
+/// profiles appeared" and "both cases appeared" while neither model answered
+/// either question the other did. A comparison needs the product, so the product
+/// is what gets recorded.
+///
+/// A pair is established by any legitimate attempt: a case that took three
+/// retries is covered once, not three times.
 #[derive(Debug, Clone, Default)]
 pub struct RunCoverage {
-    pub case_ids: Vec<String>,
-    pub profiles: Vec<String>,
+    pairs: std::collections::HashSet<(String, String)>,
 }
 
 impl RunCoverage {
     /// Derive coverage from the rows a run produced.
+    ///
+    /// From the records, never from intent: a run covers what it generated.
     pub fn from_records(records: &[GenerationRecord]) -> Self {
         let mut coverage = Self::default();
         for record in records {
-            if !coverage.case_ids.iter().any(|id| id == &record.case_id) {
-                coverage.case_ids.push(record.case_id.clone());
-            }
-            if !coverage.profiles.iter().any(|id| id == &record.profile) {
-                coverage.profiles.push(record.profile.clone());
-            }
+            coverage
+                .pairs
+                .insert((record.profile.clone(), record.case_id.clone()));
         }
         coverage
+    }
+
+    /// Build coverage directly, for tests and for callers that already know.
+    pub fn from_pairs<I, P, C>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (P, C)>,
+        P: Into<String>,
+        C: Into<String>,
+    {
+        Self {
+            pairs: pairs
+                .into_iter()
+                .map(|(profile, case)| (profile.into(), case.into()))
+                .collect(),
+        }
+    }
+
+    pub fn covers(&self, profile: &str, case_id: &str) -> bool {
+        self.pairs
+            .contains(&(profile.to_string(), case_id.to_string()))
+    }
+
+    /// How many distinct `(profile, case)` pairs the run established.
+    pub fn pair_count(&self) -> usize {
+        self.pairs.len()
+    }
+
+    /// The cases one profile is missing, in the requirement's own order.
+    fn missing_for<'a>(&self, profile: &str, required_cases: &'a [String]) -> Vec<&'a str> {
+        required_cases
+            .iter()
+            .filter(|case_id| !self.covers(profile, case_id))
+            .map(String::as_str)
+            .collect()
     }
 }
 
@@ -853,34 +928,28 @@ pub fn official_run_verdict(
         missing.push("the suite identity is incomplete".to_string());
     }
 
-    // Coverage: what the run actually did, not what it meant to do.
-    let absent_profiles: Vec<&str> = required
-        .required_profiles
-        .iter()
-        .filter(|wanted| !coverage.profiles.iter().any(|had| &had == wanted))
-        .map(String::as_str)
-        .collect();
-    if !absent_profiles.is_empty() {
+    // Coverage: what the run actually did, not what it meant to do, and per
+    // profile rather than in aggregate. Reported grouped by profile, because
+    // "standard is missing these four cases" is actionable and "four pairs are
+    // missing" is not.
+    for profile in &required.required_profiles {
+        let absent = coverage.missing_for(profile, &required.required_case_ids);
+        if absent.is_empty() {
+            continue;
+        }
+        if absent.len() == required.required_case_ids.len() {
+            missing.push(format!(
+                "no generations at all for {profile}, so there is nothing to compare"
+            ));
+            continue;
+        }
+        let shown: Vec<&str> = absent.iter().take(5).copied().collect();
         missing.push(format!(
-            "no generations for {}, so there is nothing to compare",
-            absent_profiles.join(", ")
-        ));
-    }
-
-    let absent_cases: Vec<&str> = required
-        .required_case_ids
-        .iter()
-        .filter(|wanted| !coverage.case_ids.iter().any(|had| &had == wanted))
-        .map(String::as_str)
-        .collect();
-    if !absent_cases.is_empty() {
-        let shown: Vec<&str> = absent_cases.iter().take(5).copied().collect();
-        missing.push(format!(
-            "{} of {} required cases were never run ({}{})",
-            absent_cases.len(),
+            "{profile} is missing {} of {} required cases ({}{})",
+            absent.len(),
             required.required_case_ids.len(),
             shown.join(", "),
-            if absent_cases.len() > shown.len() { ", ..." } else { "" }
+            if absent.len() > shown.len() { ", ..." } else { "" }
         ));
     }
 
@@ -1040,15 +1109,68 @@ impl Drop for BenchmarkRuntimeGuard {
 /// Named ids when asked for, otherwise the first `count`. P0.5-A needs to reach
 /// specific shapes — a zero-speaker description, a proposal, a suggestion — and
 /// taking the first three would only ever exercise dialogue.
-fn cases_to_run(suite: &BenchmarkSuite, count: usize) -> Vec<&BenchmarkCase> {
+fn cases_to_run(suite: &BenchmarkSuite, count: usize) -> Result<Vec<&BenchmarkCase>, String> {
     match env::var("CHRONOSAGA_BENCHMARK_CASE_IDS") {
-        Ok(ids) if !ids.trim().is_empty() => ids
-            .split(',')
-            .map(str::trim)
-            .filter_map(|id| suite.cases.iter().find(|case| case.id == id))
-            .collect(),
-        _ => suite.cases.iter().take(count).collect(),
+        Ok(raw) if !raw.trim().is_empty() => select_cases(suite, &raw),
+        _ => Ok(suite.cases.iter().take(count).collect()),
     }
+}
+
+/// Resolve an explicit case-id request against the suite.
+///
+/// Every requested id must resolve. Silently dropping a typo used to produce a
+/// green command with no evidence at all: zero cases selected, zero generations,
+/// and a final assertion comparing zero rows against zero attempts. An operator
+/// asking for a case that does not exist has made a mistake and needs to be told,
+/// not handed a passing run.
+///
+/// Duplicates are **deduplicated**, keeping first-request order: asking for the
+/// same case twice is a harmless slip rather than an instruction to run it twice,
+/// and running it twice would produce two attempt-1 rows for one pair, which the
+/// fairness rules reject anyway.
+fn select_cases<'a>(suite: &'a BenchmarkSuite, raw: &str) -> Result<Vec<&'a BenchmarkCase>, String> {
+    let requested: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect();
+
+    if requested.is_empty() {
+        return Err(
+            "CHRONOSAGA_BENCHMARK_CASE_IDS was set but names no case; unset it to run the \
+             default smoke selection"
+                .to_string(),
+        );
+    }
+
+    let unknown: Vec<&str> = requested
+        .iter()
+        .filter(|id| !suite.cases.iter().any(|case| case.id == **id))
+        .copied()
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "CHRONOSAGA_BENCHMARK_CASE_IDS names {} case(s) the suite does not contain: {}. \
+             Nothing was run.",
+            unknown.len(),
+            unknown.join(", ")
+        ));
+    }
+
+    let mut selected: Vec<&BenchmarkCase> = Vec::new();
+    for id in requested {
+        if selected.iter().any(|case| case.id == id) {
+            continue;
+        }
+        selected.push(
+            suite
+                .cases
+                .iter()
+                .find(|case| case.id == id)
+                .expect("checked above"),
+        );
+    }
+    Ok(selected)
 }
 
 /// When a run started, as a timestamp a human can read.
@@ -1246,20 +1368,19 @@ mod tests {
         }
     }
 
-    /// Coverage that satisfies [`requirement`].
+    /// Coverage that satisfies [`requirement`]: both profiles, both cases.
     fn full_coverage() -> RunCoverage {
-        RunCoverage {
-            case_ids: vec!["ai_case_001".to_string(), "ai_case_002".to_string()],
-            profiles: vec!["lite".to_string(), "standard".to_string()],
-        }
+        RunCoverage::from_pairs([
+            ("lite", "ai_case_001"),
+            ("lite", "ai_case_002"),
+            ("standard", "ai_case_001"),
+            ("standard", "ai_case_002"),
+        ])
     }
 
     /// What a default smoke actually covers: a few cases, one model.
     fn smoke_coverage() -> RunCoverage {
-        RunCoverage {
-            case_ids: vec!["ai_case_001".to_string()],
-            profiles: vec!["lite".to_string()],
-        }
+        RunCoverage::from_pairs([("lite", "ai_case_001")])
     }
 
     #[test]
@@ -1290,27 +1411,165 @@ mod tests {
     }
 
     #[test]
-    fn an_official_run_missing_a_profile_is_refused() {
-        let coverage = RunCoverage {
-            case_ids: full_coverage().case_ids,
-            profiles: vec!["lite".to_string()],
-        };
+    fn split_coverage_between_profiles_is_refused() {
+        // The defect, exactly: `lite/A` plus `standard/B` gives profiles
+        // {lite, standard} and cases {A, B}, so two independent set checks both
+        // pass while neither model answered what the other did.
+        let coverage = RunCoverage::from_pairs([("lite", "ai_case_001"), ("standard", "ai_case_002")]);
+        let refused = official_run_verdict(&test_metadata(false), &coverage, &requirement())
+            .expect_err("neither profile covered the suite");
+
+        assert!(refused.contains("lite is missing 1 of 2"), "{refused}");
+        assert!(refused.contains("ai_case_002"), "{refused}");
+        assert!(refused.contains("standard is missing 1 of 2"), "{refused}");
+        assert!(refused.contains("ai_case_001"), "{refused}");
+    }
+
+    #[test]
+    fn every_profile_case_pair_present_is_accepted() {
+        official_run_verdict(&test_metadata(false), &full_coverage(), &requirement())
+            .expect("both profiles answered both cases");
+    }
+
+    #[test]
+    fn an_official_run_missing_a_profile_entirely_is_refused() {
+        let coverage = RunCoverage::from_pairs([("lite", "ai_case_001"), ("lite", "ai_case_002")]);
         let refused = official_run_verdict(&test_metadata(false), &coverage, &requirement())
             .expect_err("one model is not a comparison");
-        assert!(refused.contains("no generations for standard"), "{refused}");
+        assert!(refused.contains("no generations at all for standard"), "{refused}");
         assert!(refused.contains("nothing to compare"), "{refused}");
     }
 
     #[test]
-    fn an_official_run_missing_cases_is_refused_and_names_them() {
-        let coverage = RunCoverage {
-            case_ids: vec!["ai_case_001".to_string()],
-            profiles: full_coverage().profiles,
-        };
+    fn a_profile_missing_one_case_is_refused_and_named() {
+        // Lite ran everything, Standard is one short. The report has to say
+        // which profile and which case, or nobody can act on it.
+        let coverage = RunCoverage::from_pairs([
+            ("lite", "ai_case_001"),
+            ("lite", "ai_case_002"),
+            ("standard", "ai_case_001"),
+        ]);
         let refused = official_run_verdict(&test_metadata(false), &coverage, &requirement())
             .expect_err("a subset is not the suite");
-        assert!(refused.contains("1 of 2 required cases"), "{refused}");
+
+        assert!(refused.contains("standard is missing 1 of 2"), "{refused}");
         assert!(refused.contains("ai_case_002"), "{refused}");
+        assert!(!refused.contains("lite is missing"), "lite was complete: {refused}");
+    }
+
+    #[test]
+    fn retries_do_not_inflate_coverage() {
+        // A pair is established once, however many attempts it took. Three rows
+        // for one case must not stand in for three cases.
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let rejected = crate::inference::InferenceOutcome {
+            accepted: false,
+            duration_ms: 1,
+            raw: String::new(),
+            narration: None,
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: Some("bad".to_string()),
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+        let rows: Vec<GenerationRecord> = (1..=3)
+            .map(|attempt| {
+                record_generation("r", case, "lite", attempt, test_artifact("lite"),
+                    benchmark_context(4096), first_attempt_fingerprint(case), &rejected)
+            })
+            .collect();
+
+        let coverage = RunCoverage::from_records(&rows);
+        assert_eq!(coverage.pair_count(), 1, "three attempts, one pair");
+        assert!(coverage.covers("lite", &case.id));
+        assert!(!coverage.covers("standard", &case.id));
+    }
+
+    #[test]
+    fn a_full_run_with_retries_still_covers_everything() {
+        let suite = load_suite().unwrap();
+        let cases = &suite.cases[..2];
+        let outcome = crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 1,
+            raw: "{}".to_string(),
+            narration: Some("ok".to_string()),
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+        let mut rows = Vec::new();
+        for case in cases {
+            for profile in ["lite", "standard"] {
+                for attempt in 1..=2 {
+                    rows.push(record_generation("r", case, profile, attempt,
+                        test_artifact(profile), benchmark_context(4096),
+                        first_attempt_fingerprint(case), &outcome));
+                }
+            }
+        }
+
+        let coverage = RunCoverage::from_records(&rows);
+        assert_eq!(coverage.pair_count(), 4, "2 cases x 2 profiles, retries aside");
+        let required = CoverageRequirement {
+            required_case_ids: cases.iter().map(|case| case.id.clone()).collect(),
+            required_profiles: vec!["lite".to_string(), "standard".to_string()],
+        };
+        official_run_verdict(&test_metadata(false), &coverage, &required)
+            .expect("retries do not break coverage");
+    }
+
+    #[test]
+    fn the_full_suite_requires_one_pair_per_profile_per_case() {
+        // 65 cases across two profiles is 130 pairs, and nothing less counts.
+        let suite = load_suite().unwrap();
+        let required = full_comparison_requirement(&suite);
+        let expected_pairs = suite.cases.len() * required.required_profiles.len();
+        assert_eq!(expected_pairs, 130, "the committed suite is 65 cases");
+
+        let complete = RunCoverage::from_pairs(
+            required.required_profiles.iter().flat_map(|profile| {
+                required
+                    .required_case_ids
+                    .iter()
+                    .map(move |case_id| (profile.clone(), case_id.clone()))
+            }),
+        );
+        assert_eq!(complete.pair_count(), expected_pairs);
+        official_run_verdict(&test_metadata(false), &complete, &required)
+            .expect("every pair present");
+
+        // One pair short is not comparable.
+        let mut short: Vec<(String, String)> = required
+            .required_profiles
+            .iter()
+            .flat_map(|profile| {
+                required
+                    .required_case_ids
+                    .iter()
+                    .map(move |case_id| (profile.clone(), case_id.clone()))
+            })
+            .collect();
+        short.pop();
+        let refused = official_run_verdict(
+            &test_metadata(false),
+            &RunCoverage::from_pairs(short),
+            &required,
+        )
+        .expect_err("129 of 130 is not a comparison");
+        assert!(refused.contains("standard is missing 1 of 65"), "{refused}");
     }
 
     #[test]
@@ -1421,8 +1680,10 @@ mod tests {
                 benchmark_context(4096), first_attempt_fingerprint(case), &outcome),
         ];
         let coverage = RunCoverage::from_records(&rows);
-        assert_eq!(coverage.case_ids, vec![case.id.clone()]);
-        assert_eq!(coverage.profiles, vec!["lite".to_string(), "standard".to_string()]);
+        assert_eq!(coverage.pair_count(), 2, "one case answered by two profiles");
+        assert!(coverage.covers("lite", &case.id));
+        assert!(coverage.covers("standard", &case.id));
+        assert!(!coverage.covers("lite", "ai_case_999"));
     }
 
     #[test]
@@ -2017,6 +2278,163 @@ mod tests {
     }
 
     #[test]
+    fn a_required_proposal_case_is_told_to_produce_one() {
+        // D and E: the instruction says "devi", and the worked example shows a
+        // populated array rather than contradicting the sentence above it.
+        let suite = load_suite().unwrap();
+        let required = suite
+            .cases
+            .iter()
+            .find(|case| case.constraints.require_event_proposal)
+            .expect("the suite requires proposals somewhere");
+
+        let prompt = system_prompt(required);
+        assert!(prompt.contains("event_proposals DEVE contenere almeno un oggetto"), "{prompt}");
+        assert!(prompt.contains("subjectId"), "{prompt}");
+        assert!(
+            prompt.contains("mai un effetto applicato"),
+            "it stays a suggestion: {prompt}"
+        );
+        assert!(
+            prompt.contains("\"event_proposals\": [{\"subjectId\": \"...\""),
+            "the example must not be empty: {prompt}"
+        );
+        assert!(
+            !prompt.contains("\"event_proposals\": []"),
+            "an empty example contradicts the requirement: {prompt}"
+        );
+    }
+
+    #[test]
+    fn a_required_memory_case_is_told_to_produce_one() {
+        let suite = load_suite().unwrap();
+        let required = suite
+            .cases
+            .iter()
+            .find(|case| case.constraints.require_memory_suggestion)
+            .expect("the suite requires memory suggestions somewhere");
+
+        let prompt = system_prompt(required);
+        assert!(prompt.contains("memory_suggestions DEVE contenere almeno un oggetto"), "{prompt}");
+        assert!(prompt.contains("characterId"), "{prompt}");
+        assert!(
+            prompt.contains("\"memory_suggestions\": [{\"characterId\": \"...\""),
+            "the example must not be empty: {prompt}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_case_still_shows_empty_arrays() {
+        // F: no requirement is introduced by accident. A narration case is told
+        // to leave both arrays empty and shown exactly that.
+        let suite = load_suite().unwrap();
+        let ordinary = suite
+            .cases
+            .iter()
+            .find(|case| {
+                !case.constraints.allow_event_proposals && !case.constraints.allow_memory_suggestions
+            })
+            .expect("most cases permit neither");
+
+        let prompt = system_prompt(ordinary);
+        assert!(prompt.contains("event_proposals deve essere un array vuoto"), "{prompt}");
+        assert!(prompt.contains("memory_suggestions deve essere un array vuoto"), "{prompt}");
+        assert!(prompt.contains("\"event_proposals\": [], \"memory_suggestions\": []"), "{prompt}");
+        assert!(!prompt.contains("DEVE contenere"), "{prompt}");
+    }
+
+    #[test]
+    fn a_case_that_requires_a_suggestion_also_permits_it() {
+        // The contract has to be coherent, or the validator would reject exactly
+        // what the prompt demanded.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            if case.constraints.require_event_proposal {
+                assert!(case.constraints.allow_event_proposals, "{}", case.id);
+            }
+            if case.constraints.require_memory_suggestion {
+                assert!(case.constraints.allow_memory_suggestions, "{}", case.id);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Explicit case selection
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn one_named_case_is_selected() {
+        let suite = load_suite().unwrap();
+        let selected = select_cases(&suite, "ai_case_001").expect("a real id");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, "ai_case_001");
+    }
+
+    #[test]
+    fn several_named_cases_are_selected_in_request_order() {
+        let suite = load_suite().unwrap();
+        let selected = select_cases(&suite, "ai_case_046, ai_case_001").expect("both real");
+        assert_eq!(
+            selected.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+            vec!["ai_case_046", "ai_case_001"]
+        );
+    }
+
+    #[test]
+    fn one_unknown_id_among_valid_ones_fails_and_names_it() {
+        // The operator mistyped one case. Running the other two and reporting
+        // success would hide the mistake behind partial evidence.
+        let suite = load_suite().unwrap();
+        let error = select_cases(&suite, "ai_case_001, ai_case_typo, ai_case_046")
+            .expect_err("an unknown id must fail the whole request");
+        assert!(error.contains("ai_case_typo"), "{error}");
+        assert!(error.contains("Nothing was run"), "{error}");
+        assert!(!error.contains("ai_case_001"), "valid ids are not blamed: {error}");
+    }
+
+    #[test]
+    fn every_id_unknown_fails_rather_than_running_nothing() {
+        // The exact shape of the defect: zero cases selected used to mean zero
+        // generations and a green command.
+        let suite = load_suite().unwrap();
+        let error = select_cases(&suite, "typo_one,typo_two").expect_err("nothing resolves");
+        assert!(error.contains("2 case(s)"), "{error}");
+        assert!(error.contains("typo_one"), "{error}");
+        assert!(error.contains("typo_two"), "{error}");
+    }
+
+    #[test]
+    fn a_repeated_id_is_run_once() {
+        // Documented behaviour: deduplicate rather than reject. Running a case
+        // twice would produce two attempt-1 rows for one pair, which the
+        // fairness rules refuse anyway.
+        let suite = load_suite().unwrap();
+        let selected = select_cases(&suite, "ai_case_001,ai_case_001,ai_case_046").unwrap();
+        assert_eq!(
+            selected.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+            vec!["ai_case_001", "ai_case_046"]
+        );
+    }
+
+    #[test]
+    fn an_empty_explicit_request_is_refused() {
+        let suite = load_suite().unwrap();
+        let error = select_cases(&suite, " , ,").expect_err("an empty list is not a selection");
+        assert!(error.contains("names no case"), "{error}");
+    }
+
+    #[test]
+    fn with_no_override_the_default_selection_is_used() {
+        let suite = load_suite().unwrap();
+        if env::var("CHRONOSAGA_BENCHMARK_CASE_IDS").is_ok() {
+            return; // the ambient environment already chose
+        }
+        let selected = cases_to_run(&suite, 3).expect("the default never fails");
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0].id, suite.cases[0].id);
+    }
+
+    #[test]
     fn the_committed_suite_parses_with_the_runner_types() {
         // The TypeScript package and this runner read the same bytes; if the two
         // views of the file ever disagree, this is where it shows up first.
@@ -2364,6 +2782,16 @@ mod tests {
 
         let workspace = env::var(WORKSPACE_ENV).expect("checked by enabled()");
         let suite = load_suite().expect("the suite must parse");
+
+        // Resolve the selection first, before the runtime is verified, the
+        // sidecar is started or any metadata is written. A typo must cost
+        // nothing and must not leave a half-built run directory behind.
+        let selected_ids: Vec<String> = cases_to_run(&suite, smoke_size)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .iter()
+            .map(|case| case.id.clone())
+            .collect();
+        assert!(!selected_ids.is_empty(), "nothing to run");
         let Some(manager) = crate::runtime_e2e::manager_for_profile(&profile) else {
             eprintln!("skipped: {profile} is not resolvable on this machine");
             return;
@@ -2454,7 +2882,11 @@ mod tests {
         let mut accepted = 0usize;
         let mut attempted = 0usize;
 
-        for case in cases_to_run(&suite, smoke_size) {
+        for case in suite
+            .cases
+            .iter()
+            .filter(|case| selected_ids.iter().any(|id| id == &case.id))
+        {
             let contract = case_contract(case);
             // Built once, sent once, fingerprinted once. The three must be the
             // same strings or the evidence describes a different question.

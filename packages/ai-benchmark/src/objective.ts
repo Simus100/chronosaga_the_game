@@ -304,12 +304,17 @@ export function evaluateObjectively(
         ? 'no proposals, as required'
         : `${validated.eventProposals.length} proposal(s) where none are permitted`,
   );
-  if (proposalsAllowed) {
+  // Only a case that *required* a proposal may fail for not having one. A case
+  // that merely permits one is telling the model "puoi", and marking it down for
+  // declining would penalise obedience to the prompt it was given.
+  if (constraints.requireEventProposal) {
     add(
       'event_proposal_present',
       validated.eventProposals.length > 0,
       'deterministic',
-      validated.eventProposals.length > 0 ? 'a proposal was offered' : 'the case asked for a proposal and got none',
+      validated.eventProposals.length > 0
+        ? 'a proposal was offered, as the case required'
+        : 'the case required a proposal and got none',
     );
   }
 
@@ -324,14 +329,14 @@ export function evaluateObjectively(
         ? 'no suggestions, as required'
         : `${validated.memorySuggestions.length} suggestion(s) where none are permitted`,
   );
-  if (memoriesAllowed) {
+  if (constraints.requireMemorySuggestion) {
     add(
       'memory_suggestion_present',
       validated.memorySuggestions.length > 0,
       'deterministic',
       validated.memorySuggestions.length > 0
-        ? 'a memory suggestion was offered'
-        : 'the case asked for a memory suggestion and got none',
+        ? 'a memory suggestion was offered, as the case required'
+        : 'the case required a memory suggestion and got none',
     );
   }
 

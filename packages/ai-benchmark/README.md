@@ -42,6 +42,15 @@ cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml \
 Without the variables it reports that it skipped and passes, so the ordinary
 suite never depends on a multi-GB artifact.
 
+`CHRONOSAGA_BENCHMARK_CASE_IDS` selects explicit cases, and **every requested id
+must resolve**. A typo used to be dropped silently, so a request naming only
+unknown ids produced zero cases, zero generations and a green command with no
+evidence at all. The selection is now resolved before the runtime is verified or
+the sidecar starts, so a mistake costs nothing and leaves nothing behind.
+Repeated ids are deduplicated in first-request order: asking for a case twice is
+a slip, and running it twice would produce two attempt-1 rows for one pair, which
+the fairness rules reject anyway.
+
 ## Where results go
 
 Runs write **outside the repository**, under the development workspace:
@@ -82,6 +91,14 @@ of completeness of work, so purpose is **declared, never inferred**, and it
 travels with the evidence: a smoke run written to disk and read back is still a
 smoke run, and metadata with no declared purpose does not parse at all.
 
+Coverage is the **product** of profiles and cases, not two independent sets.
+`lite/A` plus `standard/B` gives profiles `{lite, standard}` and cases `{A, B}`,
+which satisfies both set checks while neither model answered what the other did;
+`RunCoverage` therefore records `(profile, case)` pairs and the verdict reports
+what is missing grouped by profile. The full comparison is 65 cases across two
+profiles: **130 pairs**, and nothing less counts. A case that took three retries
+establishes its pair once.
+
 Rows are appended as JSON Lines so a crashed run still leaves usable evidence,
 and each attempt gets its own raw file so a retry never overwrites what it
 retried. `benchmarks/` and `packages/ai-benchmark/results/` are git-ignored, so a
@@ -120,6 +137,21 @@ broken invariant. Reviewers record their own in `src/human-review.ts`, validated
 against the five locked categories and the generations the run actually
 contains; the comparison reports machine and human disqualifications separately
 and never merges either into a score.
+
+## Permission is not requirement
+
+`allowEventProposals` says a case tolerates a proposal; `requireEventProposal`
+says it demands one, and the memory path is symmetric. Only a requirement makes
+an empty array a deterministic failure. Conflating the two penalised models for
+obeying the instruction they were given: the prompt said "puoi" while the
+evaluator counted absence as a fault.
+
+The prompt now says `DEVE` where a case requires a suggestion and `puoi` where it
+merely permits one, and the worked JSON example agrees — a case that demands a
+proposal is never shown an empty array, because the example is what a small model
+copies. Ordinary narration cases are still told to leave both arrays empty and
+shown exactly that. A case cannot require what it does not permit; the suite
+validator refuses that combination.
 
 ## Fairness
 

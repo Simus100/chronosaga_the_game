@@ -351,11 +351,11 @@ describe('a run is bound to the suite it was executed against', () => {
     // The dangerous edit: ids and task names survive a revision, so
     // taskMismatches sees nothing wrong while every constraint and expected
     // fact underneath may have changed.
-    const revised = { ...suite, suiteVersion: 'p0.5-a.2' };
+    const revised = { ...suite, suiteVersion: `${suite.suiteVersion}-revised` };
     const problems = suiteBindingProblems(revised, fairRun());
 
-    expect(problems.some(problem => problem.includes("recorded suite version 'p0.5-a.1'"))).toBe(true);
-    expect(problems.some(problem => problem.includes("'p0.5-a.2'"))).toBe(true);
+    expect(problems.some(problem => problem.includes(`recorded suite version '${suite.suiteVersion}'`))).toBe(true);
+    expect(problems.some(problem => problem.includes(`'${suite.suiteVersion}-revised'`))).toBe(true);
     expect(() => buildComparison(revised, fairRun())).toThrow(/different suite/);
   });
 
@@ -383,7 +383,7 @@ describe('a run is bound to the suite it was executed against', () => {
   it('refuses before any evaluation happens, not after', () => {
     // A mismatched suite must not reach the objective evaluator at all: a report
     // built on the wrong constraints is worse than no report.
-    const revised = { ...suite, suiteVersion: 'p0.5-a.2' };
+    const revised = { ...suite, suiteVersion: `${suite.suiteVersion}-revised` };
     let message = '';
     try {
       buildComparison(revised, fairRun());

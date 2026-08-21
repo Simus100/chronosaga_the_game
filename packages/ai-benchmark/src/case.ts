@@ -86,7 +86,18 @@ export interface BenchmarkConstraints {
   /** Game Core numbers are read-only for the model, always. */
   authoritativeNumbersReadOnly: boolean;
   allowEventProposals?: boolean;
+  /**
+   * Whether the case *demands* a proposal rather than tolerating one.
+   *
+   * Permission and requirement are separate: the prompt tells the model "puoi"
+   * for one and "devi" for the other, and only a requirement makes an empty
+   * array a failure. Conflating them penalised models for obeying the
+   * instruction they were actually given.
+   */
+  requireEventProposal?: boolean;
   allowMemorySuggestions?: boolean;
+  /** Symmetric with {@link requireEventProposal}. */
+  requireMemorySuggestion?: boolean;
   strictJsonOnly?: boolean;
   /** For repair cases: the malformed output the model must correct. */
   priorInvalidOutput?: string;
@@ -183,6 +194,12 @@ export function validateSuite(suite: BenchmarkSuite): SuiteProblem[] {
     if (constraints.allowedToneTags.length === 0) at('constraints.allowedToneTags', 'the tone vocabulary cannot be empty');
     if (!constraints.authoritativeNumbersReadOnly) {
       at('constraints.authoritativeNumbersReadOnly', 'the model may never write Game Core numbers');
+    }
+    if (constraints.requireEventProposal && !constraints.allowEventProposals) {
+      at('constraints.requireEventProposal', 'a case cannot require what it does not permit');
+    }
+    if (constraints.requireMemorySuggestion && !constraints.allowMemorySuggestions) {
+      at('constraints.requireMemorySuggestion', 'a case cannot require what it does not permit');
     }
 
     // Every character the case presents must be addressable, and every allowed

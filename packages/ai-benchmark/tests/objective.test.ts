@@ -186,11 +186,83 @@ describe('the deterministic evaluator', () => {
     expect(check(evaluation, 'event_proposals_within_contract').passed).toBe(false);
   });
 
-  it('requires a proposal in a case that asks for one', () => {
+  it('A: a permitted but not required proposal may be declined', () => {
+    // The prompt says "puoi". Marking the model down for taking the option it
+    // was offered would penalise obedience.
     const testCase = caseFixture();
     testCase.constraints.allowEventProposals = true;
     const evaluation = evaluateObjectively(testCase, generation());
+
+    expect(evaluation.checks.find(entry => entry.id === 'event_proposal_present')).toBeUndefined();
+    expect(check(evaluation, 'event_proposals_within_contract').passed).toBe(true);
+    expect(evaluation.deterministicFailures).toBe(0);
+  });
+
+  it('B: a required proposal that is absent is a deterministic failure', () => {
+    const testCase = caseFixture();
+    testCase.constraints.allowEventProposals = true;
+    testCase.constraints.requireEventProposal = true;
+    const evaluation = evaluateObjectively(testCase, generation());
+
     expect(check(evaluation, 'event_proposal_present').passed).toBe(false);
+    expect(check(evaluation, 'event_proposal_present').detail).toContain('required a proposal');
+  });
+
+  it('C: a required proposal that is present passes', () => {
+    const testCase = caseFixture();
+    testCase.constraints.allowEventProposals = true;
+    testCase.constraints.requireEventProposal = true;
+    const evaluation = evaluateObjectively(
+      testCase,
+      generation({
+        normalizedOutput: output({
+          eventProposals: [{ subjectId: 'mara_001', topic: 'razionamento', rationale: 'r' }],
+        }),
+      }),
+    );
+
+    expect(check(evaluation, 'event_proposal_present').passed).toBe(true);
+    expect(evaluation.deterministicFailures).toBe(0);
+  });
+
+  it('G: the memory path behaves symmetrically', () => {
+    const permitted = caseFixture();
+    permitted.constraints.allowMemorySuggestions = true;
+    const optional = evaluateObjectively(permitted, generation());
+    expect(optional.checks.find(entry => entry.id === 'memory_suggestion_present')).toBeUndefined();
+
+    const required = caseFixture();
+    required.constraints.allowMemorySuggestions = true;
+    required.constraints.requireMemorySuggestion = true;
+
+    const absent = evaluateObjectively(required, generation());
+    expect(check(absent, 'memory_suggestion_present').passed).toBe(false);
+
+    const present = evaluateObjectively(
+      required,
+      generation({
+        normalizedOutput: output({
+          memorySuggestions: [{ characterId: 'mara_001', summary: 'ricorda' }],
+        }),
+      }),
+    );
+    expect(check(present, 'memory_suggestion_present').passed).toBe(true);
+  });
+
+  it('H: permission false still rejects a non-empty array', () => {
+    // Requiring nothing is not permitting everything: the production default is
+    // untouched.
+    const testCase = caseFixture();
+    expect(testCase.constraints.allowEventProposals).toBeUndefined();
+    const evaluation = evaluateObjectively(
+      testCase,
+      generation({
+        normalizedOutput: output({
+          eventProposals: [{ subjectId: 'mara_001', topic: 't', rationale: 'r' }],
+        }),
+      }),
+    );
+    expect(check(evaluation, 'event_proposals_within_contract').passed).toBe(false);
   });
 
   it('notices a named speaker who never speaks', () => {

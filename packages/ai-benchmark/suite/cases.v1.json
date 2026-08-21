@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteVersion": "p0.5-a.1",
+  "suiteVersion": "p0.5-a.2",
   "status": "P0_5_BENCHMARK_SUITE",
   "scenario": {
     "fixture": "createSystemicScenario",
@@ -3368,7 +3368,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowEventProposals": true
+        "allowEventProposals": true,
+        "requireEventProposal": true
       },
       "expectedFacts": [
         "at least one event proposal",
@@ -3443,7 +3444,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowEventProposals": true
+        "allowEventProposals": true,
+        "requireEventProposal": true
       },
       "expectedFacts": [
         "at least one event proposal",
@@ -3518,7 +3520,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowEventProposals": true
+        "allowEventProposals": true,
+        "requireEventProposal": true
       },
       "expectedFacts": [
         "at least one event proposal",
@@ -3576,7 +3579,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowEventProposals": true
+        "allowEventProposals": true,
+        "requireEventProposal": true
       },
       "expectedFacts": [
         "at least one event proposal",
@@ -3650,7 +3654,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowMemorySuggestions": true
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
       },
       "expectedFacts": [
         "at least one memory suggestion",
@@ -3725,7 +3730,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowMemorySuggestions": true
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
       },
       "expectedFacts": [
         "at least one memory suggestion",
@@ -3814,7 +3820,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowMemorySuggestions": true
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
       },
       "expectedFacts": [
         "at least one memory suggestion",
@@ -3898,7 +3905,8 @@
         "maxNarrationChars": 400,
         "structuredOutput": true,
         "authoritativeNumbersReadOnly": true,
-        "allowMemorySuggestions": true
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
       },
       "expectedFacts": [
         "at least one memory suggestion",
