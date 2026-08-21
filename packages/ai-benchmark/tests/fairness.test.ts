@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  attemptHistoryProblems,
   buildComparison,
   inputParityProblems,
   judgementProblems,
@@ -10,6 +11,7 @@ import { asHardFails, validateHumanReview, type HumanReview } from '../src/human
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 import type { ScoreSheet } from '../src/scoring.js';
+import { validateRun } from '../src/result.js';
 
 const suite = loadSuite();
 const SHA = {
@@ -81,6 +83,7 @@ function fairRun(): BenchmarkRun {
   return {
     metadata: {
       runId: 'run',
+      runKind: 'official_comparison',
       startedAt: '2026-08-21T00:00:00.000Z',
       gitCommit: '9599f38',
       gitDirty: false,
@@ -173,6 +176,22 @@ describe('retries and fairness', () => {
     });
   }
 
+  /**
+   * A run where the given profiles' first attempt on the first case was
+   * rejected, which is the only history in which a retry is legitimate.
+   */
+  function runWithRejectedFirst(...profiles: BenchmarkProfile[]): BenchmarkRun {
+    const run = fairRun();
+    for (const generation of run.generations) {
+      if (generation.caseId === first && profiles.includes(generation.profile)) {
+        generation.accepted = false;
+        generation.normalizedOutput = null;
+        generation.validatorErrors = ['unknown tone tag'];
+      }
+    }
+    return run;
+  }
+
   it('A: first attempts that match are fair', () => {
     expect(inputParityProblems(fairRun(), ['lite', 'standard'])).toEqual([]);
   });
@@ -180,20 +199,20 @@ describe('retries and fairness', () => {
   it('B: a retry only one profile needed is valid evidence, not a defect', () => {
     // Lite failing and being retried while Standard succeeded first time is
     // precisely the kind of thing the benchmark exists to observe.
-    const run = fairRun();
+    const run = runWithRejectedFirst('lite');
     run.generations.push(retryRow('lite'));
     expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
     expect(() => buildComparison(suite, run)).not.toThrow();
   });
 
   it('C: both profiles retried with the same wording is fair', () => {
-    const run = fairRun();
+    const run = runWithRejectedFirst('lite', 'standard');
     run.generations.push(retryRow('lite'), retryRow('standard'));
     expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
   });
 
   it('D: both profiles retried with different wording is refused', () => {
-    const run = fairRun();
+    const run = runWithRejectedFirst('lite', 'standard');
     run.generations.push(retryRow('lite'), retryRow('standard', 'c'.repeat(64)));
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
@@ -204,7 +223,7 @@ describe('retries and fairness', () => {
   it('E: a retry may legitimately differ from attempt 1', () => {
     // The retry prompt is supposed to say something new. Comparing across
     // attempt numbers would flag every retry in the suite.
-    const run = fairRun();
+    const run = runWithRejectedFirst('lite', 'standard');
     run.generations.push(retryRow('lite'), retryRow('standard'));
 
     const attemptOne = run.generations.find(
@@ -232,23 +251,37 @@ describe('attempt histories must be coherent', () => {
   function rowAt(
     profile: BenchmarkProfile,
     attempt: number,
+    accepted: boolean,
     fingerprint = RETRY,
   ): BenchmarkGeneration {
     return generationFor(first, profile, {
       id: `run:${first}:${profile}:${attempt}`,
       attempt,
       retryUsed: attempt > 1,
+      accepted,
+      validatorErrors: accepted ? [] : ['unknown tone tag'],
+      normalizedOutput: accepted ? generationFor(first, profile).normalizedOutput : null,
       inputFingerprint: attempt === 1 ? FINGERPRINT : fingerprint,
       rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
     });
   }
 
-  /** A run holding exactly the given attempts for the first case. */
+  /**
+   * A run holding exactly the given attempts for the first case.
+   *
+   * Every attempt but the last is rejected, because that is the only shape a
+   * retry policy can produce: a retry follows a rejection, and an acceptance
+   * ends the history.
+   */
   function historyRun(lite: number[], standard: number[]): BenchmarkRun {
     const run = fairRun();
     run.generations = run.generations.filter(generation => generation.caseId !== first);
-    for (const attempt of lite) run.generations.push(rowAt('lite', attempt));
-    for (const attempt of standard) run.generations.push(rowAt('standard', attempt));
+    for (const [index, attempt] of lite.entries()) {
+      run.generations.push(rowAt('lite', attempt, index === lite.length - 1));
+    }
+    for (const [index, attempt] of standard.entries()) {
+      run.generations.push(rowAt('standard', attempt, index === standard.length - 1));
+    }
     return run;
   }
 
@@ -293,7 +326,7 @@ describe('attempt histories must be coherent', () => {
 
   it('G: a retry both profiles made with different wording is refused', () => {
     const run = historyRun([1, 2], [1]);
-    run.generations.push(rowAt('standard', 2, 'c'.repeat(64)));
+    run.generations.push(rowAt('standard', 2, true, 'c'.repeat(64)));
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
@@ -358,6 +391,110 @@ describe('a run is bound to the suite it was executed against', () => {
       message = String(error);
     }
     expect(message).toMatch(/refusing to evaluate a run against a different suite/);
+  });
+});
+
+describe('a retry must follow a rejection', () => {
+  const first = caseIds[0]!;
+
+  /** One row, with its acceptance stated rather than defaulted. */
+  function row(
+    profile: BenchmarkProfile,
+    attempt: number,
+    accepted: boolean,
+  ): BenchmarkGeneration {
+    return generationFor(first, profile, {
+      id: `run:${first}:${profile}:${attempt}`,
+      attempt,
+      retryUsed: attempt > 1,
+      accepted,
+      validatorErrors: accepted ? [] : ['unknown tone tag'],
+      normalizedOutput: accepted ? generationFor(first, profile).normalizedOutput : null,
+      rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
+      inputFingerprint: attempt === 1 ? FINGERPRINT : 'b'.repeat(64),
+    });
+  }
+
+  /** A run whose first case has exactly the given history per profile. */
+  function withHistory(
+    lite: Array<[number, boolean]>,
+    standard: Array<[number, boolean]>,
+  ): BenchmarkRun {
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => generation.caseId !== first);
+    for (const [attempt, accepted] of lite) run.generations.push(row('lite', attempt, accepted));
+    for (const [attempt, accepted] of standard) run.generations.push(row('standard', attempt, accepted));
+    return run;
+  }
+
+  it('A: rejected 1 then accepted 2 is a real retry', () => {
+    const run = withHistory([[1, false], [2, true]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+
+  it('B: rejected 1 then rejected 2 is a valid history', () => {
+    // Two failures in a row is a finding, not a malformed record.
+    const run = withHistory([[1, false], [2, false]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('C: accepted 1 followed by attempt 2 is refused', () => {
+    // The defect: this used to pass because 2 > 1. Retrying an answer that
+    // already worked is not a retry, and counting both skews every average.
+    const run = withHistory([[1, true], [2, true]], [[1, true]]);
+    const problems = attemptHistoryProblems(run, ['lite', 'standard']);
+
+    expect(problems.some(problem => problem.includes('follows an accepted attempt 1'))).toBe(true);
+    expect(problems.some(problem => problem.includes('a retry must follow a rejection'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('D: accepted 2 followed by attempt 3 is refused', () => {
+    const run = withHistory([[1, false], [2, true], [3, false]], [[1, true]]);
+    const problems = attemptHistoryProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('follows an accepted attempt 2'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('E: attempt 2 with no attempt 1 is refused', () => {
+    const run = withHistory([[2, true]], [[1, true]]);
+    expect(() => buildComparison(suite, run)).toThrow();
+    expect(
+      inputParityProblems(run, ['lite', 'standard']).some(problem =>
+        problem.includes('no attempt 1 for lite'),
+      ),
+    ).toBe(true);
+  });
+
+  it('F: retryUsed that disagrees with the history is refused', () => {
+    // A first attempt claiming to be a retry, and a retry claiming not to be.
+    const claiming = fairRun();
+    claiming.generations[0]!.retryUsed = true;
+    expect(validateRun(claiming).some(problem => problem.field === 'retryUsed')).toBe(true);
+
+    const denying = withHistory([[1, false], [2, true]], [[1, true]]);
+    const second = denying.generations.find(
+      generation => generation.profile === 'lite' && generation.attempt === 2,
+    )!;
+    second.retryUsed = false;
+    expect(validateRun(denying).some(problem => problem.field === 'retryUsed')).toBe(true);
+  });
+
+  it('G: a unilateral retry stays valid across profiles', () => {
+    // Lite needed a second try, Standard did not. That asymmetry is the
+    // observation, not a defect.
+    const run = withHistory([[1, false], [2, true]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+
+  it('keeps an invalid history out of every aggregate', () => {
+    // The consequence the finding named: latency, quality means and retry
+    // totals must never be computed from a history the policy forbids.
+    const run = withHistory([[1, true], [2, true]], [[1, true]]);
+    expect(() => buildComparison(suite, run)).toThrow();
   });
 });
 

@@ -463,14 +463,77 @@ pub fn artifact_identity(verified: &crate::model_lock::VerifiedModel) -> Artifac
     }
 }
 
+/// What a run was for.
+///
+/// Completeness of metadata says a run *could* be reproduced; it says nothing
+/// about whether the run answers the question the benchmark exists to answer. A
+/// spotless three-case single-profile smoke on a clean checkout satisfies every
+/// reproducibility field and still cannot support a Lite-versus-Standard
+/// decision, so the purpose is declared rather than inferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunKind {
+    /// Plumbing evidence. One profile and a subset of cases are fine; it may
+    /// never be treated as comparable evidence, however clean it is.
+    Smoke,
+    /// A run that intends to decide something. Held to full coverage.
+    OfficialComparison,
+}
+
+impl RunKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smoke => "smoke",
+            Self::OfficialComparison => "official comparison",
+        }
+    }
+}
+
+/// What an official comparison has to have covered.
+///
+/// Passed in rather than hard-coded so P0.5-B states its own requirement and
+/// this module does not quietly become the owner of that decision.
+#[derive(Debug, Clone)]
+pub struct CoverageRequirement {
+    /// Every case the comparison must contain.
+    pub required_case_ids: Vec<String>,
+    /// Every profile that must have answered them.
+    pub required_profiles: Vec<String>,
+}
+
+/// What a finished run actually covered.
+#[derive(Debug, Clone, Default)]
+pub struct RunCoverage {
+    pub case_ids: Vec<String>,
+    pub profiles: Vec<String>,
+}
+
+impl RunCoverage {
+    /// Derive coverage from the rows a run produced.
+    pub fn from_records(records: &[GenerationRecord]) -> Self {
+        let mut coverage = Self::default();
+        for record in records {
+            if !coverage.case_ids.iter().any(|id| id == &record.case_id) {
+                coverage.case_ids.push(record.case_id.clone());
+            }
+            if !coverage.profiles.iter().any(|id| id == &record.profile) {
+                coverage.profiles.push(record.profile.clone());
+            }
+        }
+        coverage
+    }
+}
+
 /// Everything needed to reproduce a run, minus the weights themselves.
 ///
 /// A result without this is an anecdote. With it, another machine can rebuild
 /// the same commit, verify the same digests and re-run the same suite.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunMetadata {
     pub run_id: String,
+    /// Declared purpose. A run cannot become official by accident.
+    pub run_kind: RunKind,
     pub started_at: String,
     pub git_commit: String,
     pub git_dirty: bool,
@@ -482,8 +545,8 @@ pub struct RunMetadata {
     pub host: HostFacts,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostFacts {
     pub os: String,
     pub arch: String,
@@ -498,6 +561,7 @@ pub struct HostFacts {
 /// from a constant, so a run can never claim to have executed a suite it did not.
 pub fn new_run_metadata(
     run_id: &str,
+    run_kind: RunKind,
     started_at: &str,
     suite: &BenchmarkSuite,
     git_commit: &str,
@@ -508,6 +572,7 @@ pub fn new_run_metadata(
 ) -> RunMetadata {
     RunMetadata {
         run_id: run_id.to_string(),
+        run_kind,
         started_at: started_at.to_string(),
         git_commit: git_commit.to_string(),
         git_dirty,
@@ -730,11 +795,34 @@ pub fn persist_metadata(
 
 /// Whether a run may be published as comparable evidence.
 ///
-/// A dirty checkout cannot be reproduced by anyone else, so it must not quietly
-/// become an official result. Smoke passes and unit fixtures may still be dirty:
-/// they prove the plumbing, not the models.
-pub fn official_run_verdict(metadata: &RunMetadata) -> Result<(), String> {
+/// Two questions, and both have to be answered yes. **Could** this be
+/// reproduced — clean checkout, full commit, verified runtime, real host? And
+/// **does it answer the question** — was it declared official, and did it
+/// actually cover the cases and profiles the comparison needs?
+///
+/// The second question is why `run_kind` exists. A smoke pass on a clean
+/// checkout satisfies every reproducibility field there is and still cannot
+/// support a Lite-versus-Standard decision: it ran three cases against one
+/// model. Completeness of metadata is not evidence of completeness of work, and
+/// inferring official status from tidy metadata is exactly the mistake this
+/// refuses to make.
+pub fn official_run_verdict(
+    metadata: &RunMetadata,
+    coverage: &RunCoverage,
+    required: &CoverageRequirement,
+) -> Result<(), String> {
     let mut missing = Vec::new();
+
+    // Declared purpose first: a smoke run is refused before anything else is
+    // even examined, because no amount of rigour makes it the right run.
+    if metadata.run_kind != RunKind::OfficialComparison {
+        return Err(format!(
+            "run {} was recorded as a {} run, which is plumbing evidence and never \
+             comparable evidence, however complete its metadata is",
+            metadata.run_id,
+            metadata.run_kind.label()
+        ));
+    }
 
     if metadata.git_dirty {
         missing.push("the checkout was dirty, so nobody else can reproduce it".to_string());
@@ -761,16 +849,57 @@ pub fn official_run_verdict(metadata: &RunMetadata) -> Result<(), String> {
     {
         missing.push("the host facts are incomplete".to_string());
     }
+    if metadata.suite_version.trim().is_empty() || metadata.suite_schema_version == 0 {
+        missing.push("the suite identity is incomplete".to_string());
+    }
+
+    // Coverage: what the run actually did, not what it meant to do.
+    let absent_profiles: Vec<&str> = required
+        .required_profiles
+        .iter()
+        .filter(|wanted| !coverage.profiles.iter().any(|had| &had == wanted))
+        .map(String::as_str)
+        .collect();
+    if !absent_profiles.is_empty() {
+        missing.push(format!(
+            "no generations for {}, so there is nothing to compare",
+            absent_profiles.join(", ")
+        ));
+    }
+
+    let absent_cases: Vec<&str> = required
+        .required_case_ids
+        .iter()
+        .filter(|wanted| !coverage.case_ids.iter().any(|had| &had == wanted))
+        .map(String::as_str)
+        .collect();
+    if !absent_cases.is_empty() {
+        let shown: Vec<&str> = absent_cases.iter().take(5).copied().collect();
+        missing.push(format!(
+            "{} of {} required cases were never run ({}{})",
+            absent_cases.len(),
+            required.required_case_ids.len(),
+            shown.join(", "),
+            if absent_cases.len() > shown.len() { ", ..." } else { "" }
+        ));
+    }
 
     if missing.is_empty() {
         return Ok(());
     }
     Err(format!(
-        "refusing to record run {} as comparable evidence: {}. Commit first, or accept it as a \
-         smoke pass, which proves plumbing rather than models.",
+        "refusing to record run {} as comparable evidence: {}.",
         metadata.run_id,
         missing.join("; ")
     ))
+}
+
+/// The coverage a full P0.5-B comparison requires: every case, both profiles.
+pub fn full_comparison_requirement(suite: &BenchmarkSuite) -> CoverageRequirement {
+    CoverageRequirement {
+        required_case_ids: suite.cases.iter().map(|case| case.id.clone()).collect(),
+        required_profiles: vec!["lite".to_string(), "standard".to_string()],
+    }
 }
 
 /// Write one generation's raw text and its result row.
@@ -851,27 +980,39 @@ impl BenchmarkRuntimeGuard {
         false
     }
 
-    /// Stop the watcher and reap the child. Idempotent.
+    /// Stop the watcher and reap the child.
     ///
-    /// Called explicitly on the success path so failures are visible, and again
-    /// by `Drop`, where a second call is a no-op.
+    /// The flag is set **after** the child is confirmed gone, never before. A
+    /// kill can fail transiently — the manager deliberately keeps the pid in
+    /// that case so another attempt is possible — and marking cleanup complete
+    /// on the way in would turn the later `Drop` into a no-op that leaves the
+    /// orphan holding the port. Recording the intent is not the same as having
+    /// done the thing.
+    ///
+    /// Idempotent only once it has actually succeeded: after a confirmed stop
+    /// every further call returns `Ok` without touching anything.
     fn shutdown(&mut self) -> Result<(), String> {
         if self.stopped {
             return Ok(());
         }
-        self.stopped = true;
 
-        // Order matters: silence the observer, then reap the child.
+        // The watcher can go on the first attempt: it only polls, and stopping
+        // it twice is harmless. The child is the part worth retrying.
         if let Some(mut watcher) = self.watcher.take() {
             watcher.stop();
         }
+
         let snapshot = self.manager.stop();
         if let Some(pid) = snapshot.pid {
+            // Ownership is retained on purpose. `stopped` stays false so Drop
+            // will try again.
             return Err(format!(
                 "benchmark runtime process {pid} survived shutdown: {}",
                 snapshot.last_error.unwrap_or_else(|| "no detail".to_string())
             ));
         }
+
+        self.stopped = true;
         Ok(())
     }
 }
@@ -883,10 +1024,13 @@ fn guard_started(guard: BenchmarkRuntimeGuard) -> BenchmarkRuntimeGuard {
 
 impl Drop for BenchmarkRuntimeGuard {
     fn drop(&mut self) {
+        // A best-effort second attempt. If the explicit shutdown already
+        // succeeded this is a no-op; if it failed because a kill did not take,
+        // this is the retry that clears the orphan.
         if let Err(error) = self.shutdown() {
             // Never panic here: this may run while already unwinding, and an
-            // abort would bury the original failure.
-            eprintln!("benchmark cleanup failed: {error}");
+            // abort would bury the original failure. The message is the record.
+            eprintln!("benchmark cleanup failed after retry: {error}");
         }
     }
 }
@@ -1017,10 +1161,15 @@ mod tests {
     }
 
     fn test_metadata(dirty: bool) -> RunMetadata {
+        official_metadata(dirty, RunKind::OfficialComparison)
+    }
+
+    fn official_metadata(dirty: bool, kind: RunKind) -> RunMetadata {
         let suite = load_suite().unwrap();
         let lock = crate::runtime_e2e::checkout_runtime_lock().expect("the lock must parse");
         new_run_metadata(
             "run_001",
+            kind,
             "2026-08-21T00:00:00Z",
             &suite,
             "9599f38d846f29907286e53200f51a703af4f53c",
@@ -1089,17 +1238,122 @@ mod tests {
         );
     }
 
+    /// A requirement small enough to state in a test.
+    fn requirement() -> CoverageRequirement {
+        CoverageRequirement {
+            required_case_ids: vec!["ai_case_001".to_string(), "ai_case_002".to_string()],
+            required_profiles: vec!["lite".to_string(), "standard".to_string()],
+        }
+    }
+
+    /// Coverage that satisfies [`requirement`].
+    fn full_coverage() -> RunCoverage {
+        RunCoverage {
+            case_ids: vec!["ai_case_001".to_string(), "ai_case_002".to_string()],
+            profiles: vec!["lite".to_string(), "standard".to_string()],
+        }
+    }
+
+    /// What a default smoke actually covers: a few cases, one model.
+    fn smoke_coverage() -> RunCoverage {
+        RunCoverage {
+            case_ids: vec!["ai_case_001".to_string()],
+            profiles: vec!["lite".to_string()],
+        }
+    }
+
+    #[test]
+    fn a_spotless_smoke_is_still_not_comparable_evidence() {
+        // The finding, exactly: clean checkout, full commit, verified runtime,
+        // real host — and it ran one model over a handful of cases. Nothing
+        // about that supports a Lite-versus-Standard decision.
+        let metadata = official_metadata(false, RunKind::Smoke);
+        let refused = official_run_verdict(&metadata, &full_coverage(), &requirement())
+            .expect_err("a smoke run is never official");
+
+        assert!(refused.contains("smoke"), "{refused}");
+        assert!(refused.contains("plumbing evidence"), "{refused}");
+        assert!(
+            refused.contains("however complete its metadata is"),
+            "the refusal must say why tidy metadata does not help: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_dirty_smoke_is_refused_for_being_a_smoke_first() {
+        // Purpose is checked before anything else: the answer is the same and
+        // the reason is the honest one.
+        let metadata = official_metadata(true, RunKind::Smoke);
+        let refused = official_run_verdict(&metadata, &smoke_coverage(), &requirement())
+            .expect_err("still not official");
+        assert!(refused.contains("smoke"), "{refused}");
+    }
+
+    #[test]
+    fn an_official_run_missing_a_profile_is_refused() {
+        let coverage = RunCoverage {
+            case_ids: full_coverage().case_ids,
+            profiles: vec!["lite".to_string()],
+        };
+        let refused = official_run_verdict(&test_metadata(false), &coverage, &requirement())
+            .expect_err("one model is not a comparison");
+        assert!(refused.contains("no generations for standard"), "{refused}");
+        assert!(refused.contains("nothing to compare"), "{refused}");
+    }
+
+    #[test]
+    fn an_official_run_missing_cases_is_refused_and_names_them() {
+        let coverage = RunCoverage {
+            case_ids: vec!["ai_case_001".to_string()],
+            profiles: full_coverage().profiles,
+        };
+        let refused = official_run_verdict(&test_metadata(false), &coverage, &requirement())
+            .expect_err("a subset is not the suite");
+        assert!(refused.contains("1 of 2 required cases"), "{refused}");
+        assert!(refused.contains("ai_case_002"), "{refused}");
+    }
+
+    #[test]
+    fn a_complete_official_run_is_accepted() {
+        official_run_verdict(&test_metadata(false), &full_coverage(), &requirement())
+            .expect("declared official, reproducible, and fully covered");
+    }
+
+    #[test]
+    fn a_smoke_cannot_masquerade_as_official_through_serialisation() {
+        // The kind travels with the evidence. A smoke run written to disk and
+        // read back is still a smoke run: there is no field a later reader can
+        // mistake for officialdom, and an absent kind is not silently permissive.
+        let metadata = official_metadata(false, RunKind::Smoke);
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert!(json.contains("\"runKind\":\"smoke\""), "{json}");
+
+        let round_tripped: RunMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped.run_kind, RunKind::Smoke);
+        assert!(official_run_verdict(&round_tripped, &full_coverage(), &requirement()).is_err());
+
+        // And a payload with the field removed does not deserialise into an
+        // accidentally-official run.
+        let stripped = json.replace("\"runKind\":\"smoke\",", "");
+        assert!(
+            serde_json::from_str::<RunMetadata>(&stripped).is_err(),
+            "a run with no declared purpose must not parse"
+        );
+    }
+
     #[test]
     fn an_official_run_needs_a_runtime_digest_even_when_everything_else_is_clean() {
-        // The case the previous verdict let through: a spotless run that cannot
+        // The case the earlier verdict let through: a spotless run that cannot
         // say which llama-server binary produced it.
         let mut metadata = test_metadata(false);
         metadata.runtime_executable_sha256 = None;
-        let refused = official_run_verdict(&metadata).expect_err("no digest, no evidence");
+        let refused = official_run_verdict(&metadata, &full_coverage(), &requirement())
+            .expect_err("no digest, no evidence");
         assert!(refused.contains("runtime executable digest is absent"), "{refused}");
 
         metadata.runtime_executable_sha256 = Some("not-a-digest".to_string());
-        let refused = official_run_verdict(&metadata).expect_err("a stub is not a digest");
+        let refused = official_run_verdict(&metadata, &full_coverage(), &requirement())
+            .expect_err("a stub is not a digest");
         assert!(refused.contains("not a SHA-256"), "{refused}");
     }
 
@@ -1107,29 +1361,68 @@ mod tests {
     fn an_official_run_needs_a_full_commit_and_real_host_facts() {
         let mut metadata = test_metadata(false);
         metadata.git_commit = "9599f38".to_string();
-        let refused = official_run_verdict(&metadata).expect_err("a short sha is not attribution");
+        let refused = official_run_verdict(&metadata, &full_coverage(), &requirement())
+            .expect_err("a short sha is not attribution");
         assert!(refused.contains("40-character"), "{refused}");
 
         let mut metadata = test_metadata(false);
         metadata.runtime_release_tag = String::new();
-        assert!(official_run_verdict(&metadata).is_err());
+        assert!(official_run_verdict(&metadata, &full_coverage(), &requirement()).is_err());
 
         let mut metadata = test_metadata(false);
         metadata.host.logical_cores = 0;
-        let refused = official_run_verdict(&metadata).expect_err("host facts are required");
+        let refused = official_run_verdict(&metadata, &full_coverage(), &requirement())
+            .expect_err("host facts are required");
         assert!(refused.contains("host facts"), "{refused}");
     }
 
     #[test]
     fn an_official_run_refuses_a_dirty_checkout() {
-        // Nobody else can reproduce a run made from uncommitted code, so it must
-        // not quietly become comparable evidence.
-        let refused = official_run_verdict(&test_metadata(true))
+        let refused = official_run_verdict(&test_metadata(true), &full_coverage(), &requirement())
             .expect_err("a dirty checkout cannot be official");
         assert!(refused.contains("dirty"), "{refused}");
         assert!(refused.contains("reproduce"), "{refused}");
 
-        official_run_verdict(&test_metadata(false)).expect("a clean checkout is fine");
+        official_run_verdict(&test_metadata(false), &full_coverage(), &requirement())
+            .expect("a clean checkout is fine");
+    }
+
+    #[test]
+    fn the_full_comparison_requirement_is_the_whole_suite_and_both_profiles() {
+        let suite = load_suite().unwrap();
+        let required = full_comparison_requirement(&suite);
+        assert_eq!(required.required_case_ids.len(), suite.cases.len());
+        assert_eq!(required.required_profiles, vec!["lite", "standard"]);
+    }
+
+    #[test]
+    fn coverage_is_derived_from_the_rows_a_run_actually_produced() {
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 1,
+            raw: "{}".to_string(),
+            narration: Some("ok".to_string()),
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: None,
+        };
+        let rows = vec![
+            record_generation("r", case, "lite", 1, test_artifact("lite"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &outcome),
+            record_generation("r", case, "standard", 1, test_artifact("standard"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &outcome),
+        ];
+        let coverage = RunCoverage::from_records(&rows);
+        assert_eq!(coverage.case_ids, vec![case.id.clone()]);
+        assert_eq!(coverage.profiles, vec!["lite".to_string(), "standard".to_string()]);
     }
 
     #[test]
@@ -1480,14 +1773,26 @@ mod tests {
     struct FakeProcess {
         alive: std::sync::Mutex<Option<u32>>,
         kills: std::sync::atomic::AtomicUsize,
+        /// How many kill attempts must fail before one is allowed to work.
+        ///
+        /// A transient kill failure is exactly the case the guard has to survive:
+        /// the manager keeps the pid so another attempt is possible, and Drop is
+        /// that attempt.
+        failing_kills: std::sync::atomic::AtomicUsize,
         path: PathBuf,
     }
 
     impl FakeProcess {
         fn new() -> std::sync::Arc<Self> {
+            Self::refusing(0)
+        }
+
+        /// A process whose first `attempts` kills fail.
+        fn refusing(attempts: usize) -> std::sync::Arc<Self> {
             std::sync::Arc::new(Self {
                 alive: std::sync::Mutex::new(None),
                 kills: std::sync::atomic::AtomicUsize::new(0),
+                failing_kills: std::sync::atomic::AtomicUsize::new(attempts),
                 path: PathBuf::from("llama-server.exe"),
             })
         }
@@ -1519,8 +1824,16 @@ mod tests {
                 crate::local_ai_runtime::ProcessObservation::Exited
             }
         }
-        fn kill(&self, _pid: u32) -> Result<(), String> {
+        fn kill(&self, pid: u32) -> Result<(), String> {
             self.0.kills.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let remaining = self.0.failing_kills.load(std::sync::atomic::Ordering::SeqCst);
+            if remaining > 0 {
+                self.0
+                    .failing_kills
+                    .store(remaining - 1, std::sync::atomic::Ordering::SeqCst);
+                // The process is still alive: the manager must keep the pid.
+                return Err(format!("access denied terminating {pid}"));
+            }
             *self.0.alive.lock().unwrap() = None;
             Ok(())
         }
@@ -1632,6 +1945,75 @@ mod tests {
         assert!(snapshot.pid.is_none(), "the pid must be released");
         assert!(!snapshot.inference_ready);
         assert!(!process.is_alive());
+    }
+
+    #[test]
+    fn a_stop_that_fails_leaves_the_guard_willing_to_try_again() {
+        // The defect this exists for: the flag used to be set on the way in, so
+        // a kill that did not take made Drop a no-op and left the orphan.
+        let process = FakeProcess::refusing(1);
+        let manager = fake_manager(process.clone());
+
+        let mut guard = BenchmarkRuntimeGuard::start(manager.clone()).expect("must start");
+        let error = guard.shutdown().expect_err("the first kill refuses");
+        assert!(error.contains("survived shutdown"), "{error}");
+
+        // Still alive, still owned, and the guard has not marked itself done.
+        assert!(process.is_alive());
+        assert!(manager.snapshot().pid.is_some(), "the pid must be retained for a retry");
+        assert_eq!(process.kill_count(), 1);
+    }
+
+    #[test]
+    fn drop_retries_a_failed_stop_and_clears_the_orphan() {
+        let process = FakeProcess::refusing(1);
+        let manager = fake_manager(process.clone());
+
+        {
+            let mut guard = BenchmarkRuntimeGuard::start(manager.clone()).expect("must start");
+            assert!(guard.shutdown().is_err(), "the first attempt fails");
+            assert!(process.is_alive(), "and leaves the sidecar running");
+        } // Drop runs here.
+
+        assert!(!process.is_alive(), "Drop must have tried again and succeeded");
+        assert_eq!(process.kill_count(), 2, "exactly one retry");
+        assert!(manager.snapshot().pid.is_none(), "ownership released");
+    }
+
+    #[test]
+    fn drop_never_panics_even_when_every_attempt_fails() {
+        // A guard that cannot clean up must still not take the process down with
+        // it: panicking in Drop while unwinding aborts and destroys the
+        // diagnosis of the original failure.
+        let process = FakeProcess::refusing(usize::MAX);
+        let manager = fake_manager(process.clone());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut guard = BenchmarkRuntimeGuard::start(manager.clone()).expect("must start");
+            assert!(guard.shutdown().is_err());
+        }));
+
+        assert!(result.is_ok(), "Drop must not panic when cleanup is impossible");
+        // The orphan is real and the state says so, which is the honest outcome.
+        assert!(process.is_alive());
+        assert!(manager.snapshot().pid.is_some(), "a surviving pid stays tracked");
+        assert!(process.kill_count() >= 2, "it did try again");
+    }
+
+    #[test]
+    fn a_confirmed_stop_is_not_repeated_by_drop() {
+        // The other half: once the child is genuinely gone, further calls do
+        // nothing at all.
+        let process = FakeProcess::new();
+        let manager = fake_manager(process.clone());
+        {
+            let mut guard = BenchmarkRuntimeGuard::start(manager.clone()).expect("must start");
+            guard.shutdown().expect("clean stop");
+            guard.shutdown().expect("second call is a no-op");
+            assert_eq!(process.kill_count(), 1);
+        }
+        assert_eq!(process.kill_count(), 1, "Drop after a confirmed stop changes nothing");
+        assert!(manager.snapshot().pid.is_none());
     }
 
     #[test]
@@ -1778,6 +2160,7 @@ mod tests {
         let suite = load_suite().unwrap();
         let metadata = new_run_metadata(
             "run_001",
+            RunKind::OfficialComparison,
             "2026-08-21T00:00:00Z",
             &suite,
             "9599f38",
@@ -2031,6 +2414,8 @@ mod tests {
         // what it was.
         let metadata = new_run_metadata(
             &run_id,
+            // Declared, not inferred. This is plumbing evidence and says so.
+            RunKind::Smoke,
             &started_at(),
             &suite,
             &git_commit().unwrap_or_default(),
@@ -2040,10 +2425,6 @@ mod tests {
             host_facts(),
         );
         persist_metadata(&directory, &metadata).expect("metadata must persist");
-        // A smoke pass is allowed to run dirty; it proves plumbing, not models.
-        if let Err(reason) = official_run_verdict(&metadata) {
-            eprintln!("note: not comparable evidence - {reason}");
-        }
 
         // From here on the sidecar is owned by a guard: every path out of this
         // function, including a panic inside a request, stops and reaps it.

@@ -101,6 +101,7 @@ describe('benchmark isolation from authoritative state', () => {
     const run: BenchmarkRun = deepFreeze({
       metadata: {
         runId: 'run',
+        runKind: 'official_comparison',
         startedAt: '2026-08-21T00:00:00.000Z',
         gitCommit: '9599f38',
         gitDirty: false,

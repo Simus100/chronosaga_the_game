@@ -111,6 +111,7 @@
       "totalRamMb": 65536
     },
     "runId": "run_001",
+    "runKind": "official_comparison",
     "runnerVersion": "0.1.0",
     "runtimeExecutableSha256": "7a110e56e47fab319791c1f450321ecb77449a372e4c75db68d69069e7cd531e",
     "runtimeReleaseTag": "b10343",

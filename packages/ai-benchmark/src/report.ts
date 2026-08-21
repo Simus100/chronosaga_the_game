@@ -129,6 +129,12 @@ function controlledSignature(generation: BenchmarkGeneration): string {
 export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfile[]): string[] {
   const problems: string[] = [];
 
+  // A retry is a second try at something that failed. An attempt after an
+  // accepted one is not a retry, it is a second bite at an answer that already
+  // worked — and counting both skews latency, quality means and retry totals
+  // with generations the policy never permitted.
+  problems.push(...attemptHistoryProblems(run, profiles));
+
   // Duplicates first: everything below counts rows, and a duplicated attempt
   // would quietly double one of those counts.
   const attemptKeys = new Set<string>();
@@ -348,6 +354,70 @@ export function attributionProblems(
     );
   }
   return problems;
+}
+
+/**
+ * Whether each `(case, profile)` attempt history is a history a retry policy
+ * could actually have produced.
+ *
+ * Contiguity and "attempt 1 exists" are necessary and not sufficient. The rule
+ * that was missing: **attempt N > 1 requires attempt N-1 to have been
+ * rejected**, and once an attempt is accepted the history for that case and
+ * profile is over. `accepted 1 -> attempt 2` reads as a retry and is not one;
+ * whatever produced it, the run is not describing what happened.
+ *
+ * Unilateral retries stay valid: this looks at one profile's history at a time
+ * and never compares the two.
+ */
+export function attemptHistoryProblems(
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+): string[] {
+  const problems: string[] = [];
+  const histories = new Map<string, BenchmarkGeneration[]>();
+
+  for (const generation of run.generations) {
+    if (!profiles.includes(generation.profile)) continue;
+    const key = `${generation.caseId}|${generation.profile}`;
+    const bucket = histories.get(key) ?? [];
+    bucket.push(generation);
+    histories.set(key, bucket);
+  }
+
+  for (const [key, rows] of histories) {
+    const [caseId, profile] = key.split('|');
+    const ordered = [...rows].sort((a, b) => a.attempt - b.attempt);
+
+    for (let index = 1; index < ordered.length; index += 1) {
+      const previous = ordered[index - 1]!;
+      const current = ordered[index]!;
+      if (previous.attempt === current.attempt) continue; // duplicates reported elsewhere
+
+      if (previous.accepted) {
+        problems.push(
+          `${caseId} for ${profile}: attempt ${current.attempt} follows an accepted ` +
+            `attempt ${previous.attempt}; a retry must follow a rejection`,
+        );
+      }
+    }
+
+    // Belt and braces: nothing may come after the first acceptance, even if the
+    // rows arrived out of order or with a gap already reported above.
+    const accepted = ordered.find(generation => generation.accepted);
+    if (accepted) {
+      const later = ordered.filter(generation => generation.attempt > accepted.attempt);
+      for (const generation of later) {
+        const already = `attempt ${generation.attempt} follows an accepted attempt ${accepted.attempt}`;
+        if (!problems.some(problem => problem.includes(already))) {
+          problems.push(
+            `${caseId} for ${profile}: ${already}; an accepted generation ends the history`,
+          );
+        }
+      }
+    }
+  }
+
+  return problems.sort();
 }
 
 /**

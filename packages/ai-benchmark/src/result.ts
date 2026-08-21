@@ -48,9 +48,19 @@ export interface ContextConfiguration {
   reasoning: string;
 }
 
+/**
+ * What a run was for.
+ *
+ * Declared, never inferred. A spotless single-profile smoke satisfies every
+ * reproducibility field there is and still cannot decide anything, so purpose is
+ * recorded alongside provenance rather than guessed from it.
+ */
+export type RunKind = 'smoke' | 'official_comparison';
+
 /** Enough to reproduce a run on another machine, without shipping weights. */
 export interface RunMetadata {
   runId: string;
+  runKind: RunKind;
   startedAt: string;
   gitCommit: string;
   /** Dirty checkouts produce results nobody can reproduce; recorded, not blocked. */
@@ -188,6 +198,9 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
   if (!metadata.runnerVersion) {
     problems.push({ field: 'metadata.runnerVersion', message: 'the runner version must be recorded' });
   }
+  if (metadata.runKind !== 'smoke' && metadata.runKind !== 'official_comparison') {
+    problems.push({ field: 'metadata.runKind', message: 'a run must declare what it was for' });
+  }
   if (!metadata.host?.cpu || metadata.host.logicalCores <= 0) {
     problems.push({ field: 'metadata.host', message: 'real host facts are required' });
   }
@@ -237,6 +250,13 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
       if (generation.validatorErrors.length === 0) {
         at('validatorErrors', 'a rejection must say why');
       }
+    }
+
+    if (generation.attempt === 1 && generation.retryUsed) {
+      at('retryUsed', 'a first attempt cannot be a retry');
+    }
+    if (generation.attempt > 1 && !generation.retryUsed) {
+      at('retryUsed', `attempt ${generation.attempt} must identify itself as a retry`);
     }
 
     if (generation.fallbackUsed && generation.fallbackProfile === null) {

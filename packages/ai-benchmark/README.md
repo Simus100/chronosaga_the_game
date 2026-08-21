@@ -69,10 +69,18 @@ verification fails; the lock remains the only source of expected hashes, shared
 with `pnpm verify:local-ai-runtime`.
 
 `official_run_verdict` decides whether a run may be published as comparable
-evidence. It requires a clean checkout, a full 40-character commit, a release
-tag, a 64-character runtime digest, and real host facts. A smoke pass may fail
-any of these and still be useful, because it proves plumbing rather than models —
-it simply must never masquerade as official evidence.
+evidence, and it asks two questions rather than one. **Could this be
+reproduced** — clean checkout, full 40-character commit, release tag,
+64-character runtime digest, real host facts? And **does it answer the
+question** — was it declared `official_comparison`, and did it actually cover
+every required case for every compared profile?
+
+The second question is why `runKind` exists. A spotless single-profile smoke over
+three cases satisfies every reproducibility field there is and still cannot
+support a Lite-versus-Standard decision. Completeness of metadata is not evidence
+of completeness of work, so purpose is **declared, never inferred**, and it
+travels with the evidence: a smoke run written to disk and read back is still a
+smoke run, and metadata with no declared purpose does not parse at all.
 
 Rows are appended as JSON Lines so a crashed run still leaves usable evidence,
 and each attempt gets its own raw file so a retry never overwrites what it
@@ -118,11 +126,14 @@ and never merges either into a score.
 `buildComparison` refuses to build a report at all unless five things hold:
 
 1. both profiles saw every case;
-2. every case a profile ran starts at **attempt 1** and numbers its attempts
-   contiguously. A retry only one profile needed is valid evidence; a retry with
-   nothing before it is a broken record, and comparing one model's first try
-   against another's second measures neither. Duplicate `(case, profile,
-   attempt)` rows are refused outright;
+2. every case a profile ran starts at **attempt 1**, numbers its attempts
+   contiguously, and every attempt after the first **follows a rejection**. An
+   acceptance ends the history: `accepted 1 -> attempt 2` reads as a retry and is
+   not one, and counting both would skew latency, quality means and retry
+   totals with a generation the policy never permitted. A retry only one profile
+   needed is valid evidence; a retry with nothing before it is a broken record.
+   `retryUsed` must agree with the attempt number, and duplicate
+   `(case, profile, attempt)` rows are refused outright;
 3. the recorded **input fingerprint** — SHA-256 over the suite identity, the case
    and both prompts *verbatim as sent* — matches for each `(case, attempt)` pair
    present for more than one profile, so "same inputs" is evidence rather than an
@@ -200,9 +211,15 @@ never saw while the report still advertised the recorded version.
 The sidecar is owned by an RAII guard for the whole benchmark. A request that
 times out, loses its connection or returns an HTTP error panics through any
 shutdown code written at the bottom of a function; a guard cannot be skipped by
-an early return or a panic. `Drop` never panics — a cleanup failure is reported
-on stderr rather than unwinding — and shutdown is idempotent, so the explicit
-success-path stop and the later `Drop` coexist.
+an early return or a panic.
+
+The guard marks itself done **only after the child is confirmed gone**. A kill
+can fail transiently, and the manager deliberately keeps the pid so another
+attempt is possible; setting the flag on the way in would turn the later `Drop`
+into a no-op that leaves the orphan holding the port. `Drop` is therefore a real
+retry, not a formality. It never panics — unwinding while already unwinding
+aborts and destroys the diagnosis of the original failure — and once a stop is
+confirmed, every further call does nothing.
 
 ## Judgement is bound to the run it judges
 
