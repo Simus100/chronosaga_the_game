@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteVersion": "p0.5-a.2",
+  "suiteVersion": "p0.5-a.3",
   "status": "P0_5_BENCHMARK_SUITE",
   "scenario": {
     "fixture": "createSystemicScenario",
@@ -94,7 +94,10 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001"
+        ]
       },
       "expectedFacts": [
         "water stock is 14",
@@ -178,7 +181,10 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "tarek_001"
+        ]
       },
       "expectedFacts": [
         "the recycler condition dropped",
@@ -253,7 +259,10 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "ira_001"
+        ]
       },
       "expectedFacts": [
         "the relay route is contested"
@@ -335,7 +344,10 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "sela_001"
+        ]
       },
       "expectedFacts": [
         "relations with the Rimward Front worsened",
@@ -410,7 +422,10 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001"
+        ]
       },
       "expectedFacts": [
         "satisfaction fell"
@@ -502,7 +517,10 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001"
+        ]
       },
       "expectedFacts": [
         "medicine is 6",
@@ -580,7 +598,10 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "ira_001"
+        ]
       },
       "expectedFacts": [
         "nothing changed this turn"
@@ -667,7 +688,11 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001",
+          "brann_001"
+        ]
       },
       "expectedFacts": [
         "both characters speak",
@@ -755,7 +780,11 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ]
       },
       "expectedFacts": [
         "both characters speak",
@@ -843,7 +872,11 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "tarek_001",
+          "mara_001"
+        ]
       },
       "expectedFacts": [
         "both characters speak",
@@ -931,7 +964,11 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "ira_001",
+          "brann_001"
+        ]
       },
       "expectedFacts": [
         "both characters speak",
@@ -1019,7 +1056,11 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "sela_001",
+          "mara_001"
+        ]
       },
       "expectedFacts": [
         "both characters speak",
@@ -1107,7 +1148,11 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001",
+          "tarek_001"
+        ]
       },
       "expectedFacts": [
         "both characters speak",

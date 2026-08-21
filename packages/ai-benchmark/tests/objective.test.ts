@@ -265,12 +265,56 @@ describe('the deterministic evaluator', () => {
     expect(check(evaluation, 'event_proposals_within_contract').passed).toBe(false);
   });
 
-  it('notices a named speaker who never speaks', () => {
+  it('A: a permitted speaker may stay silent', () => {
+    // The prompt says these ids *may* speak. Penalising a silent bystander
+    // measures the case's wording, not the model.
+    const testCase = caseFixture();
+    testCase.constraints.knownSpeakerIds = ['mara_001', 'brann_001'];
+    testCase.characters.push({
+      id: 'brann_001', name: 'Brann Vale', role: 'Security Lead',
+      stress: 24, morale: 81, traits: ['loyal'],
+    });
+    testCase.constraints.requiredSpeakerIds = ['mara_001'];
+
+    const evaluation = evaluateObjectively(testCase, generation());
+    expect(check(evaluation, 'required_speakers_spoke').passed).toBe(true);
+    expect(evaluation.deterministicFailures).toBe(0);
+  });
+
+  it('B: a required speaker who stays silent is a deterministic failure', () => {
+    const testCase = caseFixture();
+    testCase.constraints.knownSpeakerIds = ['mara_001', 'brann_001'];
+    testCase.characters.push({
+      id: 'brann_001', name: 'Brann Vale', role: 'Security Lead',
+      stress: 24, morale: 81, traits: ['loyal'],
+    });
+    testCase.constraints.requiredSpeakerIds = ['mara_001', 'brann_001'];
+
+    const evaluation = evaluateObjectively(testCase, generation());
+    expect(check(evaluation, 'required_speakers_spoke').passed).toBe(false);
+    expect(check(evaluation, 'required_speakers_spoke').detail).toContain('brann_001');
+  });
+
+  it('C: a scene requiring nobody accepts empty dialogue', () => {
+    const testCase = caseFixture();
+    testCase.constraints.knownSpeakerIds = [];
+    testCase.constraints.requiredSpeakerIds = [];
+
     const evaluation = evaluateObjectively(
-      caseFixture(),
+      testCase,
       generation({ normalizedOutput: output({ dialogue: [] }) }),
     );
-    expect(check(evaluation, 'expected_speakers_spoke').passed).toBe(false);
+    expect(evaluation.checks.find(entry => entry.id === 'required_speakers_spoke')).toBeUndefined();
+    expect(evaluation.deterministicFailures).toBe(0);
+  });
+
+  it('D: an unknown speaker is still a deterministic failure', () => {
+    // Grounding is untouched: permission was relaxed, not abolished.
+    const evaluation = evaluateObjectively(
+      caseFixture(),
+      generation({ normalizedOutput: output({ dialogue: [{ speakerId: 'sela_001', text: 'ciao' }] }) }),
+    );
+    expect(check(evaluation, 'speakers_known').passed).toBe(false);
   });
 
   it('notices narration past the character limit', () => {

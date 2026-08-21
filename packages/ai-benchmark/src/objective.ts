@@ -347,15 +347,20 @@ export function evaluateObjectively(
     `${validated.narration.length} of ${constraints.maxNarrationChars} characters`,
   );
 
-  // A case that names speakers expects them to speak.
-  if (constraints.knownSpeakerIds.length > 0) {
+  // Only speakers the task actually needs. Being permitted to speak is not an
+  // obligation to speak, and marking a compliant answer down for a silent
+  // bystander measures the case's wording rather than the model.
+  const required = constraints.requiredSpeakerIds ?? [];
+  if (required.length > 0) {
     const spoke = new Set(validated.dialogue.map(line => line.speakerId));
-    const silent = constraints.knownSpeakerIds.filter(speaker => !spoke.has(speaker));
+    const silent = required.filter(speaker => !spoke.has(speaker));
     add(
-      'expected_speakers_spoke',
+      'required_speakers_spoke',
       silent.length === 0,
       'deterministic',
-      silent.length === 0 ? 'every expected speaker spoke' : `silent: ${silent.join(', ')}`,
+      silent.length === 0
+        ? 'every required speaker spoke'
+        : `required but silent: ${silent.join(', ')}`,
     );
   }
 

@@ -149,6 +149,18 @@ and never merges either into a score.
 
 ## Permission is not requirement
 
+`knownSpeakerIds` says who *may* speak; `requiredSpeakerIds` says who *must*.
+Only the second produces a deterministic failure when a character is silent, and
+it has to be a subset of the first. Conflating them penalised answers that obeyed
+the prompt: the instruction only ever said the dialogue may use these ids.
+
+Across the 65 cases, dialogue is required exactly where the dialogue *is* the
+task — `single_npc_dialogue` and `two_character_conflict`, thirteen cases. A
+memory-suggestion or location-description case permits speech without demanding
+it, and the prompt says which it is: `DEVONO parlare` when a voice is needed,
+`nessuno e' obbligato` when it is not. Unknown-speaker grounding is untouched.
+
+
 `allowEventProposals` says a case tolerates a proposal; `requireEventProposal`
 says it demands one, and the memory path is symmetric. Only a requirement makes
 an empty array a deterministic failure. Conflating the two penalised models for
@@ -164,7 +176,14 @@ validator refuses that combination.
 
 ## Fairness
 
-`buildComparison` runs the authoritative `validateRun` first, before parity,
+`buildComparison` first asks whether there is anything to compare at all. A
+structurally valid run with metadata and no rows passes every other check by
+vacuous truth — both compared sets are empty, so nothing is missing and nothing
+disagrees — and renders `caseCount: 0` with empty summaries. An interrupted or
+half-copied evidence directory looks exactly like that. Every compared profile
+must have rows, and at least one case must have been answered by all of them.
+
+Then it runs the authoritative `validateRun`, before parity,
 evaluation or any aggregate. These runs arrive as external JSON and `validateRun`
 already owns every cross-field invariant — an accepted attempt 1 claiming
 `retryUsed`, an attempt 2 denying it, an accepted generation with a null output
@@ -212,7 +231,20 @@ make the whole exercise worthless.
 
 `benchmark_context()` in the Rust runner is the source of truth for sampling. It
 builds the request that reaches `llama-server` *and* the `context` block recorded
-with every generation, so the evidence describes the run that happened. `top_p`
+with every generation, so the evidence describes the run that happened.
+
+Readiness proves a server is listening on the port; it does not prove *which*
+server. If a `llama-server` from an earlier session still holds 8081, `/health`
+answers and the manager reaches Ready. Before the first prompt and before any row
+is written, the runner therefore asks the endpoint which model it actually holds
+and refuses unless it matches the selected profile, so that
+
+```
+recorded artifact identity == verified selected model == actual serving model
+```
+
+Each row also keeps the model the runtime reported for that response, so a swap
+mid-run would leave a trace in the evidence rather than passing silently. `top_p`
 and `seed` are configured explicitly rather than left to the server, because
 "whatever the runtime defaulted to" is not reproducible. The product smoke keeps
 its own parameters and records `null` for the two it does not set, rather than

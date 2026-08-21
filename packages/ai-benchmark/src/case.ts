@@ -78,8 +78,23 @@ export type BenchmarkDelta = StateDelta;
 /** What the generation is allowed to do. */
 export interface BenchmarkConstraints {
   language: string;
-  /** Speakers the scene contains. Any other speaker id is a contract failure. */
+  /**
+   * Speakers the scene contains: who *may* speak.
+   *
+   * Any other speaker id is a contract failure. Being listed here is permission,
+   * not obligation — a character can legitimately stay silent, and the prompt
+   * only ever says the dialogue may use these ids.
+   */
   knownSpeakerIds: string[];
+  /**
+   * Speakers whose dialogue the task actually needs: who *must* appear.
+   *
+   * A subset of {@link knownSpeakerIds}. Only these produce a deterministic
+   * failure when absent. Treating every listed character as required penalised
+   * answers that obeyed the prompt they were given, which is the same conflation
+   * that {@link requireEventProposal} exists to undo.
+   */
+  requiredSpeakerIds?: string[];
   allowedToneTags: string[];
   maxNarrationChars: number;
   structuredOutput: boolean;
@@ -194,6 +209,14 @@ export function validateSuite(suite: BenchmarkSuite): SuiteProblem[] {
     if (constraints.allowedToneTags.length === 0) at('constraints.allowedToneTags', 'the tone vocabulary cannot be empty');
     if (!constraints.authoritativeNumbersReadOnly) {
       at('constraints.authoritativeNumbersReadOnly', 'the model may never write Game Core numbers');
+    }
+    for (const speaker of constraints.requiredSpeakerIds ?? []) {
+      if (!constraints.knownSpeakerIds.includes(speaker)) {
+        at(
+          'constraints.requiredSpeakerIds',
+          `speaker '${speaker}' is required but not permitted to speak`,
+        );
+      }
     }
     if (constraints.requireEventProposal && !constraints.allowEventProposals) {
       at('constraints.requireEventProposal', 'a case cannot require what it does not permit');

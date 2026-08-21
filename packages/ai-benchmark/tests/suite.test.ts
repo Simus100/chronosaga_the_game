@@ -85,6 +85,42 @@ describe('the committed benchmark suite', () => {
     }
   });
 
+  it('E: a required speaker must also be a permitted one', () => {
+    const broken = structuredClone(suite);
+    broken.cases[0]!.constraints.requiredSpeakerIds = ['ghost_999'];
+    const problems = validateSuite(broken);
+    expect(problems.some(problem => problem.field === 'constraints.requiredSpeakerIds')).toBe(true);
+  });
+
+  it('requires dialogue only where the task is the dialogue', () => {
+    // Permission is broad, obligation is narrow. A memory-suggestion case does
+    // not need anybody to speak, and requiring it would penalise compliance.
+    const requiring = suite.cases.filter(entry => (entry.constraints.requiredSpeakerIds ?? []).length > 0);
+    const tasks = new Set(requiring.map(entry => entry.task));
+
+    expect(tasks).toEqual(new Set(['single_npc_dialogue', 'two_character_conflict']));
+    for (const entry of requiring) {
+      for (const speaker of entry.constraints.requiredSpeakerIds!) {
+        expect(entry.constraints.knownSpeakerIds, entry.id).toContain(speaker);
+      }
+    }
+
+    // Everything else permits speech without demanding it.
+    for (const entry of suite.cases) {
+      if (tasks.has(entry.task)) continue;
+      expect(entry.constraints.requiredSpeakerIds ?? [], entry.id).toHaveLength(0);
+    }
+  });
+
+  it('F: a case with a silent non-required character is not penalised', () => {
+    // ai_case_052 is a memory_suggestion case: one character present, permitted
+    // to speak, required to do nothing.
+    const entry = suite.cases.find(candidate => candidate.id === 'ai_case_052');
+    if (!entry) return;
+    expect(entry.constraints.requiredSpeakerIds ?? []).toHaveLength(0);
+    expect(entry.constraints.knownSpeakerIds.length).toBeGreaterThan(0);
+  });
+
   it('rejects a suite whose speakers are not in the scene', () => {
     const broken = structuredClone(suite);
     broken.cases[0]!.constraints.knownSpeakerIds = ['ghost_999'];

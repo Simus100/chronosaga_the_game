@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attemptHistoryProblems,
   buildComparison,
+  comparableEvidenceProblems,
   inputParityProblems,
   judgementProblems,
   suiteBindingProblems,
@@ -495,6 +496,72 @@ describe('a retry must follow a rejection', () => {
     // totals must never be computed from a history the policy forbids.
     const run = withHistory([[1, true], [2, true]], [[1, true]]);
     expect(() => buildComparison(suite, run)).toThrow();
+  });
+});
+
+describe('a comparison needs something to compare', () => {
+  it('A: a run with no generations at all is refused', () => {
+    // An interrupted or half-copied evidence directory looks exactly like this,
+    // and every other check passes it by vacuous truth.
+    const run = fairRun();
+    run.generations = [];
+
+    expect(comparableEvidenceProblems(run, ['lite', 'standard'])).toHaveLength(1);
+    expect(() => buildComparison(suite, run)).toThrow(/no comparable evidence/);
+  });
+
+  it('B: Lite rows only, comparing Lite and Standard, is refused', () => {
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => generation.profile === 'lite');
+
+    const problems = comparableEvidenceProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('no generations for standard'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow(/no comparable evidence/);
+  });
+
+  it('C: Standard rows only is refused symmetrically', () => {
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => generation.profile === 'standard');
+
+    const problems = comparableEvidenceProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('no generations for lite'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('D: at least one case answered by both passes this gate', () => {
+    expect(comparableEvidenceProblems(fairRun(), ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('refuses rows that share no case between the profiles', () => {
+    // Both profiles present, nothing in common: still nothing to set side by
+    // side. Coverage would catch it too, but this gate is about evidence
+    // existing at all.
+    const run = fairRun();
+    run.generations = [
+      run.generations.find(g => g.profile === 'lite' && g.caseId === caseIds[0])!,
+      run.generations.find(g => g.profile === 'standard' && g.caseId === caseIds[1])!,
+    ];
+    const problems = comparableEvidenceProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('no case answered by all of'))).toBe(true);
+  });
+
+  it('E: an empty run reaches no caseCount, summary or latency aggregate', () => {
+    const run = fairRun();
+    run.generations = [];
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('F: the message says plainly there is nothing to compare', () => {
+    const run = fairRun();
+    run.generations = [];
+    let message = '';
+    try {
+      buildComparison(suite, run);
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toMatch(/no comparable evidence/);
+    expect(message).toMatch(/no generations at all/);
   });
 });
 

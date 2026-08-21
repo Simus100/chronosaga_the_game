@@ -118,6 +118,12 @@ pub struct BenchmarkChange {
 pub struct BenchmarkConstraints {
     pub language: String,
     pub known_speaker_ids: Vec<String>,
+    /// Speakers the task actually needs to hear from.
+    ///
+    /// A subset of `known_speaker_ids`. Permission to speak is not an obligation
+    /// to speak, and only these produce a deterministic failure when silent.
+    #[serde(default)]
+    pub required_speaker_ids: Vec<String>,
     pub allowed_tone_tags: Vec<String>,
     pub max_narration_chars: usize,
     pub structured_output: bool,
@@ -224,10 +230,26 @@ fn case_subject_ids(case: &BenchmarkCase) -> Vec<String> {
 /// comparison worthless.
 pub fn system_prompt(case: &BenchmarkCase) -> String {
     let tags = case.constraints.allowed_tone_tags.join(", ");
+    // Permission and obligation are said separately here too: listing a
+    // character as permitted never implied the model had to give them a line.
     let speakers = if case.constraints.known_speaker_ids.is_empty() {
         "nessuno: non produrre dialogo".to_string()
+    } else if case.constraints.required_speaker_ids.is_empty() {
+        format!(
+            "{} (possono parlare; nessuno e' obbligato)",
+            case.constraints.known_speaker_ids.join(", ")
+        )
+    } else if case.constraints.required_speaker_ids == case.constraints.known_speaker_ids {
+        format!(
+            "{} — DEVONO parlare tutti",
+            case.constraints.known_speaker_ids.join(", ")
+        )
     } else {
-        case.constraints.known_speaker_ids.join(", ")
+        format!(
+            "{} (possono parlare); DEVONO parlare: {}",
+            case.constraints.known_speaker_ids.join(", "),
+            case.constraints.required_speaker_ids.join(", ")
+        )
     };
     // The model is told the exact permitted item shape. Asking for "an object"
     // and then rejecting whatever arrives would measure the prompt, not the
@@ -709,6 +731,12 @@ pub struct GenerationRecord {
     pub latency_ms: u64,
     pub tokens_generated: Option<u64>,
     pub tokens_per_second: Option<f64>,
+    /// The model the runtime said answered, when it says.
+    ///
+    /// Kept rather than discarded: the pre-flight check proves the right model
+    /// was loaded before the run, and this records what each individual response
+    /// claimed, so a swap mid-run would still leave a trace in the evidence.
+    pub served_model: Option<String>,
     pub raw_output_path: String,
     /// Deterministic observation of the bytes at `raw_output_path`.
     pub raw_format: RawFormat,
@@ -802,6 +830,7 @@ pub fn record_generation(
         latency_ms: outcome.duration_ms,
         tokens_generated: outcome.completion_tokens,
         tokens_per_second: outcome.tokens_per_second,
+        served_model: outcome.model.clone(),
         raw_output_path: raw_output_path(&case.id, profile, attempt),
         // Derived from the same string that is about to be written to disk, so
         // the observation and the file can never describe different bytes.
@@ -1102,6 +1131,42 @@ impl Drop for BenchmarkRuntimeGuard {
             eprintln!("benchmark cleanup failed after retry: {error}");
         }
     }
+}
+
+/// Whether the endpoint that answered is serving the model we selected.
+///
+/// Readiness proves a server is listening on the port; it does not prove *which*
+/// server. If a `llama-server` from an earlier session is still holding 8081,
+/// `/health` answers, the manager reaches Ready, and the benchmark would record
+/// its own selected artifact identity over generations another model produced —
+/// the one failure mode that makes every number in the run a lie about a
+/// specific file.
+///
+/// The alias comes from the launch contract, which comes from the verified
+/// model, so agreement here closes the chain:
+///
+/// ```text
+/// recorded artifact identity == verified selected model == actual serving model
+/// ```
+pub fn serving_identity_verdict(expected_alias: &str, served: &[String]) -> Result<(), String> {
+    if served.iter().any(|alias| alias == expected_alias) {
+        return Ok(());
+    }
+    if served.is_empty() {
+        return Err(format!(
+            "the endpoint is ready but serves no model at all, so nothing can be attributed \
+             to '{expected_alias}'"
+        ));
+    }
+    Err(format!(
+        "the endpoint is serving {} but the benchmark selected '{expected_alias}'; refusing to \
+         record generations under an identity that did not produce them",
+        served
+            .iter()
+            .map(|alias| format!("'{alias}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// Resolve the requested benchmark profile against the locked profile ids.
@@ -2321,6 +2386,50 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_names_required_speakers_and_only_those() {
+        // G: if a speaker must appear, the prompt says so. If nobody must, it
+        // says that too, so a silent bystander is never an implied fault.
+        let suite = load_suite().unwrap();
+
+        let requiring = suite
+            .cases
+            .iter()
+            .find(|case| !case.constraints.required_speaker_ids.is_empty())
+            .expect("dialogue cases require their speakers");
+        let prompt = system_prompt(requiring);
+        assert!(prompt.contains("DEVONO parlare"), "{prompt}");
+        for speaker in &requiring.constraints.required_speaker_ids {
+            assert!(prompt.contains(speaker.as_str()), "{prompt}");
+        }
+
+        let permissive = suite
+            .cases
+            .iter()
+            .find(|case| {
+                !case.constraints.known_speaker_ids.is_empty()
+                    && case.constraints.required_speaker_ids.is_empty()
+            })
+            .expect("some case permits speech without demanding it");
+        let prompt = system_prompt(permissive);
+        assert!(prompt.contains("nessuno e' obbligato"), "{prompt}");
+        assert!(!prompt.contains("DEVONO parlare"), "{prompt}");
+    }
+
+    #[test]
+    fn every_required_speaker_is_also_permitted() {
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            for speaker in &case.constraints.required_speaker_ids {
+                assert!(
+                    case.constraints.known_speaker_ids.contains(speaker),
+                    "{}: '{speaker}' is required but not permitted",
+                    case.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_required_proposal_case_is_told_to_produce_one() {
         // D and E: the instruction says "devi", and the worked example shows a
         // populated array rather than contradicting the sentence above it.
@@ -2408,6 +2517,113 @@ mod tests {
     // ---------------------------------------------------------------------
     // Explicit profile selection
     // ---------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // Serving identity
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn the_selected_model_serving_is_confirmed() {
+        serving_identity_verdict("lite", &["lite".to_string()]).expect("lite selected, lite served");
+        serving_identity_verdict("standard", &["standard".to_string()])
+            .expect("standard selected, standard served");
+    }
+
+    #[test]
+    fn a_different_model_answering_is_refused() {
+        // The incumbent-process case: something is ready on the port and it is
+        // not what we started.
+        let error = serving_identity_verdict("lite", &["standard".to_string()])
+            .expect_err("standard answered a lite benchmark");
+        assert!(error.contains("serving 'standard'"), "{error}");
+        assert!(error.contains("selected 'lite'"), "{error}");
+        assert!(
+            error.contains("did not produce them"),
+            "the refusal must say what is at stake: {error}"
+        );
+
+        let reverse = serving_identity_verdict("standard", &["lite".to_string()])
+            .expect_err("lite answered a standard benchmark");
+        assert!(reverse.contains("serving 'lite'"), "{reverse}");
+    }
+
+    #[test]
+    fn a_healthy_endpoint_with_no_model_is_refused() {
+        // Router mode answers /health perfectly well and holds nothing.
+        let error = serving_identity_verdict("lite", &[]).expect_err("nothing is loaded");
+        assert!(error.contains("serves no model at all"), "{error}");
+        assert!(error.contains("lite"), "{error}");
+    }
+
+    #[test]
+    fn an_endpoint_holding_several_models_must_include_the_selected_one() {
+        serving_identity_verdict("lite", &["standard".to_string(), "lite".to_string()])
+            .expect("the selected model is among them");
+
+        let error = serving_identity_verdict(
+            "lite",
+            &["standard".to_string(), "something_else".to_string()],
+        )
+        .expect_err("ours is not there");
+        assert!(error.contains("'standard', 'something_else'"), "{error}");
+    }
+
+    #[test]
+    fn the_identity_gate_precedes_the_first_prompt() {
+        // Order matters more than the check: confirming after generating would
+        // leave rows on disk attributed to the wrong artifact.
+        //
+        // Scoped to the smoke function's own body, because searching the whole
+        // file would find these very search strings and compare a test against
+        // itself.
+        let source = include_str!("benchmark.rs");
+
+        // Anchored on code that exists only in the runner, and searched from the
+        // end: the strings this test looks for also appear in this test, and
+        // finding those instead would compare the test against itself.
+        let gate = source
+            .rfind("block_on(provider.loaded_models())")
+            .expect("the runner asks the endpoint what it holds");
+        let first_request = source
+            .rfind("block_on(provider.generate(")
+            .expect("the runner generates");
+        let first_persist = source
+            .rfind("persist(&directory, &record, &outcome.raw)")
+            .expect("the runner persists");
+
+        assert!(
+            gate < first_request,
+            "identity must be confirmed before the first prompt is sent"
+        );
+        assert!(gate < first_persist, "and before any row is written");
+    }
+
+    #[test]
+    fn a_record_keeps_the_model_the_runtime_reported() {
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 1,
+            raw: "{}".to_string(),
+            narration: Some("ok".to_string()),
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: Some("lite".to_string()),
+        };
+        let record = record_generation(
+            "run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &outcome,
+        );
+        assert_eq!(record.served_model.as_deref(), Some("lite"));
+        assert_eq!(record.artifact.profile_id, "lite");
+    }
 
     #[test]
     fn a_locked_profile_is_accepted() {
@@ -3009,6 +3225,14 @@ mod tests {
         };
         let provider = crate::inference::LocalModelProvider::new(spec.base_url(), api_key)
             .expect("the loopback provider must build");
+
+        // Attribution gate. Ready means "something is listening"; this asks the
+        // endpoint which model it actually holds, before a single prompt is sent
+        // and before any evidence is written.
+        let served = tauri::async_runtime::block_on(provider.loaded_models())
+            .expect("a ready endpoint must answer /v1/models");
+        serving_identity_verdict(&profile, &served).unwrap_or_else(|error| panic!("{error}"));
+        eprintln!("serving identity confirmed: {profile}");
 
         let mut accepted = 0usize;
         let mut attempted = 0usize;

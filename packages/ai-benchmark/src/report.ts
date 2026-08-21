@@ -264,6 +264,52 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
 }
 
 /**
+ * Whether a run contains anything a comparison could be built from.
+ *
+ * A structurally valid run with metadata and no rows passes every other check by
+ * vacuous truth: both compared sets are empty, so nothing is missing, nothing
+ * disagrees, and the report renders `caseCount: 0` with empty summaries. That is
+ * not evidence of anything, and an interrupted or half-copied evidence directory
+ * produces exactly that shape.
+ *
+ * Checked here rather than left to the Rust verdict: this is the boundary where
+ * external JSON enters, and a boundary that trusts its input is not a boundary.
+ * Full-suite coverage remains a separate question for official runs.
+ */
+export function comparableEvidenceProblems(
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+): string[] {
+  if (run.generations.length === 0) {
+    return [`run ${run.metadata.runId} contains no generations at all`];
+  }
+
+  const problems: string[] = [];
+  for (const profile of profiles) {
+    if (!run.generations.some(generation => generation.profile === profile)) {
+      problems.push(`run ${run.metadata.runId} contains no generations for ${profile}`);
+    }
+  }
+  if (problems.length > 0) return problems;
+
+  // At least one case both profiles actually answered, or there is nothing to
+  // set side by side however many rows exist.
+  const shared = [...new Set(run.generations.map(generation => generation.caseId))].filter(caseId =>
+    profiles.every(profile =>
+      run.generations.some(
+        generation => generation.caseId === caseId && generation.profile === profile,
+      ),
+    ),
+  );
+  if (shared.length === 0 && profiles.length > 1) {
+    problems.push(
+      `run ${run.metadata.runId} has no case answered by all of ${profiles.join(', ')}`,
+    );
+  }
+  return problems;
+}
+
+/**
  * Every well-formedness problem in the judgement supplied for a run.
  *
  * Delegates to the validators that already own these rules rather than
@@ -605,6 +651,12 @@ export function buildComparison(
       `refusing to report on a structurally invalid run: ${shown.join('; ')}` +
         (structural.length > shown.length ? `; and ${structural.length - shown.length} more` : ''),
     );
+  }
+
+  // Something to compare, before asking whether the comparison is fair.
+  const evidence = comparableEvidenceProblems(run, profiles);
+  if (evidence.length > 0) {
+    throw new Error(`no comparable evidence: ${evidence.join('; ')}`);
   }
 
   // Before anything is evaluated, summarised or aggregated: the suite in hand
