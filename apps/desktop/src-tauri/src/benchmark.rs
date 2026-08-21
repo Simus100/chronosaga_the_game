@@ -716,6 +716,98 @@ pub fn persist(
     writeln!(file, "{line}").map_err(|error| format!("unable to append to {}: {error}", rows.display()))
 }
 
+/// Owns a started sidecar for the duration of a benchmark, and ends it.
+///
+/// The previous shape relied on reaching the bottom of the function: a request
+/// that timed out, lost its connection or came back as an HTTP error panicked
+/// through the two shutdown calls and left `llama-server` holding port 8081.
+/// A guard cannot be skipped by an early return or a panic, which is exactly the
+/// property that was missing.
+///
+/// `Drop` never panics — a cleanup failure is reported on stderr rather than
+/// unwinding, because panicking while already unwinding aborts the process and
+/// destroys the diagnosis of whatever actually went wrong.
+struct BenchmarkRuntimeGuard {
+    manager: std::sync::Arc<crate::local_ai_runtime::LocalAiRuntimeManager>,
+    watcher: Option<crate::runtime_watcher::RuntimeWatcher>,
+    stopped: bool,
+}
+
+impl BenchmarkRuntimeGuard {
+    /// Start the runtime and take ownership of stopping it.
+    fn start(
+        manager: std::sync::Arc<crate::local_ai_runtime::LocalAiRuntimeManager>,
+    ) -> Result<Self, String> {
+        let watcher = crate::runtime_watcher::RuntimeWatcher::spawn(manager.clone())?;
+        let guard = Self {
+            manager,
+            watcher: Some(watcher),
+            stopped: false,
+        };
+        if let Err(error) = guard.manager.start() {
+            // The guard already exists, so this failure is cleaned up by Drop
+            // rather than leaking a half-started runtime.
+            return Err(error);
+        }
+        Ok(guard_started(guard))
+    }
+
+    fn manager(&self) -> &crate::local_ai_runtime::LocalAiRuntimeManager {
+        &self.manager
+    }
+
+    /// Wait for the model to be serving, or give up.
+    fn wait_until_ready(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if self.manager.snapshot().state == crate::local_ai_runtime::RuntimePhase::Ready {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        false
+    }
+
+    /// Stop the watcher and reap the child. Idempotent.
+    ///
+    /// Called explicitly on the success path so failures are visible, and again
+    /// by `Drop`, where a second call is a no-op.
+    fn shutdown(&mut self) -> Result<(), String> {
+        if self.stopped {
+            return Ok(());
+        }
+        self.stopped = true;
+
+        // Order matters: silence the observer, then reap the child.
+        if let Some(mut watcher) = self.watcher.take() {
+            watcher.stop();
+        }
+        let snapshot = self.manager.stop();
+        if let Some(pid) = snapshot.pid {
+            return Err(format!(
+                "benchmark runtime process {pid} survived shutdown: {}",
+                snapshot.last_error.unwrap_or_else(|| "no detail".to_string())
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Marker for readability at the construction site.
+fn guard_started(guard: BenchmarkRuntimeGuard) -> BenchmarkRuntimeGuard {
+    guard
+}
+
+impl Drop for BenchmarkRuntimeGuard {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            // Never panic here: this may run while already unwinding, and an
+            // abort would bury the original failure.
+            eprintln!("benchmark cleanup failed: {error}");
+        }
+    }
+}
+
 /// Which cases a smoke pass runs.
 ///
 /// Named ids when asked for, otherwise the first `count`. P0.5-A needs to reach
@@ -1236,6 +1328,168 @@ mod tests {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Sidecar lifecycle
+    // ---------------------------------------------------------------------
+
+    /// A process that can be started, observed and killed, without an OS.
+    struct FakeProcess {
+        alive: std::sync::Mutex<Option<u32>>,
+        kills: std::sync::atomic::AtomicUsize,
+        path: PathBuf,
+    }
+
+    impl FakeProcess {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                alive: std::sync::Mutex::new(None),
+                kills: std::sync::atomic::AtomicUsize::new(0),
+                path: PathBuf::from("llama-server.exe"),
+            })
+        }
+        fn is_alive(&self) -> bool {
+            self.alive.lock().unwrap().is_some()
+        }
+        fn kill_count(&self) -> usize {
+            self.kills.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    struct SharedProcess(std::sync::Arc<FakeProcess>);
+
+    impl crate::local_ai_runtime::ProcessBackend for SharedProcess {
+        fn binary_present(&self) -> bool {
+            true
+        }
+        fn binary_path(&self) -> &std::path::Path {
+            &self.0.path
+        }
+        fn spawn(&self, _spec: &crate::local_ai_runtime::LaunchSpec) -> Result<u32, String> {
+            *self.0.alive.lock().unwrap() = Some(4321);
+            Ok(4321)
+        }
+        fn observe(&self, _pid: u32) -> crate::local_ai_runtime::ProcessObservation {
+            if self.0.is_alive() {
+                crate::local_ai_runtime::ProcessObservation::Running
+            } else {
+                crate::local_ai_runtime::ProcessObservation::Exited
+            }
+        }
+        fn kill(&self, _pid: u32) -> Result<(), String> {
+            self.0.kills.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.0.alive.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    struct AlwaysReady;
+    impl crate::local_ai_runtime::HealthProbe for AlwaysReady {
+        fn poll(&self, _endpoint: &str) -> crate::local_ai_runtime::HealthOutcome {
+            crate::local_ai_runtime::HealthOutcome::Ready
+        }
+    }
+
+    struct FrozenClock;
+    impl crate::local_ai_runtime::Clock for FrozenClock {
+        fn now_ms(&self) -> u64 {
+            0
+        }
+    }
+
+    fn fake_manager(
+        process: std::sync::Arc<FakeProcess>,
+    ) -> std::sync::Arc<crate::local_ai_runtime::LocalAiRuntimeManager> {
+        std::sync::Arc::new(crate::local_ai_runtime::LocalAiRuntimeManager::new(
+            crate::local_ai_runtime::RuntimeConfig::loopback(),
+            Box::new(SharedProcess(process)),
+            Box::new(AlwaysReady),
+            Box::new(FrozenClock),
+        ))
+    }
+
+    #[test]
+    fn the_guard_reaps_the_sidecar_on_the_normal_path() {
+        let process = FakeProcess::new();
+        {
+            let mut guard = BenchmarkRuntimeGuard::start(fake_manager(process.clone()))
+                .expect("must start");
+            assert!(process.is_alive(), "the sidecar is running during the benchmark");
+            guard.shutdown().expect("clean shutdown");
+        }
+        assert!(!process.is_alive(), "zero orphan after a normal run");
+        assert_eq!(process.kill_count(), 1);
+    }
+
+    #[test]
+    fn the_guard_reaps_the_sidecar_when_the_body_returns_an_error() {
+        // The shape that used to leak: work after start fails, and the two
+        // shutdown calls at the bottom of the function are never reached.
+        let process = FakeProcess::new();
+
+        let outcome: Result<(), String> = (|| {
+            let _guard =
+                BenchmarkRuntimeGuard::start(fake_manager(process.clone())).map_err(|e| e)?;
+            assert!(process.is_alive());
+            Err("the inference request failed".to_string())
+        })();
+
+        assert!(outcome.is_err());
+        assert!(!process.is_alive(), "an early return must still reap the sidecar");
+        assert_eq!(process.kill_count(), 1);
+    }
+
+    #[test]
+    fn the_guard_reaps_the_sidecar_when_the_body_panics() {
+        // `provider.generate(...).expect(...)` is a panic, not an Err, so the
+        // guard has to survive unwinding as well.
+        let process = FakeProcess::new();
+        let manager = fake_manager(process.clone());
+        let during = process.clone();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = BenchmarkRuntimeGuard::start(manager).expect("must start");
+            assert!(during.is_alive());
+            panic!("the local model did not answer within 120s");
+        }));
+
+        assert!(result.is_err(), "the failure must still be reported");
+        assert!(!process.is_alive(), "a panic must still reap the sidecar");
+        assert_eq!(process.kill_count(), 1);
+    }
+
+    #[test]
+    fn shutting_the_guard_down_twice_is_harmless() {
+        // Explicit shutdown on the success path, then Drop: the second must not
+        // kill anything again, and must not fail.
+        let process = FakeProcess::new();
+        {
+            let mut guard = BenchmarkRuntimeGuard::start(fake_manager(process.clone())).unwrap();
+            guard.shutdown().expect("first");
+            guard.shutdown().expect("second is a no-op");
+            assert_eq!(process.kill_count(), 1);
+        }
+        assert_eq!(process.kill_count(), 1, "Drop after an explicit stop changes nothing");
+        assert!(!process.is_alive());
+    }
+
+    #[test]
+    fn the_guard_releases_process_ownership_after_a_failure() {
+        // Ownership, not just liveness: a manager that still tracks a pid would
+        // refuse to start the next profile.
+        let process = FakeProcess::new();
+        let manager = fake_manager(process.clone());
+
+        {
+            let _guard = BenchmarkRuntimeGuard::start(manager.clone()).unwrap();
+            // ... something fails here ...
+        }
+
+        let snapshot = manager.snapshot();
+        assert!(snapshot.pid.is_none(), "the pid must be released");
+        assert!(!snapshot.inference_ready);
+        assert!(!process.is_alive());
+    }
+
     #[test]
     fn the_committed_suite_parses_with_the_runner_types() {
         // The TypeScript package and this runner read the same bytes; if the two
@@ -1588,6 +1842,29 @@ mod tests {
             return;
         };
 
+        // Verify the bytes that are about to run, before anything is started.
+        // Recording the lock's expected digest would describe a runtime that may
+        // not be the one on this disk.
+        let runtime_lock = crate::runtime_e2e::checkout_runtime_lock()
+            .expect("the runtime resolved, so its lock must parse");
+        let runtime_directory = crate::runtime_e2e::resolved_runtime_directory()
+            .expect("the runtime resolved, so it has a directory");
+        let verified_runtime =
+            crate::runtime_lock::verify_runtime_distribution(&runtime_lock, &runtime_directory)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "refusing to benchmark an unverified runtime: {} (after {} files)",
+                        error.message, error.checked
+                    )
+                });
+        eprintln!(
+            "runtime verified: {} files, {} ms, {} @ {}",
+            verified_runtime.files_verified(),
+            verified_runtime.elapsed_ms(),
+            verified_runtime.release_tag(),
+            &verified_runtime.executable_sha256()[..16]
+        );
+
         let run_id = format!(
             "smoke_{}_{}",
             profile,
@@ -1605,19 +1882,17 @@ mod tests {
         let artifact = artifact_identity(&verified);
         let context = benchmark_context(verified.model().context_target());
 
-        // Runtime provenance comes from the authoritative lock, never from a
-        // literal in this file. A benchmark that cannot say which llama-server
-        // produced its numbers is not evidence about a runtime.
-        let runtime_lock = crate::runtime_e2e::checkout_runtime_lock()
-            .expect("the runtime resolved, so its lock must parse");
+        // Provenance comes from the verification that just happened, not from
+        // the lock. The lock says what the runtime should be; only this says
+        // what it was.
         let metadata = new_run_metadata(
             &run_id,
             &started_at(),
             &suite,
             &git_commit().unwrap_or_default(),
             git_dirty(),
-            &runtime_lock.release_tag,
-            Some(runtime_lock.executable_sha256.clone()),
+            verified_runtime.release_tag(),
+            Some(verified_runtime.executable_sha256().to_string()),
             host_facts(),
         );
         persist_metadata(&directory, &metadata).expect("metadata must persist");
@@ -1626,22 +1901,30 @@ mod tests {
             eprintln!("note: not comparable evidence - {reason}");
         }
 
-        let mut watcher =
-            crate::runtime_watcher::RuntimeWatcher::spawn(manager.clone()).expect("watcher");
-        manager.start().expect("the runtime must start");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
-        while std::time::Instant::now() < deadline
-            && manager.snapshot().state != crate::local_ai_runtime::RuntimePhase::Ready
-        {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
+        // From here on the sidecar is owned by a guard: every path out of this
+        // function, including a panic inside a request, stops and reaps it.
+        let mut guard = BenchmarkRuntimeGuard::start(manager).expect("the runtime must start");
+        assert!(
+            guard.wait_until_ready(std::time::Duration::from_secs(180)),
+            "the runtime never became ready"
+        );
 
-        let spec = manager.launch_spec();
-        let provider = crate::inference::LocalModelProvider::new(
-            spec.base_url(),
-            spec.api_key().to_string(),
-        )
-        .expect("the loopback provider must build");
+        let spec = guard.manager().launch_spec();
+        // Development-only drill: a deliberately wrong key makes the runtime
+        // answer 401, so `generate` returns Err and the `.expect` below panics
+        // exactly as a timeout or a lost connection would. It exercises the real
+        // request path failing rather than a synthetic panic, and proves the
+        // guard reaps the sidecar when it does.
+        let api_key = if env::var("CHRONOSAGA_BENCHMARK_FORCE_REQUEST_FAILURE").ok().as_deref()
+            == Some("1")
+        {
+            eprintln!("drill: forcing the request path to fail after the runtime is up");
+            "deliberately-wrong-key".to_string()
+        } else {
+            spec.api_key().to_string()
+        };
+        let provider = crate::inference::LocalModelProvider::new(spec.base_url(), api_key)
+            .expect("the loopback provider must build");
 
         let mut accepted = 0usize;
         let mut attempted = 0usize;
@@ -1692,9 +1975,9 @@ mod tests {
             );
         }
 
-        watcher.stop();
-        let stopped = manager.stop();
-        assert!(stopped.pid.is_none(), "the smoke run must leave no process behind");
+        // Explicit shutdown so a cleanup failure is a visible error rather than
+        // a line on stderr from Drop. Drop still runs, and is a no-op.
+        guard.shutdown().expect("the smoke run must leave no process behind");
 
         eprintln!("smoke run {run_id}: {accepted}/{attempted} accepted, evidence in {}", directory.display());
 

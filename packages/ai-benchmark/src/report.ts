@@ -246,6 +246,33 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
 }
 
 /**
+ * Whether the supplied suite is the suite the run was executed against.
+ *
+ * `taskMismatches` compares ids and task names, which stay stable across an
+ * edit that changes what a case actually says. A stored run evaluated against a
+ * revised `cases.v1.json` would then be scored on constraints and expected facts
+ * it never saw, while the report still advertised the recorded suite version.
+ *
+ * The version and the schema are what the run wrote down; they have to match.
+ */
+export function suiteBindingProblems(suite: BenchmarkSuite, run: BenchmarkRun): string[] {
+  const problems: string[] = [];
+  if (suite.suiteVersion !== run.metadata.suiteVersion) {
+    problems.push(
+      `the run recorded suite version '${run.metadata.suiteVersion}' but the supplied suite is ` +
+        `'${suite.suiteVersion}'`,
+    );
+  }
+  if (suite.schemaVersion !== run.metadata.suiteSchemaVersion) {
+    problems.push(
+      `the run recorded suite schema ${run.metadata.suiteSchemaVersion} but the supplied suite is ` +
+        `schema ${suite.schemaVersion}`,
+    );
+  }
+  return problems;
+}
+
+/**
  * Whether a score sheet or review actually belongs to the run being reported.
  *
  * Both structures already carry `runId` and `suiteVersion`; this makes those
@@ -417,6 +444,17 @@ export function buildComparison(
   sheet: ScoreSheet | null = null,
   review: HumanReview | null = null,
 ): ComparisonReport {
+  // Before anything is evaluated, summarised or aggregated: the suite in hand
+  // must be the suite that was run. Everything below reads case constraints and
+  // expected facts, and reading the wrong ones silently produces a report that
+  // looks right.
+  const binding = suiteBindingProblems(suite, run);
+  if (binding.length > 0) {
+    throw new Error(
+      `refusing to evaluate a run against a different suite: ${binding.join('; ')}`,
+    );
+  }
+
   // Judgement from another run must never leak into this one. Generation ids are
   // stable and human-typeable, so an id alone is not proof of belonging: the run
   // and the suite version have to agree as well.

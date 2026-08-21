@@ -82,6 +82,14 @@ fn manager() -> Option<Arc<LocalAiRuntimeManager>> {
 ///
 /// Generic over the profile id: Lite and Standard travel the identical path,
 /// which is the point of the dual-model architecture.
+/// The directory the runtime actually resolved to.
+///
+/// Shared with [`crate::benchmark`] so integrity is checked against the bytes
+/// that will be launched, not against a path derived a second time.
+pub(crate) fn resolved_runtime_directory() -> Option<PathBuf> {
+    resolve_from_lock().map(|(directory, _)| directory)
+}
+
 /// Shared with [`crate::benchmark`], which needs the same verified identity it
 /// launches with rather than a second resolution that could disagree.
 pub(crate) fn verified_model_for_profile(

@@ -54,10 +54,19 @@ D:\Chronosaga\benchmarks\p0.5\<runId>\
 ```
 
 `metadata.json` is written before the first generation, so a crashed run still
-says what it was. Runtime provenance — release tag and the expected
-`llama-server.exe` digest — is read from `config/local-ai-runtime.lock.json`
-through the same parser the launcher uses, never written down again in the
-runner.
+says what it was. Runtime provenance is **measured, not copied**: before the
+sidecar starts, all 51 files of the locked distribution are read and matched
+against `config/local-ai-runtime.lock.json` for presence, exact size and exact
+SHA-256, streaming. Only that verification can produce a
+`VerifiedRuntimeIdentity`, and only that type feeds the run metadata — the lock
+says what the runtime should be, and nothing else can claim it was.
+
+Verifying the whole distribution rather than the executable matters:
+`llama-server.exe` is a shim, and the runtime that answers lives in the adjacent
+DLLs. A swapped `ggml-cpu-*.dll` would otherwise have produced the measurements
+while the evidence named the locked release. The benchmark refuses to start if
+verification fails; the lock remains the only source of expected hashes, shared
+with `pnpm verify:local-ai-runtime`.
 
 `official_run_verdict` decides whether a run may be published as comparable
 evidence. It requires a clean checkout, a full 40-character commit, a release
@@ -142,6 +151,21 @@ would claim two different questions were the same one.
 
 `tests/fixtures/rust-run.json` is produced by the Rust serializer and consumed by
 the TypeScript `validateRun`. Neither side can change shape alone.
+
+## A run is bound to its suite, and its sidecar to its guard
+
+`buildComparison` refuses before evaluating anything if `suite.suiteVersion` or
+`suite.schemaVersion` disagrees with what the run recorded. Case ids and task
+names survive a revision that changes constraints and expected facts underneath
+them, so without this a stored run could be quietly re-scored against rules it
+never saw while the report still advertised the recorded version.
+
+The sidecar is owned by an RAII guard for the whole benchmark. A request that
+times out, loses its connection or returns an HTTP error panics through any
+shutdown code written at the bottom of a function; a guard cannot be skipped by
+an early return or a panic. `Drop` never panics — a cleanup failure is reported
+on stderr rather than unwinding — and shutdown is idempotent, so the explicit
+success-path stop and the later `Drop` coexist.
 
 ## Judgement is bound to the run it judges
 

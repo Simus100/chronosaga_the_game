@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildComparison, inputParityProblems, taskMismatches } from '../src/report.js';
+import {
+  buildComparison,
+  inputParityProblems,
+  suiteBindingProblems,
+  taskMismatches,
+} from '../src/report.js';
 import { asHardFails, validateHumanReview, type HumanReview } from '../src/human-review.js';
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
@@ -294,6 +299,59 @@ describe('attempt histories must be coherent', () => {
     // profile to become wrong.
     const problems = inputParityProblems(historyRun([2], []), ['lite']);
     expect(problems.some(problem => problem.includes('no attempt 1 for lite'))).toBe(true);
+  });
+});
+
+describe('a run is bound to the suite it was executed against', () => {
+  it('A: the recorded version and schema matching passes', () => {
+    expect(suiteBindingProblems(suite, fairRun())).toEqual([]);
+    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+  });
+
+  it('B: the same cases under a different suite version is refused', () => {
+    // The dangerous edit: ids and task names survive a revision, so
+    // taskMismatches sees nothing wrong while every constraint and expected
+    // fact underneath may have changed.
+    const revised = { ...suite, suiteVersion: 'p0.5-a.2' };
+    const problems = suiteBindingProblems(revised, fairRun());
+
+    expect(problems.some(problem => problem.includes("recorded suite version 'p0.5-a.1'"))).toBe(true);
+    expect(problems.some(problem => problem.includes("'p0.5-a.2'"))).toBe(true);
+    expect(() => buildComparison(revised, fairRun())).toThrow(/different suite/);
+  });
+
+  it('C: the same version under a different schema is refused', () => {
+    const migrated = { ...suite, schemaVersion: 2 as unknown as 1 };
+    const problems = suiteBindingProblems(migrated, fairRun());
+
+    expect(problems.some(problem => problem.includes('schema 1'))).toBe(true);
+    expect(problems.some(problem => problem.includes('schema 2'))).toBe(true);
+    expect(() => buildComparison(migrated, fairRun())).toThrow(/different suite/);
+  });
+
+  it('D: an old run cannot be silently evaluated with a newer suite', () => {
+    // Same case ids, same tasks, changed facts: exactly the situation where
+    // nothing else would notice.
+    const newer = structuredClone(suite);
+    newer.suiteVersion = 'p0.5-a.9';
+    newer.cases[0]!.expectedFacts = ['something the run never saw'];
+    newer.cases[0]!.constraints.maxNarrationChars = 9999;
+
+    expect(taskMismatches(newer, fairRun())).toEqual([]);
+    expect(() => buildComparison(newer, fairRun())).toThrow(/different suite/);
+  });
+
+  it('refuses before any evaluation happens, not after', () => {
+    // A mismatched suite must not reach the objective evaluator at all: a report
+    // built on the wrong constraints is worse than no report.
+    const revised = { ...suite, suiteVersion: 'p0.5-a.2' };
+    let message = '';
+    try {
+      buildComparison(revised, fairRun());
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toMatch(/refusing to evaluate a run against a different suite/);
   });
 });
 
