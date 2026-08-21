@@ -42,6 +42,15 @@ cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml \
 Without the variables it reports that it skipped and passes, so the ordinary
 suite never depends on a multi-GB artifact.
 
+`CHRONOSAGA_BENCHMARK_PROFILE` must name a locked profile — `lite` or
+`standard`, read from `KNOWN_PROFILE_IDS` rather than a list kept here. A typo
+like `standardd` fails immediately, names the value and says what is valid;
+before, it resolved to nothing, was reported as a skip, and produced a green
+command with no evidence at all. Ids are canonical and matched exactly, because a
+benchmark that silently normalises its inputs cannot be trusted to record what
+was asked. A *valid* profile whose payload is simply absent from this machine
+still skips, and says so in words that cannot be mistaken for a typo.
+
 `CHRONOSAGA_BENCHMARK_CASE_IDS` selects explicit cases, and **every requested id
 must resolve**. A typo used to be dropped silently, so a request naming only
 unknown ids produced zero cases, zero generations and a green command with no
@@ -155,11 +164,25 @@ validator refuses that combination.
 
 ## Fairness
 
-`buildComparison` refuses to build a report at all unless five things hold:
+`buildComparison` runs the authoritative `validateRun` first, before parity,
+evaluation or any aggregate. These runs arrive as external JSON and `validateRun`
+already owns every cross-field invariant — an accepted attempt 1 claiming
+`retryUsed`, an attempt 2 denying it, an accepted generation with a null output
+that would crash the evaluator outright. Re-stating those rules in the report
+would give the project two definitions of a valid run and, eventually, two
+different answers; the report simply refuses.
+
+Then it refuses to build a report at all unless five more things hold:
 
 1. both profiles saw every case;
 2. every case a profile ran starts at **attempt 1**, numbers its attempts
-   contiguously, and every attempt after the first **follows a rejection**. An
+   contiguously, stays within the **one-shot retry policy** — `MAX_RETRIES = 1`,
+   so at most two attempts, declared once in `result.ts` and consumed by both the
+   structural validator and the history check — and every attempt after the first
+   **follows a rejection**. A rejected second attempt is an exhausted retry, not
+   permission for a third: a case that needed three tries was not asked the same
+   question as one that needed two, and comparing them measures the retry budget
+   rather than the models. An
    acceptance ends the history: `accepted 1 -> attempt 2` reads as a retry and is
    not one, and counting both would skew latency, quality means and retry
    totals with a generation the policy never permitted. A retry only one profile

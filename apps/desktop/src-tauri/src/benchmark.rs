@@ -1104,6 +1104,49 @@ impl Drop for BenchmarkRuntimeGuard {
     }
 }
 
+/// Resolve the requested benchmark profile against the locked profile ids.
+///
+/// Two different situations that used to look identical from the outside:
+///
+/// * `standardd` is **operator error**. The id does not exist, nothing can ever
+///   resolve it, and the command must fail rather than report a skip.
+/// * `standard` is a real locked profile that may simply be absent from this
+///   machine. That skip is deliberate and stays.
+///
+/// Conflating them meant a typo produced a green benchmark command with no
+/// metadata, no generations and no evidence at all.
+///
+/// The known ids come from [`crate::model_lock::KNOWN_PROFILE_IDS`], the same
+/// list the resolver and the orchestrator use; this module does not keep its
+/// own. Ids are canonical and matched exactly: `Lite` and `lite ` are refused,
+/// because a benchmark that silently normalises its inputs is a benchmark whose
+/// records cannot be trusted to say what was asked.
+fn resolve_requested_profile(raw: Option<String>) -> Result<String, String> {
+    let Some(requested) = raw else {
+        // No override: the documented default.
+        return Ok(crate::model_lock::LITE_PROFILE_ID.to_string());
+    };
+
+    if requested.trim().is_empty() {
+        return Err(format!(
+            "CHRONOSAGA_BENCHMARK_PROFILE is set but empty; unset it to use the default \
+             '{}' profile, or name one of: {}",
+            crate::model_lock::LITE_PROFILE_ID,
+            crate::model_lock::KNOWN_PROFILE_IDS.join(", ")
+        ));
+    }
+
+    if crate::model_lock::KNOWN_PROFILE_IDS.contains(&requested.as_str()) {
+        return Ok(requested);
+    }
+
+    Err(format!(
+        "CHRONOSAGA_BENCHMARK_PROFILE names '{requested}', which is not a locked benchmark \
+         profile. Known profiles are: {}. Nothing was run.",
+        crate::model_lock::KNOWN_PROFILE_IDS.join(", ")
+    ))
+}
+
 /// Which cases a smoke pass runs.
 ///
 /// Named ids when asked for, otherwise the first `count`. P0.5-A needs to reach
@@ -2362,6 +2405,86 @@ mod tests {
     // Explicit case selection
     // ---------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------
+    // Explicit profile selection
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_locked_profile_is_accepted() {
+        assert_eq!(resolve_requested_profile(Some("lite".to_string())).unwrap(), "lite");
+        assert_eq!(
+            resolve_requested_profile(Some("standard".to_string())).unwrap(),
+            "standard"
+        );
+    }
+
+    #[test]
+    fn a_misspelled_profile_is_refused_and_named() {
+        // The defect: `standardd` resolved to None, was reported as a skip, and
+        // the command exited green with no evidence whatsoever.
+        let error = resolve_requested_profile(Some("standardd".to_string()))
+            .expect_err("a typo is not a profile");
+        assert!(error.contains("standardd"), "{error}");
+        assert!(error.contains("not a locked benchmark profile"), "{error}");
+        assert!(error.contains("lite, standard"), "the error must say what is valid: {error}");
+        assert!(error.contains("Nothing was run"), "{error}");
+    }
+
+    #[test]
+    fn an_empty_or_blank_profile_is_refused() {
+        for raw in ["", "   ", "\t"] {
+            let error = resolve_requested_profile(Some(raw.to_string()))
+                .expect_err("an empty value is not a selection");
+            assert!(error.contains("set but empty"), "{error}");
+        }
+    }
+
+    #[test]
+    fn profile_ids_are_canonical_and_matched_exactly() {
+        // Silently normalising would make the record disagree with the request.
+        for raw in ["Lite", "STANDARD", " lite", "lite "] {
+            assert!(
+                resolve_requested_profile(Some(raw.to_string())).is_err(),
+                "'{raw}' must be refused rather than normalised"
+            );
+        }
+    }
+
+    #[test]
+    fn no_override_selects_the_documented_default() {
+        assert_eq!(
+            resolve_requested_profile(None).unwrap(),
+            crate::model_lock::LITE_PROFILE_ID
+        );
+    }
+
+    #[test]
+    fn the_known_profiles_come_from_the_lock_not_from_here() {
+        // One list, shared with the resolver and the orchestrator. A second copy
+        // would drift the moment a third profile is locked.
+        for id in crate::model_lock::KNOWN_PROFILE_IDS {
+            assert_eq!(resolve_requested_profile(Some(id.to_string())).unwrap(), id);
+        }
+        assert_eq!(crate::model_lock::KNOWN_PROFILE_IDS.len(), 2);
+    }
+
+    #[test]
+    fn an_unknown_profile_is_distinguishable_from_an_absent_payload() {
+        // Both end the run, and they must not read the same. One is a mistake to
+        // fix; the other is a machine that does not have the model.
+        let typo = resolve_requested_profile(Some("standardd".to_string())).unwrap_err();
+        assert!(typo.contains("not a locked benchmark profile"));
+
+        // A real profile always resolves here; whether its payload exists is a
+        // question for the resolver, and the skip message says so.
+        assert!(resolve_requested_profile(Some("standard".to_string())).is_ok());
+        let runner = include_str!("benchmark.rs");
+        assert!(
+            runner.contains("is a locked profile but its payload is not present on this machine"),
+            "the skip message must not read like a typo"
+        );
+    }
+
     #[test]
     fn one_named_case_is_selected() {
         let suite = load_suite().unwrap();
@@ -2774,7 +2897,10 @@ mod tests {
             );
             return;
         }
-        let profile = env::var("CHRONOSAGA_BENCHMARK_PROFILE").unwrap_or_else(|_| "lite".to_string());
+        // Before the suite is loaded, before the runtime is verified and long
+        // before anything is spawned: a misspelled profile costs nothing.
+        let profile = resolve_requested_profile(env::var("CHRONOSAGA_BENCHMARK_PROFILE").ok())
+            .unwrap_or_else(|error| panic!("{error}"));
         let smoke_size: usize = env::var("CHRONOSAGA_BENCHMARK_CASES")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -2792,8 +2918,13 @@ mod tests {
             .map(|case| case.id.clone())
             .collect();
         assert!(!selected_ids.is_empty(), "nothing to run");
+        // The profile is known to be a real one by now, so an unresolvable
+        // manager means the payload is absent from *this machine* — a legitimate
+        // skip, and a different thing entirely from a typo.
         let Some(manager) = crate::runtime_e2e::manager_for_profile(&profile) else {
-            eprintln!("skipped: {profile} is not resolvable on this machine");
+            eprintln!(
+                "skipped: {profile} is a locked profile but its payload is not present on this machine"
+            );
             return;
         };
 

@@ -11,7 +11,7 @@ import { asHardFails, validateHumanReview, type HumanReview } from '../src/human
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 import type { ScoreSheet } from '../src/scoring.js';
-import { validateRun } from '../src/result.js';
+import { MAX_ATTEMPTS, MAX_RETRIES, validateRun } from '../src/result.js';
 
 const suite = loadSuite();
 const SHA = {
@@ -495,6 +495,188 @@ describe('a retry must follow a rejection', () => {
     // totals must never be computed from a history the policy forbids.
     const run = withHistory([[1, true], [2, true]], [[1, true]]);
     expect(() => buildComparison(suite, run)).toThrow();
+  });
+});
+
+describe('a structurally invalid run never reaches an aggregate', () => {
+  const first = caseIds[0]!;
+
+  it('A: a structurally valid run builds', () => {
+    expect(validateRun(fairRun())).toEqual([]);
+    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+  });
+
+  it('B: attempt 1 claiming retryUsed is refused', () => {
+    // Would overcount retries in the summary.
+    const run = fairRun();
+    run.generations[0]!.retryUsed = true;
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+  });
+
+  it('C: attempt 2 denying retryUsed is refused', () => {
+    // Would undercount them.
+    const run = fairRun();
+    for (const generation of run.generations) {
+      if (generation.caseId === first) {
+        generation.accepted = false;
+        generation.normalizedOutput = null;
+        generation.validatorErrors = ['unknown tone tag'];
+      }
+    }
+    run.generations.push(
+      generationFor(first, 'lite', {
+        id: `run:${first}:lite:2`,
+        attempt: 2,
+        retryUsed: false,
+        rawOutputPath: `raw/${first}.lite.2.txt`,
+      }),
+    );
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+  });
+
+  it('D: accepted with a null output is refused rather than crashing evaluation', () => {
+    // This one used to reach `evaluateObjectively` and fall over there.
+    const run = fairRun();
+    run.generations[0]!.normalizedOutput = null;
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+  });
+
+  it('E: the structural check runs before evaluation, not after', () => {
+    // A run that is both structurally invalid and unfair must report the
+    // structural problem: it is the one that makes everything else meaningless.
+    const run = fairRun();
+    run.generations[0]!.normalizedOutput = null;
+    run.generations[1]!.inputFingerprint = 'f'.repeat(64);
+
+    let message = '';
+    try {
+      buildComparison(suite, run);
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toMatch(/structurally invalid run/);
+    expect(message).not.toMatch(/identical case inputs/);
+  });
+
+  it('F: a malformed run cannot influence any aggregate', () => {
+    const run = fairRun();
+    run.generations[0]!.retryUsed = true;
+    run.generations[0]!.latencyMs = 999_999;
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('G: validateRun stays the single owner of these rules', () => {
+    // The report refuses; it does not re-implement. Every problem it reports
+    // here came from validateRun itself.
+    const run = fairRun();
+    run.generations[0]!.retryUsed = true;
+    const problems = validateRun(run);
+    expect(problems.some(problem => problem.field === 'retryUsed')).toBe(true);
+  });
+});
+
+describe('one retry, and only one', () => {
+  const first = caseIds[0]!;
+
+  function row(profile: BenchmarkProfile, attempt: number, accepted: boolean): BenchmarkGeneration {
+    return generationFor(first, profile, {
+      id: `run:${first}:${profile}:${attempt}`,
+      attempt,
+      retryUsed: attempt > 1,
+      accepted,
+      validatorErrors: accepted ? [] : ['unknown tone tag'],
+      normalizedOutput: accepted ? generationFor(first, profile).normalizedOutput : null,
+      rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
+      inputFingerprint: attempt === 1 ? FINGERPRINT : 'b'.repeat(64),
+    });
+  }
+
+  function withHistory(
+    lite: Array<[number, boolean]>,
+    standard: Array<[number, boolean]>,
+  ): BenchmarkRun {
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => generation.caseId !== first);
+    for (const [attempt, accepted] of lite) run.generations.push(row('lite', attempt, accepted));
+    for (const [attempt, accepted] of standard) run.generations.push(row('standard', attempt, accepted));
+    return run;
+  }
+
+  it('states the policy in one place', () => {
+    expect(MAX_RETRIES).toBe(1);
+    expect(MAX_ATTEMPTS).toBe(2);
+  });
+
+  it('A: accepted on the first attempt is valid', () => {
+    const run = withHistory([[1, true]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('B: rejected 1 then accepted 2 is valid', () => {
+    const run = withHistory([[1, false], [2, true]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+
+  it('C: rejected 1 then rejected 2 is valid, and the retry is exhausted', () => {
+    // Two failures is a finding. What it is not is permission for a third try.
+    const run = withHistory([[1, false], [2, false]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+
+  it('D: rejected, rejected, then accepted on attempt 3 is refused', () => {
+    // The gap the previous rule left: contiguous, each retry following a
+    // rejection, and still outside the policy.
+    const run = withHistory([[1, false], [2, false], [3, true]], [[1, true]]);
+    const problems = attemptHistoryProblems(run, ['lite', 'standard']);
+
+    expect(problems.some(problem => problem.includes('attempt 3 exceeds the one-shot retry'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('E: a third rejected attempt is refused too', () => {
+    const run = withHistory([[1, false], [2, false], [3, false]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard']).length).toBeGreaterThan(0);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('F: accepted 1 followed by attempt 2 is still refused', () => {
+    const run = withHistory([[1, true], [2, true]], [[1, true]]);
+    expect(
+      attemptHistoryProblems(run, ['lite', 'standard']).some(problem =>
+        problem.includes('a retry must follow a rejection'),
+      ),
+    ).toBe(true);
+  });
+
+  it('G: attempt 2 with no attempt 1 is still refused', () => {
+    const run = withHistory([[2, true]], [[1, true]]);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('H: a unilateral retry stays valid', () => {
+    // Lite needed its one retry, Standard did not. Still comparable.
+    const run = withHistory([[1, false], [2, true]], [[1, true]]);
+    expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+
+  it('I: a third attempt can never enter latency, quality or retry totals', () => {
+    // Both gates catch it: the structural one and the history one. Neither
+    // report is ever built.
+    const run = withHistory([[1, false], [2, false], [3, true]], [[1, true]]);
+    expect(validateRun(run).some(problem => problem.field === 'attempt')).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('applies per profile independently', () => {
+    // Standard overrunning the budget is Standard's problem, and it is named.
+    const run = withHistory([[1, true]], [[1, false], [2, false], [3, true]]);
+    const problems = attemptHistoryProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('for standard: attempt 3'))).toBe(true);
+    expect(problems.some(problem => problem.includes('for lite'))).toBe(false);
   });
 });
 

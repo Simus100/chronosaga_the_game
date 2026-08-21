@@ -13,6 +13,21 @@ import type { BenchmarkTask } from './case.js';
 export type BenchmarkProfile = 'lite' | 'standard';
 
 /**
+ * How many times the benchmark may ask one model one case.
+ *
+ * The plan fixes a first attempt plus **at most one** retry. A model that needed
+ * three tries did not answer the same question the others did, so its numbers
+ * are not comparable with a compliant run — which is the whole reason the limit
+ * is a policy rather than a preference.
+ *
+ * Declared once here and consumed by the report's history validation, so the
+ * evaluator and the structural validator cannot end up disagreeing about what
+ * the policy is.
+ */
+export const MAX_RETRIES = 1;
+export const MAX_ATTEMPTS = MAX_RETRIES + 1;
+
+/**
  * The exact artifact a generation came from.
  *
  * Copied from the model lock at run time. Without this a result is an opinion
@@ -252,6 +267,12 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
       }
     }
 
+    if (generation.attempt > MAX_ATTEMPTS) {
+      at(
+        'attempt',
+        `attempt ${generation.attempt} exceeds the one-shot retry policy of at most ${MAX_ATTEMPTS} attempts`,
+      );
+    }
     if (generation.attempt === 1 && generation.retryUsed) {
       at('retryUsed', 'a first attempt cannot be a retry');
     }

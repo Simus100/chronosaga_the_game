@@ -7,7 +7,13 @@
  */
 
 import type { BenchmarkCase, BenchmarkSuite, BenchmarkTask } from './case.js';
-import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from './result.js';
+import {
+  MAX_ATTEMPTS,
+  validateRun,
+  type BenchmarkGeneration,
+  type BenchmarkProfile,
+  type BenchmarkRun,
+} from './result.js';
 import { evaluateObjectively } from './objective.js';
 import { HARD_FAIL_CATEGORIES, type HardFailCategory } from './hard-fail.js';
 import {
@@ -388,6 +394,19 @@ export function attemptHistoryProblems(
     const [caseId, profile] = key.split('|');
     const ordered = [...rows].sort((a, b) => a.attempt - b.attempt);
 
+    // The policy ceiling, read from the one place that owns it. A rejected
+    // second attempt is an exhausted retry, not permission for a third: a case
+    // that needed three tries was not asked the same question as one that
+    // needed two, and comparing them measures the retry budget rather than the
+    // models.
+    const beyondPolicy = ordered.filter(generation => generation.attempt > MAX_ATTEMPTS);
+    for (const generation of beyondPolicy) {
+      problems.push(
+        `${caseId} for ${profile}: attempt ${generation.attempt} exceeds the one-shot retry ` +
+          `policy of at most ${MAX_ATTEMPTS} attempts`,
+      );
+    }
+
     for (let index = 1; index < ordered.length; index += 1) {
       const previous = ordered[index - 1]!;
       const current = ordered[index]!;
@@ -566,6 +585,28 @@ export function buildComparison(
   sheet: ScoreSheet | null = null,
   review: HumanReview | null = null,
 ): ComparisonReport {
+  // The authoritative structural check comes first, before parity, evaluation or
+  // any aggregate. These runs are loaded from external JSON and `validateRun`
+  // already owns every cross-field invariant: an accepted attempt 1 claiming
+  // `retryUsed`, an attempt 2 denying it, an accepted generation with a null
+  // output that would crash the evaluator outright. Re-stating those rules here
+  // would give the project two definitions of a valid run and eventually two
+  // different answers, so they stay where they live and this simply refuses.
+  const structural = validateRun(run);
+  if (structural.length > 0) {
+    const shown = structural
+      .slice(0, 5)
+      .map(problem =>
+        problem.generationId
+          ? `${problem.generationId} ${problem.field}: ${problem.message}`
+          : `${problem.field}: ${problem.message}`,
+      );
+    throw new Error(
+      `refusing to report on a structurally invalid run: ${shown.join('; ')}` +
+        (structural.length > shown.length ? `; and ${structural.length - shown.length} more` : ''),
+    );
+  }
+
   // Before anything is evaluated, summarised or aggregated: the suite in hand
   // must be the suite that was run. Everything below reads case constraints and
   // expected facts, and reading the wrong ones silently produces a report that
