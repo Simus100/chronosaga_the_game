@@ -88,9 +88,6 @@ importers:
 
   packages/ai-benchmark:
     dependencies:
-      '@paa/ai-contracts':
-        specifier: workspace:*
-        version: link:../ai-contracts
       '@paa/game-types':
         specifier: workspace:*
         version: link:../game-types
