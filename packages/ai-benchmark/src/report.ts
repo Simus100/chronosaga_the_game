@@ -100,14 +100,19 @@ function controlledSignature(generation: BenchmarkGeneration): string {
  * checked, each of which has silently ruined somebody's benchmark before:
  *
  * 1. **Coverage** — both profiles saw every case.
- * 2. **Identical inputs, per attempt** — the recorded fingerprint matches for
- *    each `(case, attempt)` pair. Comparing whole cases would be wrong: a retry
- *    legitimately asks a different question, and a retry that happened for only
- *    one profile is itself a finding rather than a defect. What may never differ
- *    is what the two profiles were asked *on the same attempt number*.
- * 3. **One artifact per profile** — a run that swapped models halfway measures
+ * 2. **A coherent attempt history** — every case a profile ran must start at
+ *    attempt 1 and number its attempts contiguously. A retry only one profile
+ *    needed is valid evidence; a retry with nothing before it is a broken
+ *    record, and reading it as "one model needed a second try" would invert what
+ *    actually happened.
+ * 3. **Identical inputs, per attempt** — the recorded fingerprint matches for
+ *    each `(case, attempt)` pair present for more than one profile. Comparing
+ *    whole cases would be wrong, because a retry legitimately asks a different
+ *    question. What may never differ is what the two profiles were asked *on the
+ *    same attempt number*.
+ * 4. **One artifact per profile** — a run that swapped models halfway measures
  *    neither of them.
- * 4. **Controlled settings** — the sampling and context were held equal where
+ * 5. **Controlled settings** — the sampling and context were held equal where
  *    the comparison claims to hold them equal.
  *
  * Duplicate `(case, profile, attempt)` rows are rejected outright: two rows
@@ -151,6 +156,33 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
     if (signatures.size > 1) {
       problems.push(`${profile} varied its controlled generation settings within one run`);
     }
+
+    // Attempt histories, per case. This holds for a single profile too: a case
+    // whose only row is attempt 2 is a broken record whatever it is compared
+    // against, and a gap means a row was lost rather than never written.
+    const attemptsByCase = new Map<string, Set<number>>();
+    for (const generation of generations) {
+      const bucket = attemptsByCase.get(generation.caseId) ?? new Set<number>();
+      bucket.add(generation.attempt);
+      attemptsByCase.set(generation.caseId, bucket);
+    }
+    for (const [caseId, attempts] of attemptsByCase) {
+      if (!attempts.has(1)) {
+        problems.push(
+          `${caseId} has no attempt 1 for ${profile}: a retry cannot be the first thing recorded`,
+        );
+        continue;
+      }
+      const highest = Math.max(...attempts);
+      const gaps = Array.from({ length: highest }, (_, index) => index + 1).filter(
+        attempt => !attempts.has(attempt),
+      );
+      if (gaps.length > 0) {
+        problems.push(
+          `${caseId} for ${profile} records attempt ${highest} without attempt ${gaps.join(', ')}`,
+        );
+      }
+    }
   }
 
   if (profiles.length < 2) return problems.sort();
@@ -164,12 +196,25 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
       continue;
     }
 
-    // Compare within an attempt number, not across the whole case. Attempt 1
-    // must match; a shared attempt 2 must match; an attempt only one profile
-    // made is valid evidence and is left alone.
     const rows = run.generations.filter(
       generation => generation.caseId === caseId && profiles.includes(generation.profile),
     );
+
+    // Attempt 1 is the comparison. Every compared profile must have one, or
+    // there is no common ground to compare on: one model's first try against
+    // another model's second is not a measurement of either.
+    const withoutFirst = profiles.filter(
+      profile =>
+        !rows.some(generation => generation.profile === profile && generation.attempt === 1),
+    );
+    if (withoutFirst.length > 0) {
+      problems.push(`${caseId} has no attempt 1 for ${withoutFirst.join(', ')}`);
+      continue;
+    }
+
+    // Compare within an attempt number, not across the whole case. Attempt 1
+    // must match; a shared retry must match; a retry only one profile made is
+    // valid evidence and is left alone.
     const attempts = new Set(rows.map(generation => generation.attempt));
     for (const attempt of [...attempts].sort((a, b) => a - b)) {
       const forAttempt = rows.filter(generation => generation.attempt === attempt);

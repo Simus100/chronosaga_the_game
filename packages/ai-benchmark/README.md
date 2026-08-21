@@ -98,18 +98,22 @@ and never merges either into a score.
 
 ## Fairness
 
-`buildComparison` refuses to build a report at all unless four things hold:
+`buildComparison` refuses to build a report at all unless five things hold:
 
 1. both profiles saw every case;
-2. the recorded **input fingerprint** — SHA-256 over the suite identity, the case
-   and both prompts *verbatim as sent* — matches for each `(case, attempt)` pair,
-   so "same inputs" is evidence rather than an assumption. Per attempt, not per
-   case: a retry legitimately asks a different question, and a retry only one
-   profile needed is a finding rather than a defect. What may never differ is
-   what the two profiles were asked on the same attempt number. Duplicate
-   `(case, profile, attempt)` rows are refused outright;
-3. each profile used **one** artifact identity for the whole run;
-4. the controlled settings — context size, token budget, temperature, top-p,
+2. every case a profile ran starts at **attempt 1** and numbers its attempts
+   contiguously. A retry only one profile needed is valid evidence; a retry with
+   nothing before it is a broken record, and comparing one model's first try
+   against another's second measures neither. Duplicate `(case, profile,
+   attempt)` rows are refused outright;
+3. the recorded **input fingerprint** — SHA-256 over the suite identity, the case
+   and both prompts *verbatim as sent* — matches for each `(case, attempt)` pair
+   present for more than one profile, so "same inputs" is evidence rather than an
+   assumption. Per attempt, not per case: a retry legitimately asks a different
+   question. What may never differ is what the two profiles were asked on the
+   same attempt number;
+4. each profile used **one** artifact identity for the whole run;
+5. the controlled settings — context size, token budget, temperature, top-p,
    seed, reasoning mode — were held equal. Context size is included on purpose:
    if P0.5-C varies it deliberately, that has to become a separate matrix
    dimension rather than being mixed into one comparison.

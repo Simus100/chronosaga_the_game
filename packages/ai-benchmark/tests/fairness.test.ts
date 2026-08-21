@@ -213,6 +213,90 @@ describe('retries and fairness', () => {
   });
 });
 
+describe('attempt histories must be coherent', () => {
+  const RETRY = 'b'.repeat(64);
+  const first = caseIds[0]!;
+
+  /** One row for a case at a given attempt number. */
+  function rowAt(
+    profile: BenchmarkProfile,
+    attempt: number,
+    fingerprint = RETRY,
+  ): BenchmarkGeneration {
+    return generationFor(first, profile, {
+      id: `run:${first}:${profile}:${attempt}`,
+      attempt,
+      retryUsed: attempt > 1,
+      inputFingerprint: attempt === 1 ? FINGERPRINT : fingerprint,
+      rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
+    });
+  }
+
+  /** A run holding exactly the given attempts for the first case. */
+  function historyRun(lite: number[], standard: number[]): BenchmarkRun {
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => generation.caseId !== first);
+    for (const attempt of lite) run.generations.push(rowAt('lite', attempt));
+    for (const attempt of standard) run.generations.push(rowAt('standard', attempt));
+    return run;
+  }
+
+  it('A: attempt 1 on both profiles passes', () => {
+    expect(inputParityProblems(historyRun([1], [1]), ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('B: a retry only Lite needed passes', () => {
+    // The shape the benchmark exists to observe: one model got it first time,
+    // the other did not.
+    expect(inputParityProblems(historyRun([1, 2], [1]), ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('C: Standard with only attempt 2 is refused', () => {
+    // Comparing one model's first try against another's second measures
+    // neither, and reading it as "Standard needed a retry" inverts the truth:
+    // there is no record of the try it supposedly retried.
+    const problems = inputParityProblems(historyRun([1], [2]), ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('no attempt 1 for standard'))).toBe(true);
+    expect(() => buildComparison(suite, historyRun([1], [2]))).toThrow();
+  });
+
+  it('D: Lite with only attempt 2 is refused', () => {
+    const problems = inputParityProblems(historyRun([2], [1]), ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('no attempt 1 for lite'))).toBe(true);
+    expect(() => buildComparison(suite, historyRun([2], [1]))).toThrow();
+  });
+
+  it('E: attempt 3 without attempt 2 is refused', () => {
+    // A gap means a row was lost, not that a model skipped a try.
+    const problems = inputParityProblems(historyRun([1, 3], [1]), ['lite', 'standard']);
+    expect(
+      problems.some(problem => problem.includes('attempt 3 without attempt 2')),
+      JSON.stringify(problems),
+    ).toBe(true);
+    expect(() => buildComparison(suite, historyRun([1, 3], [1]))).toThrow();
+  });
+
+  it('F: a retry both profiles made with the same wording passes', () => {
+    expect(inputParityProblems(historyRun([1, 2], [1, 2]), ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('G: a retry both profiles made with different wording is refused', () => {
+    const run = historyRun([1, 2], [1]);
+    run.generations.push(rowAt('standard', 2, 'c'.repeat(64)));
+
+    const problems = inputParityProblems(run, ['lite', 'standard']);
+    expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+  });
+
+  it('holds for a single profile too, before anything is compared', () => {
+    // A malformed history is malformed on its own; it does not need a second
+    // profile to become wrong.
+    const problems = inputParityProblems(historyRun([2], []), ['lite']);
+    expect(problems.some(problem => problem.includes('no attempt 1 for lite'))).toBe(true);
+  });
+});
+
 describe('judgement is bound to the run it judges', () => {
   const sheet = (over: Partial<ScoreSheet> = {}): ScoreSheet => ({
     runId: 'run',
