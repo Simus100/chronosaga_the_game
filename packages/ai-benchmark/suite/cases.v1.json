@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteVersion": "p0.5-a.3",
+  "suiteVersion": "p0.5-a.4",
   "status": "P0_5_BENCHMARK_SUITE",
   "scenario": {
     "fixture": "createSystemicScenario",
@@ -2769,7 +2769,11 @@
         ],
         "maxNarrationChars": 500,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001",
+          "tarek_001"
+        ]
       },
       "expectedFacts": [
         "labor on the recycler fell to 19",
@@ -3125,7 +3129,11 @@
         ],
         "maxNarrationChars": 600,
         "structuredOutput": true,
-        "authoritativeNumbersReadOnly": true
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ]
       },
       "expectedFacts": [
         "readiness rose to 71",

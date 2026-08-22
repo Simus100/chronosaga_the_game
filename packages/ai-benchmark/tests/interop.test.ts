@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
+import rustRequirements from './fixtures/official-evidence-requirements.json' with { type: 'json' };
+import { OFFICIAL_EVIDENCE_REQUIREMENTS } from '../src/report.js';
 import { validateRun, type BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 
@@ -15,6 +17,20 @@ import { loadSuite } from '../src/suite.js';
  */
 
 const run = rustRun as unknown as BenchmarkRun;
+
+describe('the shared definition of official evidence', () => {
+  it('asks the same questions on both sides of the language boundary', () => {
+    // Rust decides whether a run *is* official evidence as it accumulates;
+    // this side decides whether a stored run *may be published* as one. The
+    // implementations cannot be shared, so the list of requirements is, and a
+    // requirement added or dropped alone fails here.
+    expect([...OFFICIAL_EVIDENCE_REQUIREMENTS]).toEqual(rustRequirements);
+  });
+
+  it('declares each requirement exactly once', () => {
+    expect(new Set(rustRequirements).size).toBe(rustRequirements.length);
+  });
+});
 
 describe('evidence written by the Rust runner', () => {
   it('satisfies the declared TypeScript result contract', () => {

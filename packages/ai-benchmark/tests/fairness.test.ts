@@ -5,6 +5,8 @@ import {
   comparableEvidenceProblems,
   inputParityProblems,
   judgementProblems,
+  officialEvidenceProblems,
+  OFFICIAL_EVIDENCE_REQUIREMENTS,
   suiteBindingProblems,
   taskMismatches,
 } from '../src/report.js';
@@ -78,7 +80,9 @@ function generationFor(
   };
 }
 
-const caseIds = suite.cases.slice(0, 3).map(entry => entry.id);
+// The whole suite, because an official comparison is the whole suite. A
+// three-case fixture is a smoke pass, and the report boundary now says so.
+const caseIds = suite.cases.map(entry => entry.id);
 
 function fairRun(): BenchmarkRun {
   return {
@@ -86,13 +90,13 @@ function fairRun(): BenchmarkRun {
       runId: 'run',
       runKind: 'official_comparison',
       startedAt: '2026-08-21T00:00:00.000Z',
-      gitCommit: '9599f38',
+      gitCommit: '9599f38d846f29907286e53200f51a703af4f53c',
       gitDirty: false,
       suiteVersion: suite.suiteVersion,
       suiteSchemaVersion: 1,
       runnerVersion: '0.1.0',
       runtimeReleaseTag: 'b10343',
-      runtimeExecutableSha256: null,
+      runtimeExecutableSha256: '3e8c1a6b5d4f2907c8b1e6a4d7f0b3c5928e1d4a7b0c3f6e9d2a5b8c1e4f7a0d',
       host: { os: 'Windows 11', arch: 'x86_64', cpu: 'i7', logicalCores: 24, totalRamMb: 65536 },
     },
     generations: caseIds.flatMap(caseId => [
@@ -101,6 +105,173 @@ function fairRun(): BenchmarkRun {
     ]),
   };
 }
+
+describe('official comparison evidence', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+
+  it('G: a full suite for both profiles on a clean checkout qualifies', () => {
+    expect(officialEvidenceProblems(suite, fairRun(), both)).toEqual([]);
+    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+  });
+
+  it('A: a smoke run with impeccable rows is refused, and refused for that alone', () => {
+    // The trap this closes: everything else about this run is perfect. Listing
+    // its other shortcomings would obscure the one that disqualifies it.
+    const run = fairRun();
+    run.metadata.runKind = 'smoke';
+    const problems = officialEvidenceProblems(suite, run, both);
+    expect(problems.map(problem => problem.requirement)).toEqual(['declared_official']);
+    expect(problems[0]!.message).toMatch(/plumbing evidence/);
+    expect(() => buildComparison(suite, run)).toThrow(/declared_official/);
+  });
+
+  it('B: a dirty checkout is refused', () => {
+    const run = fairRun();
+    run.metadata.gitDirty = true;
+    expect(officialEvidenceProblems(suite, run, both).map(p => p.requirement)).toContain(
+      'clean_checkout',
+    );
+    expect(() => buildComparison(suite, run)).toThrow(/nobody else can reproduce it/);
+  });
+
+  it('C: a short or non-hex commit is refused', () => {
+    for (const commit of ['9599f38', '', 'zzzz9f38d846f29907286e53200f51a703af4f53c']) {
+      const run = fairRun();
+      run.metadata.gitCommit = commit;
+      expect(officialEvidenceProblems(suite, run, both).map(p => p.requirement)).toContain(
+        'full_commit',
+      );
+    }
+  });
+
+  it('D: absent or malformed runtime provenance is refused', () => {
+    const missing = fairRun();
+    missing.metadata.runtimeExecutableSha256 = null;
+    expect(officialEvidenceProblems(suite, missing, both).map(p => p.requirement)).toContain(
+      'runtime_provenance',
+    );
+
+    const truncated = fairRun();
+    truncated.metadata.runtimeExecutableSha256 = 'abc123';
+    expect(officialEvidenceProblems(suite, truncated, both)[0]!.message).toMatch(/not a SHA-256/);
+
+    const untagged = fairRun();
+    untagged.metadata.runtimeReleaseTag = '   ';
+    expect(officialEvidenceProblems(suite, untagged, both).map(p => p.requirement)).toContain(
+      'runtime_provenance',
+    );
+  });
+
+  it('E: both profiles sharing only a subset of the suite is refused', () => {
+    // Structurally impeccable and perfectly fair: same ten cases, same inputs,
+    // both models. It supports no Lite-versus-Standard decision at all.
+    const keep = new Set(suite.cases.slice(0, 10).map(entry => entry.id));
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => keep.has(generation.caseId));
+
+    expect(comparableEvidenceProblems(run, both)).toEqual([]);
+    expect(inputParityProblems(run, both)).toEqual([]);
+    const problems = officialEvidenceProblems(suite, run, both);
+    expect(problems.map(problem => problem.requirement)).toEqual([
+      'full_profile_case_coverage',
+      'full_profile_case_coverage',
+    ]);
+    expect(() => buildComparison(suite, run)).toThrow(/full_profile_case_coverage/);
+  });
+
+  it('F: one profile short by a single case is refused and the pair is named', () => {
+    const absent = suite.cases.at(-1)!.id;
+    const run = fairRun();
+    run.generations = run.generations.filter(
+      generation => !(generation.profile === 'standard' && generation.caseId === absent),
+    );
+    const problems = officialEvidenceProblems(suite, run, both);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.message).toBe(
+      `standard is missing 1 of ${suite.cases.length} suite cases (${absent})`,
+    );
+  });
+
+  it('names the profile that has nothing rather than listing every case', () => {
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => generation.profile === 'lite');
+    const problems = officialEvidenceProblems(suite, run, both);
+    expect(problems[0]!.message).toMatch(/no generations at all for standard/);
+  });
+
+  it('H: retries add rows and no coverage', () => {
+    // A run that answered ten cases twice each has still answered ten cases.
+    const keep = new Set(suite.cases.slice(0, 10).map(entry => entry.id));
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => keep.has(generation.caseId));
+    const retried = run.generations.map(generation => ({
+      ...generation,
+      id: `${generation.id.slice(0, -1)}2`,
+      attempt: 2,
+      retryUsed: true,
+    }));
+    const before = officialEvidenceProblems(suite, run, both);
+    run.generations = [...run.generations, ...retried];
+    expect(officialEvidenceProblems(suite, run, both)).toEqual(before);
+  });
+
+  it('I: an empty run is still refused by the earlier, clearer gate', () => {
+    const run = fairRun();
+    run.generations = [];
+    expect(() => buildComparison(suite, run)).toThrow(/no comparable evidence/);
+  });
+
+  it('J: a suite-version mismatch is still refused before coverage is measured', () => {
+    // Order matters: coverage counted against the wrong suite would be a number
+    // computed from a question the run never answered.
+    const revised = structuredClone(suite);
+    revised.suiteVersion = 'p0.5-a.99';
+    expect(() => buildComparison(revised, fairRun())).toThrow(/different suite/);
+  });
+
+  it('measures coverage against the supplied suite, never a written-down count', () => {
+    // A suite that grows raises the bar by itself.
+    const grown = structuredClone(suite);
+    grown.cases.push({ ...structuredClone(suite.cases[0]!), id: 'ai_case_999' });
+    const problems = officialEvidenceProblems(grown, fairRun(), both);
+    expect(problems.map(problem => problem.message)).toEqual([
+      `lite is missing 1 of ${grown.cases.length} suite cases (ai_case_999)`,
+      `standard is missing 1 of ${grown.cases.length} suite cases (ai_case_999)`,
+    ]);
+    // The same rows qualified a moment ago against the smaller suite.
+    expect(officialEvidenceProblems(suite, fairRun(), both)).toEqual([]);
+  });
+
+  it('incomplete host facts are refused', () => {
+    const run = fairRun();
+    run.metadata.host.logicalCores = 0;
+    expect(officialEvidenceProblems(suite, run, both).map(p => p.requirement)).toContain(
+      'host_facts',
+    );
+  });
+
+  it('checks every requirement it declares', () => {
+    // The exported list is a promise to the Rust runner. An entry nothing can
+    // trip is a promise this side does not keep.
+    const reached = new Set<string>();
+    const trip = (mutate: (run: BenchmarkRun) => void) => {
+      const run = fairRun();
+      mutate(run);
+      for (const problem of officialEvidenceProblems(suite, run, both)) {
+        reached.add(problem.requirement);
+      }
+    };
+    trip(run => void (run.metadata.runKind = 'smoke'));
+    trip(run => void (run.metadata.gitDirty = true));
+    trip(run => void (run.metadata.gitCommit = 'short'));
+    trip(run => void (run.metadata.runtimeExecutableSha256 = null));
+    trip(run => void (run.metadata.host.totalRamMb = 0));
+    trip(run => void (run.metadata.suiteVersion = ''));
+    trip(run => void (run.generations = run.generations.slice(0, 2)));
+
+    expect([...reached].sort()).toEqual([...OFFICIAL_EVIDENCE_REQUIREMENTS].sort());
+  });
+});
 
 describe('comparison fairness', () => {
   it('accepts a run where everything was actually held equal', () => {

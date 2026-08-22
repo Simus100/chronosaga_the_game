@@ -92,23 +92,49 @@ describe('the committed benchmark suite', () => {
     expect(problems.some(problem => problem.field === 'constraints.requiredSpeakerIds')).toBe(true);
   });
 
-  it('requires dialogue only where the task is the dialogue', () => {
-    // Permission is broad, obligation is narrow. A memory-suggestion case does
-    // not need anybody to speak, and requiring it would penalise compliance.
-    const requiring = suite.cases.filter(entry => (entry.constraints.requiredSpeakerIds ?? []).length > 0);
-    const tasks = new Set(requiring.map(entry => entry.task));
-
-    expect(tasks).toEqual(new Set(['single_npc_dialogue', 'two_character_conflict']));
-    for (const entry of requiring) {
-      for (const speaker of entry.constraints.requiredSpeakerIds!) {
+  it('keeps every required speaker inside the permitted ones', () => {
+    for (const entry of suite.cases) {
+      for (const speaker of entry.constraints.requiredSpeakerIds ?? []) {
         expect(entry.constraints.knownSpeakerIds, entry.id).toContain(speaker);
       }
     }
+  });
 
-    // Everything else permits speech without demanding it.
+  it('declares required speakers wherever a case expects named dialogue', () => {
+    // The invariant that matters, derived from the cases rather than from a list
+    // of task names: obligation is declared where it is expected, and only there.
+    // Anchoring on the task kind instead would have missed exactly the two cases
+    // whose expected facts demanded speech that nothing enforced.
+    const demandsSpeech = /speaks?/i;
     for (const entry of suite.cases) {
-      if (tasks.has(entry.task)) continue;
-      expect(entry.constraints.requiredSpeakerIds ?? [], entry.id).toHaveLength(0);
+      const facts = entry.expectedFacts.filter(fact => demandsSpeech.test(fact));
+      const required = entry.constraints.requiredSpeakerIds ?? [];
+      if (facts.length === 0) continue;
+      expect(required.length, `${entry.id} expects '${facts[0]}' but obliges nobody`).toBeGreaterThan(0);
+      if (facts.some(fact => /both/i.test(fact))) {
+        expect(new Set(required), entry.id).toEqual(new Set(entry.constraints.knownSpeakerIds));
+      }
+    }
+  });
+
+  it('leaves the rest of the suite free to stay silent', () => {
+    // Permission is broad, obligation is narrow. A memory-suggestion case does
+    // not need anybody to speak, and requiring it would penalise compliance.
+    const permissive = suite.cases.filter(
+      entry => (entry.constraints.requiredSpeakerIds ?? []).length === 0,
+    );
+    expect(permissive.length).toBeGreaterThan(suite.cases.length / 2);
+    for (const entry of permissive) {
+      expect(entry.expectedFacts.some(fact => /speaks?/i.test(fact)), entry.id).toBe(false);
+    }
+  });
+
+  it('P2-B: the two cases whose facts demand both voices now oblige both', () => {
+    for (const id of ['ai_case_036', 'ai_case_041']) {
+      const entry = suite.cases.find(candidate => candidate.id === id)!;
+      expect(entry.expectedFacts, id).toContain('both characters speak');
+      expect(entry.constraints.requiredSpeakerIds, id).toEqual(entry.constraints.knownSpeakerIds);
+      expect(entry.constraints.requiredSpeakerIds, id).toHaveLength(2);
     }
   });
 

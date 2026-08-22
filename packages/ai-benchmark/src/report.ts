@@ -310,6 +310,135 @@ export function comparableEvidenceProblems(
 }
 
 /**
+ * The requirements an official comparison must satisfy, by name.
+ *
+ * Mirrors `OFFICIAL_EVIDENCE_REQUIREMENTS` in the Rust runner and is asserted
+ * equal to it by `tests/interop.test.ts`. The two sides cannot share an
+ * implementation across the language boundary, so what they share is the list of
+ * questions: neither can add or drop a requirement without failing a test on the
+ * other. Each implements the check against the data it actually holds — Rust
+ * against live coverage as it accumulates, this against the finished JSON.
+ */
+export const OFFICIAL_EVIDENCE_REQUIREMENTS = [
+  'declared_official',
+  'clean_checkout',
+  'full_commit',
+  'runtime_provenance',
+  'host_facts',
+  'suite_identity',
+  'full_profile_case_coverage',
+] as const;
+
+export type OfficialEvidenceRequirement = (typeof OFFICIAL_EVIDENCE_REQUIREMENTS)[number];
+
+export interface OfficialEvidenceProblem {
+  requirement: OfficialEvidenceRequirement;
+  message: string;
+}
+
+const FULL_COMMIT = /^[0-9a-f]{40}$/;
+
+/**
+ * Why this run may not be published as an official Lite-versus-Standard report.
+ *
+ * `comparableEvidenceProblems` asks whether there is anything here at all;
+ * this asks whether it is the right thing. They are different questions, and a
+ * dataset can pass the first while failing every part of the second: a smoke
+ * pass over ten cases on a dirty checkout is structurally impeccable and
+ * supports no decision whatsoever.
+ *
+ * The dangerous case is not a report that fails — it is a report that succeeds
+ * and looks exactly like the official one. Rendering a partial run through the
+ * same builder produces the same headings, the same table and the same verdict
+ * line, with numbers drawn from a fraction of the suite. So this fails closed:
+ * `buildComparison` is the official entry point, and a run that does not qualify
+ * gets no report rather than a quieter one.
+ */
+export function officialEvidenceProblems(
+  suite: BenchmarkSuite,
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+): OfficialEvidenceProblem[] {
+  const metadata = run.metadata;
+  const problems: OfficialEvidenceProblem[] = [];
+  const at = (requirement: OfficialEvidenceRequirement, message: string) =>
+    problems.push({ requirement, message });
+
+  // Declared purpose first, and alone: no amount of rigour turns a smoke pass
+  // into the run that answers the question, so listing its other shortcomings
+  // would only obscure the one that matters.
+  if (metadata.runKind !== 'official_comparison') {
+    return [
+      {
+        requirement: 'declared_official',
+        message:
+          `run ${metadata.runId} was recorded as a ${metadata.runKind} run, which is ` +
+          'plumbing evidence and never comparable evidence, however complete its metadata is',
+      },
+    ];
+  }
+
+  if (metadata.gitDirty) {
+    at('clean_checkout', 'the checkout was dirty, so nobody else can reproduce it');
+  }
+  if (!FULL_COMMIT.test(metadata.gitCommit)) {
+    at('full_commit', `the commit '${metadata.gitCommit}' is not a full 40-character SHA`);
+  }
+  if (metadata.runtimeReleaseTag.trim() === '') {
+    at('runtime_provenance', 'the runtime release tag is absent');
+  }
+  if (metadata.runtimeExecutableSha256 === null) {
+    at('runtime_provenance', 'the runtime executable digest is absent');
+  } else if (!/^[0-9a-f]{64}$/.test(metadata.runtimeExecutableSha256)) {
+    at(
+      'runtime_provenance',
+      `the runtime digest '${metadata.runtimeExecutableSha256}' is not a SHA-256`,
+    );
+  }
+  if (
+    metadata.host.cpu.trim() === '' ||
+    metadata.host.logicalCores === 0 ||
+    metadata.host.totalRamMb === 0
+  ) {
+    at('host_facts', 'the host facts are incomplete');
+  }
+  if (metadata.suiteVersion.trim() === '' || metadata.suiteSchemaVersion === 0) {
+    at('suite_identity', 'the suite identity is incomplete');
+  }
+
+  // Coverage is every (profile, case) pair the supplied suite defines, derived
+  // from the suite rather than from a count written down here: a suite that
+  // grows raises the bar by itself, which a hardcoded 65 would not.
+  //
+  // Attempts collapse into pairs, so a retry adds a row and no coverage. A run
+  // that answered ten cases twice each has still answered ten cases.
+  const answered = new Set(
+    run.generations.map(generation => `${generation.profile} ${generation.caseId}`),
+  );
+  for (const profile of profiles) {
+    const absent = suite.cases
+      .map(entry => entry.id)
+      .filter(caseId => !answered.has(`${profile} ${caseId}`));
+    if (absent.length === 0) continue;
+    if (absent.length === suite.cases.length) {
+      at(
+        'full_profile_case_coverage',
+        `no generations at all for ${profile}, so there is nothing to compare`,
+      );
+      continue;
+    }
+    const shown = absent.slice(0, 5);
+    at(
+      'full_profile_case_coverage',
+      `${profile} is missing ${absent.length} of ${suite.cases.length} suite cases ` +
+        `(${shown.join(', ')}${absent.length > shown.length ? ', ...' : ''})`,
+    );
+  }
+
+  return problems;
+}
+
+/**
  * Every well-formedness problem in the judgement supplied for a run.
  *
  * Delegates to the validators that already own these rules rather than
@@ -667,6 +796,17 @@ export function buildComparison(
   if (binding.length > 0) {
     throw new Error(
       `refusing to evaluate a run against a different suite: ${binding.join('; ')}`,
+    );
+  }
+
+  // Only now, with the suite proven to be the one that was run, can coverage be
+  // measured against it. This is the gate that separates an official
+  // Lite-versus-Standard report from a smoke pass rendered in the same shape.
+  const official = officialEvidenceProblems(suite, run, profiles);
+  if (official.length > 0) {
+    throw new Error(
+      `refusing to publish run ${run.metadata.runId} as an official comparison: ` +
+        official.map(problem => `${problem.requirement}: ${problem.message}`).join('; '),
     );
   }
 

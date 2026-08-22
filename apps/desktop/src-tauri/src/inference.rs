@@ -109,6 +109,18 @@ pub struct OutputContract {
     /// must then be empty, because there is nobody who could legitimately fill
     /// it. Unknown-speaker rejection is untouched either way.
     pub known_speaker_ids: Vec<String>,
+    /// Speakers the scene actually needs to hear from.
+    ///
+    /// A subset of [`Self::known_speaker_ids`], and the only one that can fail.
+    /// Appearing in the permitted list is permission to speak, not an obligation
+    /// to: the prompt says the dialogue *may* use these ids, so rejecting an
+    /// answer because a permitted character stayed silent punishes obedience to
+    /// the instruction it was given.
+    ///
+    /// Empty means nobody is obliged and empty dialogue is a legitimate answer.
+    /// Production keeps requiring its addressed speaker, so nothing it accepted
+    /// before is accepted differently now.
+    pub required_speaker_ids: Vec<String>,
     /// Tone vocabulary the UI understands.
     pub allowed_tone_tags: Vec<String>,
     /// Upper bound on narration length, in characters.
@@ -137,10 +149,33 @@ pub struct OutputContract {
     pub known_character_ids: Vec<String>,
 }
 
+impl OutputContract {
+    /// Whether the contract asks for something it does not allow.
+    ///
+    /// Requiring a speaker the scene does not contain is unsatisfiable: every
+    /// answer fails, one for staying silent and the other for an unknown
+    /// speaker. That is a defect in whoever built the contract, and saying so is
+    /// the difference between finding a mis-authored benchmark case and
+    /// recording a model failure that never happened.
+    pub fn speaker_contract_defect(&self) -> Option<String> {
+        self.required_speaker_ids
+            .iter()
+            .find(|required| !self.known_speaker_ids.contains(required))
+            .map(|required| {
+                format!("'{required}' is required to speak but is not a speaker the scene contains")
+            })
+    }
+}
+
 impl Default for OutputContract {
     fn default() -> Self {
         Self {
             known_speaker_ids: vec!["npc_test_01".to_string()],
+            // Nobody, deliberately. This is the base for `..Default::default()`,
+            // and a base that names a speaker contradicts every caller that
+            // overrides the permitted list — an unsatisfiable contract by
+            // omission. Scenes that need a voice say so, as `SmokeScenario` does.
+            required_speaker_ids: Vec::new(),
             allowed_tone_tags: vec![
                 "teso".to_string(),
                 "calmo".to_string(),
@@ -171,6 +206,8 @@ pub enum ValidationError {
     UnknownToneTag(String),
     /// The model tried to assert something only the Simulation Core may decide.
     AuthoritativeClaim(String),
+    /// The contract itself is unsatisfiable; the model is not at fault.
+    ContractDefect(String),
 }
 
 impl ValidationError {
@@ -181,6 +218,7 @@ impl ValidationError {
             Self::UnknownSpeaker(d) => format!("unknown speaker: {d}"),
             Self::UnknownToneTag(d) => format!("unknown tone tag: {d}"),
             Self::AuthoritativeClaim(d) => format!("model claimed authoritative state: {d}"),
+            Self::ContractDefect(d) => format!("the scene contract is unsatisfiable: {d}"),
         }
     }
 }
@@ -230,18 +268,22 @@ pub fn validate(raw: &str, contract: &OutputContract) -> Result<StructuredNarrat
             contract.max_narration_chars
         )));
     }
-    // `dialogue` is always a required JSON field; whether it may be empty is a
-    // property of the scene. A scene with speakers that produces none has not
-    // answered; a scene with nobody in it that produces dialogue has invented
-    // people.
-    if contract.known_speaker_ids.is_empty() {
-        if !parsed.dialogue.is_empty() {
-            return Err(ValidationError::UnknownSpeaker(
-                parsed.dialogue[0].speaker_id.clone(),
-            ));
-        }
-    } else if parsed.dialogue.is_empty() {
-        return Err(ValidationError::MissingField("dialogue".to_string()));
+    // Before the answer is judged: a contract that requires a speaker it does not
+    // permit fails every possible answer, and blaming the model for that would
+    // record a failure nobody could have avoided.
+    if let Some(defect) = contract.speaker_contract_defect() {
+        return Err(ValidationError::ContractDefect(defect));
+    }
+
+    // `dialogue` is always a required JSON field; whether it may be *empty* is a
+    // property of the scene. A scene with nobody in it that produces dialogue has
+    // invented people. A scene that permits speakers but obliges none may
+    // legitimately fall silent — permission is not obligation, and the prompt
+    // only ever says the dialogue may use these ids.
+    if contract.known_speaker_ids.is_empty() && !parsed.dialogue.is_empty() {
+        return Err(ValidationError::UnknownSpeaker(
+            parsed.dialogue[0].speaker_id.clone(),
+        ));
     }
 
     for line in &parsed.dialogue {
@@ -252,6 +294,20 @@ pub fn validate(raw: &str, contract: &OutputContract) -> Result<StructuredNarrat
             return Err(ValidationError::MissingField(format!(
                 "dialogue text for {}",
                 line.speaker_id
+            )));
+        }
+    }
+
+    // Obligation, checked against the lines that survived: a required speaker
+    // whose only line was blank has not spoken either.
+    for required in &contract.required_speaker_ids {
+        if !parsed
+            .dialogue
+            .iter()
+            .any(|line| &line.speaker_id == required)
+        {
+            return Err(ValidationError::MissingField(format!(
+                "dialogue from {required}"
             )));
         }
     }
@@ -329,6 +385,11 @@ impl SmokeScenario {
     pub fn contract() -> OutputContract {
         OutputContract {
             known_speaker_ids: vec![Self::SPEAKER_ID.to_string()],
+            // The product scene addresses this NPC and an answer in which it
+            // says nothing has not answered. Stated explicitly so the shipped
+            // path stays exactly as strict as it was before the distinction
+            // existed.
+            required_speaker_ids: vec![Self::SPEAKER_ID.to_string()],
             ..OutputContract::default()
         }
     }
@@ -709,16 +770,120 @@ mod tests {
         assert!(matches!(error, ValidationError::UnknownSpeaker(ref who) if who == "mara_001"));
     }
 
-    #[test]
-    fn a_scene_with_speakers_still_requires_them_to_speak() {
-        let contract = OutputContract {
-            known_speaker_ids: vec!["mara_001".to_string()],
+    /// A scene that permits `mara_001` to speak and obliges `required` to.
+    fn speaker_contract(permitted: &[&str], required: &[&str]) -> OutputContract {
+        OutputContract {
+            known_speaker_ids: permitted.iter().map(|id| id.to_string()).collect(),
+            required_speaker_ids: required.iter().map(|id| id.to_string()).collect(),
             allowed_tone_tags: vec!["tense".to_string()],
             max_narration_chars: 500,
             ..OutputContract::default()
-        };
-        let error = validate(&payload("", "", ""), &contract).expect_err("silence is not an answer");
-        assert!(matches!(error, ValidationError::MissingField(ref field) if field == "dialogue"));
+        }
+    }
+
+    fn line(speaker: &str) -> String {
+        format!("{{\"speakerId\": \"{speaker}\", \"text\": \"Ciao.\"}}")
+    }
+
+    #[test]
+    fn a_required_speaker_who_stays_silent_is_rejected() {
+        let error = validate(
+            &payload("", "", ""),
+            &speaker_contract(&["mara_001"], &["mara_001"]),
+        )
+        .expect_err("the scene needed this voice");
+        assert!(
+            matches!(error, ValidationError::MissingField(ref field) if field == "dialogue from mara_001"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn b_one_of_two_required_speakers_is_not_enough() {
+        let error = validate(
+            &payload(&line("mara_001"), "", ""),
+            &speaker_contract(&["mara_001", "brann_001"], &["mara_001", "brann_001"]),
+        )
+        .expect_err("brann was required and said nothing");
+        assert!(
+            matches!(error, ValidationError::MissingField(ref field) if field == "dialogue from brann_001"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_permitted_speaker_may_stay_silent() {
+        // The defect this replaces: `mara_001` was permitted to speak, nobody was
+        // obliged to, and the validator rejected the answer anyway — recording a
+        // compliant output as a rejection before the evaluator ever saw it.
+        validate(
+            &payload(&line("mara_001"), "", ""),
+            &speaker_contract(&["mara_001", "brann_001"], &["mara_001"]),
+        )
+        .expect("brann was permitted, not required");
+    }
+
+    #[test]
+    fn c_a_scene_that_obliges_nobody_accepts_empty_dialogue() {
+        validate(
+            &payload("", "", ""),
+            &speaker_contract(&["mara_001", "brann_001"], &[]),
+        )
+        .expect("permission is not obligation");
+    }
+
+    #[test]
+    fn d_an_unknown_speaker_is_still_rejected_however_few_are_required() {
+        let error = validate(
+            &payload(&line("ghost_999"), "", ""),
+            &speaker_contract(&["mara_001"], &[]),
+        )
+        .expect_err("ghost_999 is not in this scene");
+        assert!(matches!(error, ValidationError::UnknownSpeaker(ref who) if who == "ghost_999"));
+    }
+
+    #[test]
+    fn e_requiring_a_speaker_the_scene_forbids_is_a_contract_defect() {
+        // Unsatisfiable: silence fails the requirement, speech fails the
+        // permission. Blaming the model for that would record a failure nobody
+        // could have avoided, so it is named as what it is.
+        let contract = speaker_contract(&["mara_001"], &["brann_001"]);
+        assert!(contract.speaker_contract_defect().is_some());
+
+        let error = validate(&payload(&line("mara_001"), "", ""), &contract)
+            .expect_err("the contract contradicts itself");
+        assert!(
+            matches!(error, ValidationError::ContractDefect(ref detail) if detail.contains("brann_001")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_required_speaker_whose_only_line_is_blank_has_not_spoken() {
+        let error = validate(
+            &payload("{\"speakerId\": \"mara_001\", \"text\": \"   \"}", "", ""),
+            &speaker_contract(&["mara_001"], &["mara_001"]),
+        )
+        .expect_err("whitespace is not dialogue");
+        assert!(matches!(error, ValidationError::MissingField(_)), "{error:?}");
+    }
+
+    #[test]
+    fn the_product_scene_still_requires_its_npc_to_speak() {
+        // Production behaviour is unchanged: the shipped contract names its
+        // speaker as required, so an answer that omits it is refused exactly as
+        // it was before permission and obligation were separated.
+        let contract = SmokeScenario::contract();
+        assert_eq!(contract.required_speaker_ids, vec![SmokeScenario::SPEAKER_ID]);
+        assert!(contract.speaker_contract_defect().is_none());
+        assert!(validate(&payload("", "", ""), &contract).is_err());
+    }
+
+    #[test]
+    fn g_a_scene_with_nobody_in_it_is_valid_and_silent() {
+        validate(&payload("", "", ""), &empty_scene_contract())
+            .expect("a location description has no voices");
+        assert!(empty_scene_contract().required_speaker_ids.is_empty());
     }
 
     /// A scene that invites suggestions, grounded on one character.
@@ -729,6 +894,7 @@ mod tests {
             max_narration_chars: 500,
             allow_event_proposals: events,
             allow_memory_suggestions: memories,
+            required_speaker_ids: Vec::new(),
             allowed_subject_ids: vec!["settlement_helios".to_string(), "mara_001".to_string()],
             known_character_ids: vec!["mara_001".to_string()],
         }

@@ -176,6 +176,12 @@ pub fn load_suite() -> Result<BenchmarkSuite, String> {
 pub fn case_contract(case: &BenchmarkCase) -> OutputContract {
     OutputContract {
         known_speaker_ids: case.constraints.known_speaker_ids.clone(),
+        // The case's own distinction, carried into the validator rather than
+        // stopping at the evaluator. Without this the prompt could say nobody is
+        // obliged to speak while the validator rejected the silence it invited,
+        // and the run would record a compliant answer as a rejection before the
+        // objective checks ever saw it.
+        required_speaker_ids: case.constraints.required_speaker_ids.clone(),
         allowed_tone_tags: case.constraints.allowed_tone_tags.clone(),
         max_narration_chars: case.constraints.max_narration_chars,
         // Derived from the case, never assumed: a case that does not invite a
@@ -897,6 +903,30 @@ pub fn persist_metadata(
     fs::write(&path, body).map_err(|error| format!("unable to write {}: {error}", path.display()))
 }
 
+/// The named requirements an official comparison must satisfy.
+///
+/// The runner decides whether a run *is* official evidence; the report boundary
+/// decides whether a stored run *may be published* as one. Both answers have to
+/// mean the same thing, and they are implemented separately because each side
+/// sees different data — Rust holds the live coverage as it accumulates,
+/// TypeScript holds the finished JSON.
+///
+/// Sharing the implementation is not possible across the language boundary, so
+/// what is shared is the list of questions. It is exported to
+/// `packages/ai-benchmark/tests/fixtures/official-evidence-requirements.json`,
+/// asserted here and asserted there: adding a requirement on one side without
+/// the other fails a test rather than quietly producing two definitions of
+/// "official" that slowly disagree.
+pub const OFFICIAL_EVIDENCE_REQUIREMENTS: &[&str] = &[
+    "declared_official",
+    "clean_checkout",
+    "full_commit",
+    "runtime_provenance",
+    "host_facts",
+    "suite_identity",
+    "full_profile_case_coverage",
+];
+
 /// Whether a run may be published as comparable evidence.
 ///
 /// Two questions, and both have to be answered yes. **Could** this be
@@ -915,46 +945,98 @@ pub fn official_run_verdict(
     coverage: &RunCoverage,
     required: &CoverageRequirement,
 ) -> Result<(), String> {
-    let mut missing = Vec::new();
+    let missing = official_evidence_failures(metadata, coverage, required);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to record run {} as comparable evidence: {}.",
+        metadata.run_id,
+        missing
+            .into_iter()
+            .map(|(_, detail)| detail)
+            .collect::<Vec<_>>()
+            .join("; ")
+    ))
+}
+
+/// Every [`OFFICIAL_EVIDENCE_REQUIREMENTS`] entry this run fails, and why.
+///
+/// Separate from the verdict so the tags are load-bearing rather than
+/// decorative: a test can assert that every shared requirement is genuinely
+/// reachable here, which is what keeps the exported list honest instead of a
+/// comment that drifts.
+pub fn official_evidence_failures(
+    metadata: &RunMetadata,
+    coverage: &RunCoverage,
+    required: &CoverageRequirement,
+) -> Vec<(&'static str, String)> {
+    // Tagged rather than bare strings: the tag is the shared requirement, the
+    // string is this side's account of how it was missed.
+    let mut missing: Vec<(&'static str, String)> = Vec::new();
 
     // Declared purpose first: a smoke run is refused before anything else is
     // even examined, because no amount of rigour makes it the right run.
     if metadata.run_kind != RunKind::OfficialComparison {
-        return Err(format!(
+        return vec![(
+            "declared_official",
+            format!(
             "run {} was recorded as a {} run, which is plumbing evidence and never \
              comparable evidence, however complete its metadata is",
-            metadata.run_id,
-            metadata.run_kind.label()
-        ));
+                metadata.run_id,
+                metadata.run_kind.label()
+            ),
+        )];
     }
 
     if metadata.git_dirty {
-        missing.push("the checkout was dirty, so nobody else can reproduce it".to_string());
+        missing.push((
+            "clean_checkout",
+            "the checkout was dirty, so nobody else can reproduce it".to_string(),
+        ));
     }
     if metadata.git_commit.len() != 40
         || !metadata.git_commit.chars().all(|c| c.is_ascii_hexdigit())
     {
-        missing.push(format!(
-            "the commit '{}' is not a full 40-character SHA",
-            metadata.git_commit
+        missing.push((
+            "full_commit",
+            format!(
+                "the commit '{}' is not a full 40-character SHA",
+                metadata.git_commit
+            ),
         ));
     }
     if metadata.runtime_release_tag.trim().is_empty() {
-        missing.push("the runtime release tag is absent".to_string());
+        missing.push((
+            "runtime_provenance",
+            "the runtime release tag is absent".to_string(),
+        ));
     }
     match metadata.runtime_executable_sha256.as_deref() {
         Some(digest) if digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()) => {}
-        Some(digest) => missing.push(format!("the runtime digest '{digest}' is not a SHA-256")),
-        None => missing.push("the runtime executable digest is absent".to_string()),
+        Some(digest) => missing.push((
+            "runtime_provenance",
+            format!("the runtime digest '{digest}' is not a SHA-256"),
+        )),
+        None => missing.push((
+            "runtime_provenance",
+            "the runtime executable digest is absent".to_string(),
+        )),
     }
     if metadata.host.cpu.trim().is_empty()
         || metadata.host.logical_cores == 0
         || metadata.host.total_ram_mb == 0
     {
-        missing.push("the host facts are incomplete".to_string());
+        missing.push((
+            "host_facts",
+            "the host facts are incomplete".to_string(),
+        ));
     }
     if metadata.suite_version.trim().is_empty() || metadata.suite_schema_version == 0 {
-        missing.push("the suite identity is incomplete".to_string());
+        missing.push((
+            "suite_identity",
+            "the suite identity is incomplete".to_string(),
+        ));
     }
 
     // Coverage: what the run actually did, not what it meant to do, and per
@@ -967,29 +1049,26 @@ pub fn official_run_verdict(
             continue;
         }
         if absent.len() == required.required_case_ids.len() {
-            missing.push(format!(
-                "no generations at all for {profile}, so there is nothing to compare"
+            missing.push((
+                "full_profile_case_coverage",
+                format!("no generations at all for {profile}, so there is nothing to compare"),
             ));
             continue;
         }
         let shown: Vec<&str> = absent.iter().take(5).copied().collect();
-        missing.push(format!(
-            "{profile} is missing {} of {} required cases ({}{})",
-            absent.len(),
-            required.required_case_ids.len(),
-            shown.join(", "),
-            if absent.len() > shown.len() { ", ..." } else { "" }
+        missing.push((
+            "full_profile_case_coverage",
+            format!(
+                "{profile} is missing {} of {} required cases ({}{})",
+                absent.len(),
+                required.required_case_ids.len(),
+                shown.join(", "),
+                if absent.len() > shown.len() { ", ..." } else { "" }
+            ),
         ));
     }
 
-    if missing.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "refusing to record run {} as comparable evidence: {}.",
-        metadata.run_id,
-        missing.join("; ")
-    ))
+    missing
 }
 
 /// The coverage a full P0.5-B comparison requires: every case, both profiles.
@@ -1489,6 +1568,109 @@ mod tests {
     /// What a default smoke actually covers: a few cases, one model.
     fn smoke_coverage() -> RunCoverage {
         RunCoverage::from_pairs([("lite", "ai_case_001")])
+    }
+
+    // ---------------------------------------------------------------------
+    // The shared official-evidence requirements
+    // ---------------------------------------------------------------------
+
+    /// Metadata that satisfies every reproducibility requirement there is.
+    fn impeccable_metadata() -> RunMetadata {
+        test_metadata(false)
+    }
+
+    /// Which shared requirements a given run fails.
+    fn failed_requirements(metadata: &RunMetadata, coverage: &RunCoverage) -> Vec<&'static str> {
+        official_evidence_failures(metadata, coverage, &requirement())
+            .into_iter()
+            .map(|(tag, _)| tag)
+            .collect()
+    }
+
+    #[test]
+    fn every_shared_requirement_is_reachable() {
+        // The list is only worth exporting if each entry is a check something can
+        // actually fail. An id nobody can trip is a promise the report boundary
+        // would keep alone.
+        let mut reached: Vec<&'static str> = Vec::new();
+
+        let mut smoke = impeccable_metadata();
+        smoke.run_kind = RunKind::Smoke;
+        reached.extend(failed_requirements(&smoke, &full_coverage()));
+
+        let mut dirty = impeccable_metadata();
+        dirty.git_dirty = true;
+        reached.extend(failed_requirements(&dirty, &full_coverage()));
+
+        let mut short = impeccable_metadata();
+        short.git_commit = "9599f38".to_string();
+        reached.extend(failed_requirements(&short, &full_coverage()));
+
+        let mut unprovenanced = impeccable_metadata();
+        unprovenanced.runtime_executable_sha256 = None;
+        reached.extend(failed_requirements(&unprovenanced, &full_coverage()));
+
+        let mut hostless = impeccable_metadata();
+        hostless.host.logical_cores = 0;
+        reached.extend(failed_requirements(&hostless, &full_coverage()));
+
+        let mut suiteless = impeccable_metadata();
+        suiteless.suite_version = String::new();
+        reached.extend(failed_requirements(&suiteless, &full_coverage()));
+
+        reached.extend(failed_requirements(&impeccable_metadata(), &smoke_coverage()));
+
+        for requirement in OFFICIAL_EVIDENCE_REQUIREMENTS {
+            assert!(
+                reached.contains(requirement),
+                "no run in this test fails '{requirement}', so the exported list \
+                 claims a check that does not exist"
+            );
+        }
+        for reached in reached {
+            assert!(
+                OFFICIAL_EVIDENCE_REQUIREMENTS.contains(&reached),
+                "'{reached}' is enforced here but absent from the exported list, so \
+                 the TypeScript boundary was never told about it"
+            );
+        }
+    }
+
+    #[test]
+    fn impeccable_evidence_fails_nothing() {
+        assert!(failed_requirements(&impeccable_metadata(), &full_coverage()).is_empty());
+        official_run_verdict(&impeccable_metadata(), &full_coverage(), &requirement())
+            .expect("this is what official evidence looks like");
+    }
+
+    #[test]
+    fn the_requirement_list_is_exported_for_the_report_boundary() {
+        // The same contract-fixture mechanism as the run shape, for the same
+        // reason: the TypeScript gate implements these checks against the JSON it
+        // holds, and neither side may add or drop one alone.
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/ai-benchmark/tests/fixtures/official-evidence-requirements.json");
+        let produced =
+            serde_json::to_string_pretty(&OFFICIAL_EVIDENCE_REQUIREMENTS).unwrap() + "\n";
+
+        if env::var("CHRONOSAGA_UPDATE_FIXTURES").ok().as_deref() == Some("1") {
+            fs::create_dir_all(fixture_path.parent().unwrap()).unwrap();
+            fs::write(&fixture_path, &produced).unwrap();
+            return;
+        }
+
+        let committed = fs::read_to_string(&fixture_path).unwrap_or_else(|error| {
+            panic!(
+                "missing {}: {error}. Regenerate with CHRONOSAGA_UPDATE_FIXTURES=1",
+                fixture_path.display()
+            )
+        });
+        assert_eq!(
+            committed.replace("\r\n", "\n"),
+            produced,
+            "the official-evidence requirements changed; regenerate the fixture and \
+             implement the requirement at the TypeScript report boundary too"
+        );
     }
 
     #[test]
@@ -2413,6 +2595,95 @@ mod tests {
         let prompt = system_prompt(permissive);
         assert!(prompt.contains("nessuno e' obbligato"), "{prompt}");
         assert!(!prompt.contains("DEVONO parlare"), "{prompt}");
+    }
+
+    #[test]
+    fn the_two_cases_that_expect_both_voices_now_demand_them() {
+        // P2-B. Both cases state "both characters speak" as an expected fact,
+        // and nothing enforced it: the prompt was free to say nobody had to
+        // speak while the evaluation expected two voices. The intent is in the
+        // fact itself — these are consequence scenes written around a reaction
+        // from each side, not a narration that happens to have people nearby.
+        let suite = load_suite().unwrap();
+        for id in ["ai_case_036", "ai_case_041"] {
+            let case = suite
+                .cases
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .expect("the case exists");
+            assert!(
+                case.expected_facts
+                    .iter()
+                    .any(|fact| fact == "both characters speak"),
+                "{id} no longer expects both voices; the requirement should follow"
+            );
+            assert_eq!(
+                case.constraints.required_speaker_ids, case.constraints.known_speaker_ids,
+                "{id} expects both to speak, so both are required"
+            );
+
+            let prompt = system_prompt(case);
+            assert!(prompt.contains("DEVONO parlare"), "{id}: {prompt}");
+            for speaker in &case.constraints.required_speaker_ids {
+                assert!(prompt.contains(speaker.as_str()), "{id}: {prompt}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_contract_a_case_produces_carries_its_obligations() {
+        // The end-to-end link: without this the prompt could invite silence
+        // while the application validator rejected it, and the run would record
+        // a compliant answer as a rejection before the evaluator ever saw it.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let contract = case_contract(case);
+            assert_eq!(
+                contract.required_speaker_ids, case.constraints.required_speaker_ids,
+                "{} lost its obligations on the way to the validator",
+                case.id
+            );
+            assert!(
+                contract.speaker_contract_defect().is_none(),
+                "{} builds an unsatisfiable contract",
+                case.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_permissive_case_accepts_an_answer_with_no_dialogue() {
+        // The defect in full: a case that permits speech and obliges none, run
+        // through the real application validator.
+        let suite = load_suite().unwrap();
+        let permissive = suite
+            .cases
+            .iter()
+            .find(|case| {
+                !case.constraints.known_speaker_ids.is_empty()
+                    && case.constraints.required_speaker_ids.is_empty()
+            })
+            .expect("some case permits speech without demanding it");
+        let payload = "{\"narration\": \"Helios Reach tace.\", \"dialogue\": [], \
+                       \"tone_tags\": [], \"event_proposals\": [], \"memory_suggestions\": []}";
+        crate::inference::validate(payload, &case_contract(permissive))
+            .unwrap_or_else(|error| panic!("{}: {}", permissive.id, error.message()));
+    }
+
+    #[test]
+    fn a_dialogue_case_still_rejects_an_answer_with_no_dialogue() {
+        let suite = load_suite().unwrap();
+        for task in ["single_npc_dialogue", "two_character_conflict"] {
+            let case = suite
+                .cases
+                .iter()
+                .find(|candidate| candidate.task == task)
+                .expect("the task exists");
+            let payload = "{\"narration\": \"Helios Reach tace.\", \"dialogue\": [], \
+                           \"tone_tags\": [], \"event_proposals\": [], \"memory_suggestions\": []}";
+            crate::inference::validate(payload, &case_contract(case))
+                .expect_err("the dialogue is the task");
+        }
     }
 
     #[test]

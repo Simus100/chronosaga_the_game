@@ -97,19 +97,20 @@ describe('benchmark isolation from authoritative state', () => {
 
   it('never mutates the suite while building a comparison', () => {
     const frozenSuite = deepFreeze(structuredClone(suite));
-    const caseIds = frozenSuite.cases.slice(0, 3).map(entry => entry.id);
+    const caseIds = frozenSuite.cases.map(entry => entry.id);
     const run: BenchmarkRun = deepFreeze({
       metadata: {
         runId: 'run',
         runKind: 'official_comparison',
         startedAt: '2026-08-21T00:00:00.000Z',
-        gitCommit: '9599f38',
+        gitCommit: '9599f38d846f29907286e53200f51a703af4f53c',
         gitDirty: false,
         suiteVersion: frozenSuite.suiteVersion,
         suiteSchemaVersion: 1,
         runnerVersion: '0.1.0',
         runtimeReleaseTag: 'b10343',
-        runtimeExecutableSha256: null,
+        runtimeExecutableSha256:
+          '3e8c1a6b5d4f2907c8b1e6a4d7f0b3c5928e1d4a7b0c3f6e9d2a5b8c1e4f7a0d',
         host: { os: 'Windows 11', arch: 'x86_64', cpu: 'i7', logicalCores: 24, totalRamMb: 65536 },
       },
       generations: caseIds.flatMap(caseId => [

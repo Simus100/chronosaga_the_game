@@ -80,20 +80,22 @@ function twoProfileRun(caseIds: string[]): BenchmarkRun {
       runId: 'run',
       runKind: 'official_comparison',
       startedAt: '2026-08-21T00:00:00.000Z',
-      gitCommit: '9599f38',
+      gitCommit: '9599f38d846f29907286e53200f51a703af4f53c',
       gitDirty: false,
       suiteVersion: suite.suiteVersion,
       suiteSchemaVersion: 1,
       runnerVersion: '0.1.0',
       runtimeReleaseTag: 'b10343',
-      runtimeExecutableSha256: null,
+      runtimeExecutableSha256: '3e8c1a6b5d4f2907c8b1e6a4d7f0b3c5928e1d4a7b0c3f6e9d2a5b8c1e4f7a0d',
       host: { os: 'Windows 11', arch: 'x86_64', cpu: 'i7-13700KF', logicalCores: 24, totalRamMb: 65536 },
     },
     generations,
   };
 }
 
-const caseIds = suite.cases.slice(0, 4).map(entry => entry.id);
+// The whole suite, because an official comparison is the whole suite. A
+// three-case fixture is a smoke pass, and the report boundary now says so.
+const caseIds = suite.cases.map(entry => entry.id);
 
 describe('the Lite vs Standard comparison', () => {
   it('reports both profiles over the same cases', () => {
@@ -105,12 +107,28 @@ describe('the Lite vs Standard comparison', () => {
   });
 
   it('refuses to compare profiles that did not see identical inputs', () => {
+    // Same cases for both, different question asked. Coverage is intact, so this
+    // reaches the parity check rather than being caught earlier as a hole.
+    const run = twoProfileRun(caseIds);
+    const lite = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === caseIds[0],
+    )!;
+    lite.inputFingerprint = 'f'.repeat(64);
+    expect(inputParityProblems(run, ['lite', 'standard'])).toHaveLength(1);
+    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+  });
+
+  it('catches a missing row as a coverage hole, not as a parity mismatch', () => {
+    // Dropping a row breaks parity too, but naming it "the profiles saw
+    // different inputs" describes the symptom. The run is simply incomplete, and
+    // the earlier, more specific gate says which pair is absent.
     const run = twoProfileRun(caseIds);
     run.generations = run.generations.filter(
       generation => !(generation.profile === 'lite' && generation.caseId === caseIds[0]),
     );
-    expect(inputParityProblems(run, ['lite', 'standard'])).toHaveLength(1);
-    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+    expect(() => buildComparison(suite, run)).toThrow(
+      new RegExp(`full_profile_case_coverage.*lite is missing 1 of ${suite.cases.length}`),
+    );
   });
 
   it('names the cases where the profiles disagreed', () => {

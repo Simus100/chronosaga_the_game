@@ -160,6 +160,22 @@ memory-suggestion or location-description case permits speech without demanding
 it, and the prompt says which it is: `DEVONO parlare` when a voice is needed,
 `nessuno e' obbligato` when it is not. Unknown-speaker grounding is untouched.
 
+The distinction reaches the application validator, not just the evaluator. Before
+this, `OutputContract` knew only who *may* speak and rejected empty dialogue
+whenever anyone was listed — so a case could tell the model nobody was obliged to
+speak and have the silence it invited recorded as a rejection, before the
+objective checks ever ran. `case_contract` now carries `requiredSpeakerIds`
+through, and a contract that requires a speaker it does not permit is named as a
+defect in the contract rather than a failure of the model: silence would fail the
+requirement and speech would fail the permission, so no answer could pass.
+
+Two cases needed the obligation they were missing. `ai_case_036` and
+`ai_case_041` both state *both characters speak* as an expected fact — they are
+consequence scenes written around a reaction from each side — while declaring no
+required speakers. The suite-wide invariant is now derived from the cases rather
+than from a list of task names: a case whose expected facts demand speech must
+declare who owes it. Anchoring on task kind would have missed exactly these two.
+
 
 `allowEventProposals` says a case tolerates a proposal; `requireEventProposal`
 says it demands one, and the memory path is symmetric. Only a requirement makes
@@ -182,6 +198,26 @@ vacuous truth — both compared sets are empty, so nothing is missing and nothin
 disagrees — and renders `caseCount: 0` with empty summaries. An interrupted or
 half-copied evidence directory looks exactly like that. Every compared profile
 must have rows, and at least one case must have been answered by all of them.
+
+Having something to compare is not the same as having the right thing. A smoke
+pass over ten cases on a dirty checkout is structurally impeccable and supports
+no Lite-versus-Standard decision at all, and the danger is not that such a report
+fails — it is that it succeeds and looks exactly like the official one: same
+headings, same table, same verdict line, numbers drawn from a fraction of the
+suite. `buildComparison` is the official entry point, so it fails closed. The run
+must be declared official, built on a clean checkout at a full commit, carry
+runtime provenance and host facts, and cover **every** `(profile, case)` pair the
+supplied suite defines. Coverage is derived from that suite, so a suite that
+grows raises the bar by itself; attempts collapse into pairs, so a retry adds a
+row and no coverage.
+
+Rust and TypeScript answer that question at different moments — the runner as
+coverage accumulates, the report boundary against finished JSON — and cannot
+share an implementation across the language boundary. What they share is the list
+of questions: `OFFICIAL_EVIDENCE_REQUIREMENTS` is exported to
+`tests/fixtures/official-evidence-requirements.json` and asserted on both sides,
+and each side has a test proving every requirement it declares is one something
+can actually fail. Neither can add or drop one alone.
 
 Then it runs the authoritative `validateRun`, before parity,
 evaluation or any aggregate. These runs arrive as external JSON and `validateRun`
