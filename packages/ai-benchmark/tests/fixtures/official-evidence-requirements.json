@@ -6,5 +6,6 @@
   "host_facts",
   "suite_identity",
   "full_profile_case_coverage",
-  "no_fallback_evidence"
+  "no_fallback_evidence",
+  "complete_retry_history"
 ]

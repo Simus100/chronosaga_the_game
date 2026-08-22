@@ -147,6 +147,18 @@ against the five locked categories and the generations the run actually
 contains; the comparison reports machine and human disqualifications separately
 and never merges either into a score.
 
+Coverage means a **finished** history, not an observed row. The retry policy has
+exactly three completed shapes — accepted first try; rejected then accepted;
+rejected twice, which is exhausted and is still an answer. A rejected first
+attempt with no second is none of them: it is a run that stopped before the model
+finished being asked, and the one retry the policy owes it was never taken.
+Counting it as a completed failure counts an interruption as evidence about the
+model, and a whole suite of them would read as 130 complete pairs in which both
+models failed everything. `terminalGeneration` names the attempt that ended a
+history or refuses to name one; `MAX_ATTEMPTS` remains the only authority for the
+ceiling, and a test reads the TypeScript declaration from the Rust side so
+neither language can raise its own budget.
+
 An official run never falls back. `STANDARD → LITE` is right for the product,
 where the player wants the game to keep going, and wrong for a measurement: a row
 where Standard asked and Lite answered stays grouped under `profile: 'standard'`,
@@ -175,6 +187,27 @@ validator and the evaluator. Unknown keys are refused because the producing Rust
 types are `deny_unknown_fields`, and nothing is repaired: creating a missing
 array, coercing a value or dropping a malformed item would each turn evidence of
 a broken run into a plausible number.
+
+Failing the schema twice disqualifies any case that required a schema. The rule
+used to key on `strictJsonOnly`, which is five of the sixty-five cases, so a
+dialogue, memory, warfare or proposal case could fail the contract, exhaust its
+retry, finish with nothing usable, and record no machine hard fail merely because
+it was not one of the JSON-repair cases. It keys on `structuredOutput` now — the
+constraint that states the requirement — never on the task name. A first attempt
+is not terminal, an accepted retry is recovered, and `strictJsonOnly` keeps its
+additional bare-JSON requirement on top.
+
+Human scores are averaged over one population or not at all. `validateScoreSheet`
+asks whether each score is well formed; it never asked whether the set meant
+anything as a mean, so one hand-picked excellent Lite generation and a handful of
+mediocre Standard ones produced two numbers that looked directly comparable and
+came from different samples — a difference in sampling reported as a difference
+in models, and the kind of number that decides which model ships. The population
+is the terminal generation of every `(profile, case)`: exactly one observation
+each, so a profile that needed its retry is not weighted twice for having
+struggled. An exhausted, rejected terminal attempt stays in the sample — its
+prose can still be judged and its disqualification is recorded separately, rather
+than by quietly removing it. A run with no sheet keeps its human means null.
 
 Grounding reads all the prose, not only the narration and dialogue. Proposals and
 memory suggestions are typed, and the application validator grounds their typed

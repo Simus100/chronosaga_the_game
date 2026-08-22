@@ -375,6 +375,7 @@ export const OFFICIAL_EVIDENCE_REQUIREMENTS = [
   'suite_identity',
   'full_profile_case_coverage',
   'no_fallback_evidence',
+  'complete_retry_history',
 ] as const;
 
 export type OfficialEvidenceRequirement = (typeof OFFICIAL_EVIDENCE_REQUIREMENTS)[number];
@@ -464,10 +465,15 @@ export function officialEvidenceProblems(
   // A fallback row establishes nothing: if Standard fell back on a case, Standard
   // has no answer for that case, and letting the row count would let a profile
   // show full coverage built from another model's work.
+  //
+  // Nor does an unfinished history. A rejected first attempt is owed exactly one
+  // retry, and until that retry exists the pair is an interrupted run, not a
+  // model result — a whole suite of them would otherwise read as 130 complete
+  // pairs in which both models failed everything.
   const answered = new Set(
-    run.generations
-      .filter(generation => !generation.fallbackUsed && generation.fallbackProfile === null)
-      .map(generation => `${generation.profile} ${generation.caseId}`),
+    terminalGenerations(run, profiles).map(
+      generation => `${generation.profile} ${generation.caseId}`,
+    ),
   );
   for (const profile of profiles) {
     const absent = suite.cases
@@ -505,6 +511,17 @@ export function officialEvidenceProblems(
       `${generation.id} fell back from ${generation.profile} to ` +
         `${generation.fallbackProfile ?? 'an unnamed profile'}, so it is evidence about ` +
         `${generation.fallbackProfile ?? 'another model'} recorded under ${generation.profile}`,
+    );
+  }
+
+  // Said separately from coverage, because they are different facts: coverage
+  // says this profile has no answer for that case, and this says why — the
+  // model was asked, refused, and never got the retry the policy owes it.
+  for (const history of unfinishedHistories(run, profiles)) {
+    at(
+      'complete_retry_history',
+      `${history.caseId} for ${history.profile}: attempt 1 was rejected and no attempt 2 ` +
+        'was recorded, so the retry evidence is missing and the history never finished',
     );
   }
 
@@ -585,6 +602,80 @@ export function suiteBindingProblems(suite: BenchmarkSuite, run: BenchmarkRun): 
 }
 
 /**
+ * Whether a supplied score sheet covers a population the profiles can be
+ * compared across.
+ *
+ * `validateScoreSheet` asks whether each score is well formed; this asks whether
+ * the set of scores means anything as a mean. It did not before: the report
+ * averaged whatever subset a scorer happened to submit, so one hand-picked
+ * excellent Lite generation and a handful of mediocre Standard ones produced two
+ * numbers that looked directly comparable and were drawn from different
+ * populations. That is a difference in sampling reported as a difference in
+ * models, and it is the kind of number that decides which model ships.
+ *
+ * The population is one observation per `(profile, case)`: the **terminal**
+ * generation, the one that carries the profile's answer after the fixed retry
+ * policy. Scoring every row instead would weight a profile more heavily for
+ * having needed its retry, which measures the retry budget rather than the
+ * writing. An exhausted, rejected terminal attempt stays in the population — its
+ * prose can still be judged, and its disqualification is recorded separately as
+ * a hard fail rather than by removing it from the sample.
+ *
+ * Derived from the run's own histories, so a suite of any size is covered by the
+ * same rule and nothing here counts to 65.
+ *
+ * A run with no score sheet keeps its optional behaviour: human means stay null,
+ * and nothing is demanded of a scorer who has not started.
+ */
+export function scorePopulationProblems(
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+  sheet: ScoreSheet | null,
+): string[] {
+  if (sheet === null) return [];
+
+  const population = terminalGenerations(run, profiles);
+  const expected = new Map(population.map(generation => [generation.id, generation]));
+  const scored = new Set(sheet.scores.map(score => score.generationId));
+  const problems: string[] = [];
+
+  // Scores for rows outside the population, named for what they are rather than
+  // as unknown ids: a superseded first attempt is a real generation, and
+  // averaging it beside a terminal one mixes an abandoned answer with a final.
+  const byId = new Map(run.generations.map(generation => [generation.id, generation]));
+  for (const score of sheet.scores) {
+    if (expected.has(score.generationId)) continue;
+    const generation = byId.get(score.generationId);
+    if (generation === undefined) continue; // validateScoreSheet owns unknown ids
+    if (!profiles.includes(generation.profile)) {
+      problems.push(`${score.generationId} is not part of this comparison`);
+      continue;
+    }
+    problems.push(
+      `${score.generationId} is attempt ${generation.attempt} of ${generation.caseId} for ` +
+        `${generation.profile}, which is not the attempt that ended that history`,
+    );
+  }
+
+  // Missing scores, grouped by profile so the gap is legible: "standard is
+  // missing four" is actionable, "four generations are unscored" is not.
+  for (const profile of profiles) {
+    const absent = population
+      .filter(generation => generation.profile === profile && !scored.has(generation.id))
+      .map(generation => generation.caseId);
+    if (absent.length === 0) continue;
+    const shown = absent.slice(0, 5);
+    problems.push(
+      `${profile} has ${absent.length} of ${population.filter(g => g.profile === profile).length} ` +
+        `terminal generations unscored (${shown.join(', ')}` +
+        `${absent.length > shown.length ? ', ...' : ''})`,
+    );
+  }
+
+  return problems;
+}
+
+/**
  * Whether a score sheet or review actually belongs to the run being reported.
  *
  * Both structures already carry `runId` and `suiteVersion`; this makes those
@@ -623,6 +714,120 @@ export function attributionProblems(
  * Unilateral retries stay valid: this looks at one profile's history at a time
  * and never compares the two.
  */
+/** Every attempt at one case by one profile, in attempt order. */
+export interface AttemptHistory {
+  caseId: string;
+  profile: BenchmarkProfile;
+  attempts: BenchmarkGeneration[];
+}
+
+/**
+ * Group a run's rows into one history per `(profile, case)` pair.
+ *
+ * Fallback rows are left out: they were answered by another model, so they are
+ * not attempts by this profile at this case in any sense that could complete.
+ */
+export function attemptHistories(
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+): AttemptHistory[] {
+  const histories = new Map<string, AttemptHistory>();
+  for (const generation of run.generations) {
+    if (!profiles.includes(generation.profile)) continue;
+    if (generation.fallbackUsed || generation.fallbackProfile !== null) continue;
+    const key = `${generation.profile} ${generation.caseId}`;
+    const history = histories.get(key) ?? {
+      caseId: generation.caseId,
+      profile: generation.profile,
+      attempts: [],
+    };
+    history.attempts.push(generation);
+    histories.set(key, history);
+  }
+  for (const history of histories.values()) {
+    history.attempts.sort((a, b) => a.attempt - b.attempt);
+  }
+  return [...histories.values()];
+}
+
+/**
+ * The attempt that ends a history, or `null` when the history has not ended.
+ *
+ * The retry policy is fixed and has exactly three finished shapes:
+ *
+ * ```text
+ * attempt 1 accepted                    -> attempt 1 is terminal
+ * attempt 1 rejected, attempt 2 accepted -> attempt 2 is terminal
+ * attempt 1 rejected, attempt 2 rejected -> attempt 2 is terminal (exhausted)
+ * ```
+ *
+ * A rejected first attempt with no second is none of them. It is not a model
+ * result at all — it is a run that stopped before the model was finished being
+ * asked, and the one retry the policy owes it was never taken. Reading it as a
+ * completed failure counts an interruption as evidence about the model.
+ *
+ * `MAX_ATTEMPTS` is the single authority for the ceiling; nothing here restates
+ * a retry count of its own.
+ */
+export function terminalGeneration(history: AttemptHistory): BenchmarkGeneration | null {
+  const attempts = history.attempts;
+  if (attempts.length === 0) return null;
+
+  // Shapes that are invalid for other reasons are also not terminal: a history
+  // that starts at attempt 2, skips one, repeats one or runs past the ceiling
+  // has no trustworthy last attempt. Those get their own messages from
+  // `attemptHistoryProblems`; this simply refuses to name a winner.
+  for (const [index, attempt] of attempts.entries()) {
+    if (attempt.attempt !== index + 1) return null;
+  }
+  if (attempts.length > MAX_ATTEMPTS) return null;
+
+  // A retry may only follow a rejection, so every attempt before the last must
+  // have been rejected. An accepted attempt ends the history; anything after it
+  // is a row the policy never permitted, and the pair has no honest answer.
+  if (attempts.slice(0, -1).some(attempt => attempt.accepted)) return null;
+
+  const last = attempts[attempts.length - 1]!;
+  if (last.accepted) return last;
+  // Rejected and the retry is spent: exhausted, and exhausted is an answer.
+  if (attempts.length === MAX_ATTEMPTS) return last;
+  // Rejected with the retry still owed: unfinished.
+  return null;
+}
+
+/**
+ * The one generation per `(profile, case)` that carries the profile's answer.
+ *
+ * Exactly one per completed pair, whatever it cost to get there. A profile that
+ * needed its retry produced two rows and still gave one answer, and counting
+ * both would weight it twice for having struggled.
+ */
+export function terminalGenerations(
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+): BenchmarkGeneration[] {
+  return attemptHistories(run, profiles)
+    .map(terminalGeneration)
+    .filter((generation): generation is BenchmarkGeneration => generation !== null);
+}
+
+/** The `(profile, case)` pairs whose history stopped before the policy ended it. */
+export function unfinishedHistories(
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+): AttemptHistory[] {
+  return attemptHistories(run, profiles).filter(
+    history =>
+      terminalGeneration(history) === null &&
+      // Only histories that are unfinished *as such*. A malformed one is
+      // reported by the checks that own malformedness, and saying both would
+      // blame an interruption for a defect.
+      history.attempts.length === 1 &&
+      history.attempts[0]!.attempt === 1 &&
+      !history.attempts[0]!.accepted,
+  );
+}
+
 export function attemptHistoryProblems(
   run: BenchmarkRun,
   profiles: BenchmarkProfile[],
@@ -915,6 +1120,15 @@ export function buildComparison(
   const malformed = judgementProblems(run, sheet, review);
   if (malformed.length > 0) {
     throw new Error(`refusing malformed judgement: ${malformed.join('; ')}`);
+  }
+
+  // Well-formed scores can still be an incomparable sample. This is the last
+  // judgement gate before any mean is taken.
+  const population = scorePopulationProblems(run, compared, sheet);
+  if (population.length > 0) {
+    throw new Error(
+      `refusing to average human scores over an incomparable population: ${population.join('; ')}`,
+    );
   }
 
   const mismatches = taskMismatches(suite, run);

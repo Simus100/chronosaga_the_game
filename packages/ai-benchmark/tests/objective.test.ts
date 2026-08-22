@@ -676,3 +676,123 @@ describe('grounding reaches inside structured suggestions', () => {
     expect(check(withNone, 'entity_references_exist').passed).toBe(true);
   });
 });
+
+describe('an exhausted schema failure disqualifies any structured case', () => {
+  /** A rejected generation at `attempt`, for `caseId`. */
+  function rejected(caseId: string, attempt: number) {
+    return generation({
+      id: `run:${caseId}:lite:${attempt}`,
+      caseId,
+      attempt,
+      retryUsed: attempt > 1,
+      accepted: false,
+      validatorErrors: ['output is not a valid contract payload: expected value'],
+      normalizedOutput: null,
+    });
+  }
+
+  const caseFor = (id: string) => suite.cases.find(entry => entry.id === id)!;
+  const firstOf = (task: string) => suite.cases.find(entry => entry.task === task)!;
+  const categories = (caseId: string, attempt: number) =>
+    evaluateObjectively(caseFor(caseId), rejected(caseId, attempt)).hardFails.map(
+      fail => fail.category,
+    );
+
+  it('the suite declares structured output on every case, which is why this matters', () => {
+    // Derived, not remembered: the rule keys on this constraint, so the shape of
+    // the suite is part of the evidence for the rule.
+    expect(suite.cases.every(entry => entry.constraints.structuredOutput)).toBe(true);
+    const strict = suite.cases.filter(entry => entry.constraints.strictJsonOnly);
+    expect(strict.length).toBeGreaterThan(0);
+    expect(strict.length).toBeLessThan(suite.cases.length);
+  });
+
+  it('A: a non-strict dialogue case that failed twice is disqualified', () => {
+    const entry = firstOf('single_npc_dialogue');
+    expect(entry.constraints.strictJsonOnly).toBeFalsy();
+    expect(categories(entry.id, 2)).toContain('unrecoverable_structured_output');
+  });
+
+  it('B: a memory case that failed twice is disqualified', () => {
+    const entry = firstOf('memory_grounded_reaction');
+    expect(categories(entry.id, 2)).toContain('unrecoverable_structured_output');
+  });
+
+  it('C: political, resource and warfare cases that failed twice are disqualified', () => {
+    for (const task of [
+      'faction_political_consequence',
+      'resource_economic_consequence',
+      'warfare_report',
+    ]) {
+      const entry = firstOf(task);
+      expect(categories(entry.id, 2), task).toContain('unrecoverable_structured_output');
+    }
+  });
+
+  it('D: a proposal case that failed twice is disqualified', () => {
+    const entry = suite.cases.find(candidate => candidate.constraints.allowEventProposals)!;
+    expect(categories(entry.id, 2)).toContain('unrecoverable_structured_output');
+  });
+
+  it('E: a strict JSON repair case is disqualified as before', () => {
+    const entry = suite.cases.find(candidate => candidate.constraints.strictJsonOnly)!;
+    expect(categories(entry.id, 2)).toContain('unrecoverable_structured_output');
+  });
+
+  it('the rule keys on the constraint, not on the task name', () => {
+    // H: a case that did not require structured output would not be
+    // disqualified for failing to produce it. None of the 65 is such a case, so
+    // the case is constructed rather than found.
+    const unstructured = structuredClone(caseFor(suite.cases[0]!.id));
+    unstructured.constraints.structuredOutput = false;
+    const result = evaluateObjectively(unstructured, rejected(unstructured.id, 2));
+    expect(result.hardFails.map(fail => fail.category)).not.toContain(
+      'unrecoverable_structured_output',
+    );
+  });
+
+  it('a rejected first attempt is not terminal; the retry is still owed', () => {
+    const entry = firstOf('single_npc_dialogue');
+    expect(categories(entry.id, 1)).not.toContain('unrecoverable_structured_output');
+  });
+
+  it('F: a retry that recovered is not disqualified', () => {
+    const entry = firstOf('single_npc_dialogue');
+    const recovered = generation({
+      id: `run:${entry.id}:lite:2`,
+      caseId: entry.id,
+      attempt: 2,
+      retryUsed: true,
+      accepted: true,
+      normalizedOutput: output(),
+    });
+    const result = evaluateObjectively(entry, recovered);
+    expect(result.hardFails.map(fail => fail.category)).not.toContain(
+      'unrecoverable_structured_output',
+    );
+  });
+
+  it('G: an accepted first attempt is not disqualified', () => {
+    const entry = firstOf('single_npc_dialogue');
+    const accepted = generation({ caseId: entry.id, normalizedOutput: output() });
+    expect(evaluateObjectively(entry, accepted).hardFails).toEqual([]);
+  });
+
+  it('I: the disqualification stays machine-determined', () => {
+    const entry = firstOf('single_npc_dialogue');
+    const fails = evaluateObjectively(caseFor(entry.id), rejected(entry.id, 2)).hardFails;
+    const structured = fails.find(fail => fail.category === 'unrecoverable_structured_output')!;
+    expect(structured.determinedBy).toBe('machine');
+    expect(structured.detail).toMatch(/still invalid after the one permitted retry/);
+  });
+
+  it('J: it counts once per case, not once per rejected attempt', () => {
+    const entry = firstOf('single_npc_dialogue');
+    // Both attempts were rejected; only the terminal one carries the verdict.
+    expect(categories(entry.id, 1)).toHaveLength(0);
+    const terminal = categories(entry.id, 2).filter(
+      category => category === 'unrecoverable_structured_output',
+    );
+    expect(terminal).toHaveLength(1);
+  });
+});

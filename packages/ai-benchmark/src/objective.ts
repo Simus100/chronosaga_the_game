@@ -187,12 +187,26 @@ export function evaluateObjectively(
   );
 
   if (!generation.accepted) {
-    // A strict-JSON case that never produced usable structure, after its retry,
-    // is unusable rather than merely weak.
-    if (constraints.strictJsonOnly && generation.retryUsed) {
+    // Every case in the suite requires structured output — that is what
+    // `structuredOutput` declares, and the runner sends all of them through the
+    // same contract. Keying the disqualification to `strictJsonOnly` meant a
+    // dialogue, memory, warfare or proposal case could fail the schema twice,
+    // exhaust its retry, finish with nothing usable, and record no machine hard
+    // fail merely because it was not one of the five JSON-repair cases.
+    //
+    // Derived from the constraint that states the requirement, never from the
+    // task name. A case that did not require structured output would not be
+    // disqualified for failing to produce it, and none of the 65 is such a case.
+    //
+    // `retryUsed` is true only on attempt 2, which the policy makes terminal, so
+    // this fires once per case and never on a first attempt that is still owed
+    // its retry.
+    if (constraints.structuredOutput && generation.retryUsed) {
       hardFails.push({
         category: 'unrecoverable_structured_output',
-        detail: `strict-JSON case still invalid after a retry: ${generation.validatorErrors.join('; ')}`,
+        detail:
+          `structured output still invalid after the one permitted retry: ` +
+          `${generation.validatorErrors.join('; ')}`,
         determinedBy: 'machine',
       });
     }

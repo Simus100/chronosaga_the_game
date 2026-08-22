@@ -7,6 +7,8 @@ import {
   judgementProblems,
   officialEvidenceProblems,
   officialProfileSetProblem,
+  scorePopulationProblems,
+  terminalGenerations,
   OFFICIAL_EVIDENCE_REQUIREMENTS,
   suiteBindingProblems,
   taskMismatches,
@@ -18,6 +20,7 @@ import type { ScoreSheet } from '../src/scoring.js';
 import {
   MAX_ATTEMPTS,
   MAX_RETRIES,
+  MAX_ATTEMPTS as CONTRACT_MAX_ATTEMPTS,
   OFFICIAL_COMPARISON_PROFILES,
   validateRun,
 } from '../src/result.js';
@@ -90,6 +93,33 @@ function generationFor(
 // The whole suite, because an official comparison is the whole suite. A
 // three-case fixture is a smoke pass, and the report boundary now says so.
 const caseIds = suite.cases.map(entry => entry.id);
+
+const AXES = {
+  italian_fluency: 4, grounding: 4, character_consistency: 4, memory_use: 4,
+  instruction_adherence: 4, schema_compliance: 4, non_contradiction: 4,
+  narrative_usefulness: 4, repetition_resistance: 4, latency_acceptability: 4,
+} as const;
+
+/**
+ * A score sheet covering every terminal generation of a run.
+ *
+ * What an official human pass actually produces: one observation per case per
+ * profile. A sheet with a handful of scores is what the report used to average
+ * and call a comparison.
+ */
+function fullSheet(run: BenchmarkRun, over: Partial<ScoreSheet> = {}): ScoreSheet {
+  return {
+    runId: 'run',
+    suiteVersion: suite.suiteVersion,
+    scores: terminalGenerations(run, ['lite', 'standard']).map(generation => ({
+      generationId: generation.id,
+      scoredBy: 'simone',
+      scoredAt: '2026-08-21T00:00:00.000Z',
+      scores: { ...AXES },
+    })),
+    ...over,
+  };
+}
 
 function fairRun(): BenchmarkRun {
   return {
@@ -259,6 +289,278 @@ describe('every row is attributed to the model that answered it', () => {
 
     row.servedModel = 'standard';
     expect(validateRun(run).map(problem => problem.field)).toContain('servedModel');
+  });
+});
+
+describe('a rejected first attempt is owed its retry', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+  const first = caseIds[0]!;
+
+  /** `fairRun` with one pair rewritten to the given `(attempt, accepted)` history. */
+  function withHistory(profile: BenchmarkProfile, history: Array<[number, boolean]>) {
+    const run = fairRun();
+    const template = run.generations.find(
+      generation => generation.profile === profile && generation.caseId === first,
+    )!;
+    run.generations = run.generations.filter(
+      generation => !(generation.profile === profile && generation.caseId === first),
+    );
+    for (const [attempt, accepted] of history) {
+      run.generations.push({
+        ...structuredClone(template),
+        id: `run:${first}:${profile}:${attempt}`,
+        attempt,
+        retryUsed: attempt > 1,
+        accepted,
+        validatorErrors: accepted ? [] : ['unknown tone tag'],
+        normalizedOutput: accepted ? template.normalizedOutput : null,
+        rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
+      });
+    }
+    return run;
+  }
+
+  it('A, B and C: the three finished shapes are complete evidence', () => {
+    for (const history of [
+      [[1, true]],
+      [[1, false], [2, true]],
+      [[1, false], [2, false]],
+    ] as Array<Array<[number, boolean]>>) {
+      const run = withHistory('lite', history);
+      expect(officialEvidenceProblems(suite, run, both), JSON.stringify(history)).toEqual([]);
+      expect(terminalGenerations(run, both)).toHaveLength(suite.cases.length * 2);
+    }
+  });
+
+  it('D and G: a rejected attempt 1 alone establishes nothing', () => {
+    const run = withHistory('lite', [[1, false]]);
+    expect(validateRun(run)).toEqual([]);
+    expect(
+      terminalGenerations(run, both).some(
+        generation => generation.profile === 'lite' && generation.caseId === first,
+      ),
+    ).toBe(false);
+  });
+
+  it('H: the refusal names the case, the profile, and the missing retry', () => {
+    const problems = officialEvidenceProblems(suite, withHistory('lite', [[1, false]]), both);
+    const incomplete = problems.find(
+      problem => problem.requirement === 'complete_retry_history',
+    )!;
+    expect(incomplete.message).toContain(first);
+    expect(incomplete.message).toContain('lite');
+    expect(incomplete.message).toMatch(/retry evidence is missing/);
+  });
+
+  it('F: one interrupted pair among otherwise complete ones refuses the run', () => {
+    const run = withHistory('standard', [[1, false]]);
+    expect(run.generations.length).toBe(suite.cases.length * 2);
+    expect(() => buildComparison(suite, run)).toThrow(/complete_retry_history/);
+  });
+
+  it('E: a full 65x2 coverage made entirely of rejected first attempts is refused', () => {
+    // The shape that used to read as a completed run in which both models failed
+    // everything. It is 130 interruptions.
+    const run = fairRun();
+    for (const generation of run.generations) {
+      generation.accepted = false;
+      generation.validatorErrors = ['unknown tone tag'];
+      generation.normalizedOutput = null;
+    }
+    expect(validateRun(run)).toEqual([]);
+    expect(terminalGenerations(run, both)).toHaveLength(0);
+    const problems = officialEvidenceProblems(suite, run, both);
+    expect(problems.filter(p => p.requirement === 'complete_retry_history')).toHaveLength(
+      suite.cases.length * 2,
+    );
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('I and J: a retry after acceptance and a third attempt are still refused', () => {
+    for (const history of [
+      [[1, true], [2, false]],
+      [[1, false], [2, false], [3, false]],
+    ] as Array<Array<[number, boolean]>>) {
+      const run = withHistory('lite', history);
+      expect(() => buildComparison(suite, run), JSON.stringify(history)).toThrow();
+    }
+  });
+
+  it('K: one profile may use its retry while the other does not', () => {
+    // The shape the benchmark exists to observe, and it must stay valid.
+    const run = withHistory('standard', [[1, false], [2, true]]);
+    expect(officialEvidenceProblems(suite, run, both)).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+
+  it('takes the retry ceiling from the contract, not from a number written here', () => {
+    expect(MAX_ATTEMPTS).toBe(MAX_RETRIES + 1);
+    const atCeiling = withHistory('lite', [[1, false], [2, false]]);
+    expect(officialEvidenceProblems(suite, atCeiling, both)).toEqual([]);
+  });
+});
+
+describe('human scores are averaged over a comparable population', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+  const first = caseIds[0]!;
+
+  it('A: no score sheet leaves the human means alone', () => {
+    const report = buildComparison(suite, fairRun(), ['lite', 'standard'], null);
+    for (const profile of report.profiles) {
+      expect(profile.humanMeanByAxis).toBeNull();
+    }
+    expect(scorePopulationProblems(fairRun(), both, null)).toEqual([]);
+  });
+
+  it('B and J: complete terminal coverage passes and produces means', () => {
+    const run = fairRun();
+    const sheet = fullSheet(run);
+    expect(sheet.scores).toHaveLength(suite.cases.length * 2);
+    expect(scorePopulationProblems(run, both, sheet)).toEqual([]);
+    const report = buildComparison(suite, run, ['lite', 'standard'], sheet);
+    for (const profile of report.profiles) {
+      expect(profile.humanMeanByAxis?.grounding).toBe(4);
+    }
+  });
+
+  it('C: one Lite score alone is refused', () => {
+    // The defect exactly: one hand-picked generation averaged against a
+    // different population and rendered as a comparable profile mean.
+    const run = fairRun();
+    const sheet = { ...fullSheet(run), scores: fullSheet(run).scores.slice(0, 1) };
+    expect(() => buildComparison(suite, run, ['lite', 'standard'], sheet)).toThrow(
+      /incomparable population/,
+    );
+  });
+
+  it('D: equal score counts over different cases is refused', () => {
+    const run = fairRun();
+    const all = fullSheet(run).scores;
+    const lite = all.filter(score => score.generationId.includes(':lite:')).slice(0, 10);
+    const standard = all.filter(score => score.generationId.includes(':standard:')).slice(-10);
+    const sheet = { ...fullSheet(run), scores: [...lite, ...standard] };
+    const problems = scorePopulationProblems(run, both, sheet);
+    expect(problems.some(problem => problem.startsWith('lite has'))).toBe(true);
+    expect(problems.some(problem => problem.startsWith('standard has'))).toBe(true);
+  });
+
+  it('E and F: either profile missing one score is refused', () => {
+    for (const short of both) {
+      const run = fairRun();
+      const sheet = {
+        ...fullSheet(run),
+        scores: fullSheet(run).scores.filter(
+          score => score.generationId !== `run:${first}:${short}:1`,
+        ),
+      };
+      const problems = scorePopulationProblems(run, both, sheet);
+      expect(problems, short).toHaveLength(1);
+      expect(problems[0]).toMatch(new RegExp(`^${short} has 1 of ${suite.cases.length}`));
+      expect(problems[0]).toContain(first);
+    }
+  });
+
+  it('G and I: only the attempt that ended the history is scoreable', () => {
+    // Lite needed its retry on the first case: attempt 2 is the answer, and
+    // attempt 1 is an abandoned draft that must not be averaged beside finals.
+    const run = fairRun();
+    const template = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === first,
+    )!;
+    template.accepted = false;
+    template.validatorErrors = ['unknown tone tag'];
+    template.normalizedOutput = null;
+    run.generations.push({
+      ...structuredClone(template),
+      id: `run:${first}:lite:2`,
+      attempt: 2,
+      retryUsed: true,
+      accepted: true,
+      validatorErrors: [],
+      normalizedOutput: fairRun().generations[0]!.normalizedOutput,
+      rawOutputPath: `raw/${first}.lite.2.txt`,
+    });
+
+    const population = terminalGenerations(run, both);
+    expect(population.some(generation => generation.id === `run:${first}:lite:2`)).toBe(true);
+    expect(population.some(generation => generation.id === `run:${first}:lite:1`)).toBe(false);
+
+    // I: scoring the superseded attempt instead is refused, and named for what
+    // it is rather than as an unknown id.
+    const sheet = {
+      ...fullSheet(run),
+      scores: fullSheet(run).scores.map(score =>
+        score.generationId === `run:${first}:lite:2`
+          ? { ...score, generationId: `run:${first}:lite:1` }
+          : score,
+      ),
+    };
+    const problems = scorePopulationProblems(run, both, sheet);
+    expect(problems.some(problem => problem.includes('not the attempt that ended that history'))).toBe(
+      true,
+    );
+  });
+
+  it('H and K: an exhausted, disqualified terminal attempt is still scoreable', () => {
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === first,
+    )!;
+    row.accepted = false;
+    row.validatorErrors = ['unknown tone tag'];
+    row.normalizedOutput = null;
+    run.generations.push({
+      ...structuredClone(row),
+      id: `run:${first}:lite:2`,
+      attempt: 2,
+      retryUsed: true,
+      rawOutputPath: `raw/${first}.lite.2.txt`,
+    });
+
+    // Rejected twice, and still the attempt that ended the history: its prose may
+    // be judged, and its disqualification is recorded separately.
+    expect(
+      terminalGenerations(run, both).some(generation => generation.id === `run:${first}:lite:2`),
+    ).toBe(true);
+    expect(scorePopulationProblems(run, both, fullSheet(run))).toEqual([]);
+  });
+
+  it('L: the population is derived from the run, never counted to 65', () => {
+    const run = fairRun();
+    expect(terminalGenerations(run, both)).toHaveLength(suite.cases.length * 2);
+    // Half the suite, and the requirement halves with it.
+    const keep = new Set(suite.cases.slice(0, 10).map(entry => entry.id));
+    run.generations = run.generations.filter(generation => keep.has(generation.caseId));
+    expect(terminalGenerations(run, both)).toHaveLength(20);
+    expect(scorePopulationProblems(run, both, fullSheet(run))).toEqual([]);
+  });
+
+  it('a retrying profile is not weighted more heavily for having struggled', () => {
+    // Two rows, one answer. The alternative would score a profile twice for
+    // needing its retry, which measures the retry budget rather than the prose.
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'standard' && generation.caseId === first,
+    )!;
+    row.accepted = false;
+    row.validatorErrors = ['unknown tone tag'];
+    row.normalizedOutput = null;
+    run.generations.push({
+      ...structuredClone(row),
+      id: `run:${first}:standard:2`,
+      attempt: 2,
+      retryUsed: true,
+      accepted: true,
+      validatorErrors: [],
+      normalizedOutput: fairRun().generations[1]!.normalizedOutput,
+      rawOutputPath: `raw/${first}.standard.2.txt`,
+    });
+
+    const standard = terminalGenerations(run, both).filter(
+      generation => generation.profile === 'standard',
+    );
+    expect(standard).toHaveLength(suite.cases.length);
+    expect(standard.filter(generation => generation.caseId === first)).toHaveLength(1);
   });
 });
 
@@ -462,19 +764,29 @@ describe('official comparison evidence', () => {
   });
 
   it('H: retries add rows and no coverage', () => {
-    // A run that answered ten cases twice each has still answered ten cases.
+    // A legal retry follows a rejection, so the pair is: rejected, then
+    // accepted. Two rows, one answer, and the coverage is identical to the same
+    // cases answered first try.
     const keep = new Set(suite.cases.slice(0, 10).map(entry => entry.id));
-    const run = fairRun();
-    run.generations = run.generations.filter(generation => keep.has(generation.caseId));
-    const retried = run.generations.map(generation => ({
-      ...generation,
-      id: `${generation.id.slice(0, -1)}2`,
-      attempt: 2,
-      retryUsed: true,
-    }));
-    const before = officialEvidenceProblems(suite, run, both);
-    run.generations = [...run.generations, ...retried];
-    expect(officialEvidenceProblems(suite, run, both)).toEqual(before);
+    const firstTry = fairRun();
+    firstTry.generations = firstTry.generations.filter(generation => keep.has(generation.caseId));
+    const before = officialEvidenceProblems(suite, firstTry, both);
+
+    const retried = fairRun();
+    retried.generations = retried.generations
+      .filter(generation => keep.has(generation.caseId))
+      .flatMap(generation => [
+        { ...generation, accepted: false, validatorErrors: ['unknown tone tag'], normalizedOutput: null },
+        {
+          ...generation,
+          id: `${generation.id.slice(0, -1)}2`,
+          attempt: 2,
+          retryUsed: true,
+          rawOutputPath: `${generation.rawOutputPath.slice(0, -5)}2.txt`,
+        },
+      ]);
+    expect(retried.generations.length).toBe(firstTry.generations.length * 2);
+    expect(officialEvidenceProblems(suite, retried, both)).toEqual(before);
   });
 
   it('I: an empty run is still refused by the earlier, clearer gate', () => {
@@ -535,6 +847,12 @@ describe('official comparison evidence', () => {
       row.fallbackUsed = true;
       row.fallbackProfile = 'lite';
       row.servedModel = 'lite';
+    });
+    trip(run => {
+      const row = run.generations.find(generation => generation.profile === 'lite')!;
+      row.accepted = false;
+      row.validatorErrors = ['unknown tone tag'];
+      row.normalizedOutput = null;
     });
 
     expect([...reached].sort()).toEqual([...OFFICIAL_EVIDENCE_REQUIREMENTS].sort());
@@ -767,8 +1085,14 @@ describe('attempt histories must be coherent', () => {
   });
 
   it('G: a retry both profiles made with different wording is refused', () => {
-    const run = historyRun([1, 2], [1]);
-    run.generations.push(rowAt('standard', 2, true, 'c'.repeat(64)));
+    // Both profiles finished their histories; only the wording of the second
+    // attempt differs, so this reaches the parity check rather than the
+    // completeness one.
+    const run = historyRun([1, 2], [1, 2]);
+    const standardRetry = run.generations.find(
+      generation => generation.profile === 'standard' && generation.attempt === 2,
+    )!;
+    standardRetry.inputFingerprint = 'c'.repeat(64);
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
@@ -1211,7 +1535,9 @@ describe('judgement is bound to the run it judges', () => {
   });
 
   it('accepts a score sheet written for this run', () => {
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], sheet())).not.toThrow();
+    expect(() =>
+      buildComparison(suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun())),
+    ).not.toThrow();
   });
 
   it('refuses a score sheet from another run, even with a copied generation id', () => {
@@ -1268,8 +1594,10 @@ describe('judgement must be well formed before it is aggregated', () => {
 
   it('A: valid judgement passes', () => {
     expect(judgementProblems(fairRun(), sheetWith([score()]), reviewWith([fail()]))).toEqual([]);
+    // The sheet must also cover the whole population before a mean is taken; a
+    // human review names disqualifications and carries no such requirement.
     expect(() =>
-      buildComparison(suite, fairRun(), ['lite', 'standard'], sheetWith([score()]), reviewWith([fail()])),
+      buildComparison(suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun()), reviewWith([fail()])),
     ).not.toThrow();
   });
 
@@ -1320,7 +1648,7 @@ describe('judgement must be well formed before it is aggregated', () => {
 
     // And a report built from valid judgement contains no NaN anywhere.
     const report = buildComparison(
-      suite, fairRun(), ['lite', 'standard'], sheetWith([score()]), reviewWith([fail()]),
+      suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun()), reviewWith([fail()]),
     );
     const numbers: number[] = [];
     const walk = (value: unknown): void => {
@@ -1433,20 +1761,18 @@ describe('human hard failures', () => {
     // A disqualification lives outside the 0-5 axes entirely, so no amount of
     // scoring can average it away.
     const sheet: ScoreSheet = {
-      runId: 'run',
-      suiteVersion: suite.suiteVersion,
-      scores: [
-        {
-          generationId: `run:${caseIds[0]}:lite:1`,
-          scoredBy: 'simone',
-          scoredAt: '2026-08-21T00:00:00.000Z',
-          scores: {
-            italian_fluency: 5, grounding: 5, character_consistency: 5, memory_use: 5,
-            instruction_adherence: 5, schema_compliance: 5, non_contradiction: 5,
-            narrative_usefulness: 5, repetition_resistance: 5, latency_acceptability: 5,
-          },
+      ...fullSheet(fairRun()),
+      // The whole population scored top marks, the disqualified generation
+      // included: a perfect prose score across the board must still not erase
+      // the hard fail.
+      scores: fullSheet(fairRun()).scores.map(entry => ({
+        ...entry,
+        scores: {
+          italian_fluency: 5, grounding: 5, character_consistency: 5, memory_use: 5,
+          instruction_adherence: 5, schema_compliance: 5, non_contradiction: 5,
+          narrative_usefulness: 5, repetition_resistance: 5, latency_acceptability: 5,
         },
-      ],
+      })),
     };
 
     const report = buildComparison(suite, fairRun(), ['lite', 'standard'], sheet, review());

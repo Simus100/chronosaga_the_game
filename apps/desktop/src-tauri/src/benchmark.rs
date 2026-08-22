@@ -582,6 +582,12 @@ pub struct RunCoverage {
     /// the same moment: a fallback row establishes no pair, and an official run
     /// that contains one is not evidence about either model.
     fell_back: Vec<String>,
+    /// Pairs whose first attempt was rejected and whose retry never happened.
+    ///
+    /// The policy owes a rejected attempt exactly one retry, so until that retry
+    /// exists the pair is an interrupted run rather than a model result. Left
+    /// out of the pairs for the same reason: it has no answer to establish.
+    unfinished: Vec<(String, String)>,
 }
 
 impl RunCoverage {
@@ -590,15 +596,30 @@ impl RunCoverage {
     /// From the records, never from intent: a run covers what it generated.
     pub fn from_records(records: &[GenerationRecord]) -> Self {
         let mut coverage = Self::default();
+        // Attempts per pair, so completeness is judged on the history rather than
+        // on whichever row happened to be seen first.
+        let mut histories: std::collections::BTreeMap<(String, String), Vec<&GenerationRecord>> =
+            std::collections::BTreeMap::new();
+
         for record in records {
             if record.fallback_used || record.fallback_profile.is_some() {
                 // Answered by another model, so it covers nothing and is named.
                 coverage.fell_back.push(record.id.clone());
                 continue;
             }
-            coverage
-                .pairs
-                .insert((record.profile.clone(), record.case_id.clone()));
+            histories
+                .entry((record.profile.clone(), record.case_id.clone()))
+                .or_default()
+                .push(record);
+        }
+
+        for (pair, mut attempts) in histories {
+            attempts.sort_by_key(|record| record.attempt);
+            if terminal_attempt(&attempts).is_some() {
+                coverage.pairs.insert(pair);
+            } else if is_unfinished(&attempts) {
+                coverage.unfinished.push(pair);
+            }
         }
         coverage
     }
@@ -615,9 +636,11 @@ impl RunCoverage {
                 .into_iter()
                 .map(|(profile, case)| (profile.into(), case.into()))
                 .collect(),
-            // Pairs stated directly are pairs somebody vouched for; a fallback
-            // row cannot be expressed this way, which is the point.
+            // Pairs stated directly are pairs somebody vouched for; neither a
+            // fallback row nor an unfinished history can be expressed this way,
+            // which is the point.
             fell_back: Vec::new(),
+            unfinished: Vec::new(),
         }
     }
 
@@ -629,6 +652,11 @@ impl RunCoverage {
     /// How many distinct `(profile, case)` pairs the run established.
     pub fn pair_count(&self) -> usize {
         self.pairs.len()
+    }
+
+    /// The pairs whose history stopped before the retry policy ended it.
+    pub fn unfinished_histories(&self) -> &[(String, String)] {
+        &self.unfinished
     }
 
     /// The generations produced by a profile other than the one that asked.
@@ -922,6 +950,57 @@ pub fn persist_metadata(
     fs::write(&path, body).map_err(|error| format!("unable to write {}: {error}", path.display()))
 }
 
+/// One retry after a rejection, and no more.
+///
+/// The same policy `@paa/ai-benchmark` declares, and the only place this crate
+/// states it. A test reads the TypeScript declaration and refuses to let either
+/// side change the number alone, because a benchmark where one language allows
+/// two tries and the other allows three is measuring the retry budget.
+pub const MAX_RETRIES: usize = 1;
+
+/// A first attempt plus its one permitted retry.
+pub const MAX_ATTEMPTS: usize = MAX_RETRIES + 1;
+
+/// The attempt that ends a history, or `None` when the history has not ended.
+///
+/// The retry policy is fixed and has exactly three finished shapes: an accepted
+/// first attempt; a rejected first followed by an accepted second; and a
+/// rejected first followed by a rejected second, which is exhausted and is still
+/// an answer. A rejected first attempt with no second is none of them — it is a
+/// run that stopped before the model finished being asked, and reading it as a
+/// completed failure counts an interruption as evidence about the model.
+///
+/// `MAX_ATTEMPTS` is the only authority for the ceiling. Shapes that are invalid
+/// for other reasons — starting at attempt 2, a gap, a duplicate, a third try —
+/// have no trustworthy last attempt either, so this names no winner and leaves
+/// the specific complaint to the checks that own it.
+fn terminal_attempt<'a>(attempts: &[&'a GenerationRecord]) -> Option<&'a GenerationRecord> {
+    if attempts.is_empty() || attempts.len() > MAX_ATTEMPTS {
+        return None;
+    }
+    for (index, record) in attempts.iter().enumerate() {
+        if record.attempt as usize != index + 1 {
+            return None;
+        }
+    }
+    // A retry may only follow a rejection, so every attempt before the last must
+    // have been rejected. An accepted attempt ends the history; anything after
+    // it is a row the policy never permitted, and the pair has no honest answer.
+    if attempts[..attempts.len() - 1].iter().any(|record| record.accepted) {
+        return None;
+    }
+    let last = attempts[attempts.len() - 1];
+    if last.accepted || attempts.len() == MAX_ATTEMPTS {
+        return Some(last);
+    }
+    None
+}
+
+/// Whether a history stopped after a rejected first attempt, owing its retry.
+fn is_unfinished(attempts: &[&GenerationRecord]) -> bool {
+    attempts.len() == 1 && attempts[0].attempt == 1 && !attempts[0].accepted
+}
+
 /// The named requirements an official comparison must satisfy.
 ///
 /// The runner decides whether a run *is* official evidence; the report boundary
@@ -945,6 +1024,7 @@ pub const OFFICIAL_EVIDENCE_REQUIREMENTS: &[&str] = &[
     "suite_identity",
     "full_profile_case_coverage",
     "no_fallback_evidence",
+    "complete_retry_history",
 ];
 
 /// Whether a run may be published as comparable evidence.
@@ -1092,6 +1172,18 @@ pub fn official_evidence_failures(
     // asked and Lite answered stays grouped under Standard, so its output,
     // acceptance, latency, retries and scores would be reported as Standard
     // evidence for work Lite did.
+    // Said separately from coverage: coverage says the profile has no answer for
+    // that case, and this says why — it was asked, it refused, and the one retry
+    // the policy owes it was never taken.
+    for (profile, case_id) in coverage.unfinished_histories() {
+        missing.push((
+            "complete_retry_history",
+            format!(
+                "{case_id} for {profile}: attempt 1 was rejected and no attempt 2 was recorded,                  so the retry evidence is missing and the history never finished"
+            ),
+        ));
+    }
+
     for id in coverage.fallback_rows() {
         missing.push((
             "no_fallback_evidence",
@@ -1659,6 +1751,43 @@ mod tests {
         RunCoverage::from_records(&records)
     }
 
+    /// Full coverage but for one pair whose retry never happened.
+    fn unfinished_coverage() -> RunCoverage {
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let accepted = accepted_outcome("lite");
+        let mut rejected = accepted_outcome("standard");
+        rejected.accepted = false;
+        rejected.validation_error = Some("unknown tone tag".to_string());
+
+        RunCoverage::from_records(&[
+            record_generation("r", case, "lite", 1, test_artifact("lite"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &accepted),
+            // Standard refused once and was never asked again.
+            record_generation("r", case, "standard", 1, test_artifact("standard"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &rejected),
+        ])
+    }
+
+    /// An accepted outcome answered by `alias`.
+    fn accepted_outcome(alias: &str) -> crate::inference::InferenceOutcome {
+        crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 1,
+            raw: "{}".to_string(),
+            narration: Some("ok".to_string()),
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: Some(alias.to_string()),
+        }
+    }
+
     /// What a default smoke actually covers: a few cases, one model.
     fn smoke_coverage() -> RunCoverage {
         RunCoverage::from_pairs([("lite", "ai_case_001")])
@@ -1714,6 +1843,7 @@ mod tests {
 
         reached.extend(failed_requirements(&impeccable_metadata(), &smoke_coverage()));
         reached.extend(failed_requirements(&impeccable_metadata(), &fallback_coverage()));
+        reached.extend(failed_requirements(&impeccable_metadata(), &unfinished_coverage()));
 
         for requirement in OFFICIAL_EVIDENCE_REQUIREMENTS {
             assert!(
@@ -1729,6 +1859,143 @@ mod tests {
                  the TypeScript boundary was never told about it"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Terminal histories
+    // ---------------------------------------------------------------------
+
+    /// Coverage for one pair with the given `(attempt, accepted)` history.
+    fn history_coverage(history: &[(u32, bool)]) -> RunCoverage {
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let accepted = accepted_outcome("lite");
+        let mut rejected = accepted_outcome("lite");
+        rejected.accepted = false;
+        rejected.validation_error = Some("unknown tone tag".to_string());
+
+        let rows: Vec<GenerationRecord> = history
+            .iter()
+            .map(|(attempt, ok)| {
+                record_generation(
+                    "r", case, "lite", *attempt, test_artifact("lite"),
+                    benchmark_context(4096), first_attempt_fingerprint(case),
+                    if *ok { &accepted } else { &rejected },
+                )
+            })
+            .collect();
+        RunCoverage::from_records(&rows)
+    }
+
+    #[test]
+    fn a_finished_history_establishes_its_pair() {
+        // A: accepted first try. B: rejected then accepted. C: rejected twice,
+        // which is exhausted, and exhausted is an answer.
+        for history in [
+            vec![(1, true)],
+            vec![(1, false), (2, true)],
+            vec![(1, false), (2, false)],
+        ] {
+            let coverage = history_coverage(&history);
+            assert_eq!(coverage.pair_count(), 1, "{history:?}");
+            assert!(coverage.unfinished_histories().is_empty(), "{history:?}");
+        }
+    }
+
+    #[test]
+    fn d_a_rejected_first_attempt_alone_is_unfinished() {
+        // The defect: this counted as a completed pair, so a run could report
+        // full coverage made entirely of interruptions.
+        let coverage = history_coverage(&[(1, false)]);
+        assert_eq!(coverage.pair_count(), 0, "an unfinished history covers nothing");
+        assert_eq!(coverage.unfinished_histories().len(), 1);
+    }
+
+    #[test]
+    fn g_and_h_an_unfinished_pair_is_named_with_its_case_and_profile() {
+        let suite = load_suite().unwrap();
+        let first = suite.cases[0].id.clone();
+        let failures = official_evidence_failures(
+            &impeccable_metadata(),
+            &history_coverage(&[(1, false)]),
+            &CoverageRequirement {
+                required_case_ids: vec![first.clone()],
+                required_profiles: vec!["lite".to_string()],
+            },
+        );
+        let tags: Vec<&str> = failures.iter().map(|(tag, _)| *tag).collect();
+        assert!(tags.contains(&"complete_retry_history"), "{tags:?}");
+
+        let detail = failures
+            .iter()
+            .find(|(tag, _)| *tag == "complete_retry_history")
+            .map(|(_, detail)| detail.clone())
+            .unwrap();
+        assert!(detail.contains(&first), "{detail}");
+        assert!(detail.contains("lite"), "{detail}");
+        assert!(detail.contains("retry evidence is missing"), "{detail}");
+    }
+
+    #[test]
+    fn i_and_j_histories_that_break_the_policy_are_not_terminal_either() {
+        // A retry after an acceptance, a third attempt, a history that starts at
+        // two, a gap: none has a trustworthy last attempt, so none establishes a
+        // pair. Their specific complaints belong to the checks that own them.
+        for history in [
+            vec![(1, true), (2, false)],
+            vec![(1, false), (2, false), (3, false)],
+            vec![(2, false)],
+            vec![(1, false), (3, false)],
+        ] {
+            let coverage = history_coverage(&history);
+            assert_eq!(coverage.pair_count(), 0, "{history:?}");
+            assert!(
+                coverage.unfinished_histories().is_empty(),
+                "{history:?} is malformed, not merely unfinished"
+            );
+        }
+    }
+
+    #[test]
+    fn k_one_profile_may_use_its_retry_while_the_other_does_not() {
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let lite_ok = accepted_outcome("lite");
+        let standard_ok = accepted_outcome("standard");
+        let mut standard_bad = accepted_outcome("standard");
+        standard_bad.accepted = false;
+        standard_bad.validation_error = Some("unknown tone tag".to_string());
+
+        let coverage = RunCoverage::from_records(&[
+            record_generation("r", case, "lite", 1, test_artifact("lite"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &lite_ok),
+            record_generation("r", case, "standard", 1, test_artifact("standard"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &standard_bad),
+            record_generation("r", case, "standard", 2, test_artifact("standard"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &standard_ok),
+        ]);
+        assert_eq!(coverage.pair_count(), 2);
+        assert!(coverage.covers("lite", &case.id));
+        assert!(coverage.covers("standard", &case.id));
+    }
+
+    #[test]
+    fn the_retry_policy_is_one_number_in_both_languages() {
+        // Neither side may raise its own budget. A benchmark where Rust allows
+        // two tries and TypeScript allows three is measuring the retry budget.
+        let declared = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/ai-benchmark/src/result.ts");
+        let source = fs::read_to_string(&declared)
+            .unwrap_or_else(|error| panic!("missing {}: {error}", declared.display()));
+        assert!(
+            source.contains(&format!("export const MAX_RETRIES = {MAX_RETRIES};")),
+            "the TypeScript contract declares a different retry budget"
+        );
+        assert!(
+            source.contains("export const MAX_ATTEMPTS = MAX_RETRIES + 1;"),
+            "the TypeScript contract derives attempts differently"
+        );
+        assert_eq!(MAX_ATTEMPTS, MAX_RETRIES + 1);
     }
 
     #[test]
@@ -1895,7 +2162,7 @@ mod tests {
             tokens_per_second: None,
             model: Some("lite".to_string()),
         };
-        let rows: Vec<GenerationRecord> = (1..=3)
+        let rows: Vec<GenerationRecord> = (1..=MAX_ATTEMPTS as u32)
             .map(|attempt| {
                 record_generation("r", case, "lite", attempt, test_artifact("lite"),
                     benchmark_context(4096), first_attempt_fingerprint(case), &rejected)
@@ -1903,9 +2170,17 @@ mod tests {
             .collect();
 
         let coverage = RunCoverage::from_records(&rows);
-        assert_eq!(coverage.pair_count(), 1, "three attempts, one pair");
+        assert_eq!(coverage.pair_count(), 1, "a first attempt and its retry, one pair");
         assert!(coverage.covers("lite", &case.id));
         assert!(!coverage.covers("standard", &case.id));
+
+        // And a history that ran past the ceiling establishes nothing at all: it
+        // has no trustworthy last attempt to call the profile's answer.
+        let mut beyond = rows.clone();
+        beyond.push(record_generation("r", case, "lite", MAX_ATTEMPTS as u32 + 1,
+            test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &rejected));
+        assert_eq!(RunCoverage::from_records(&beyond).pair_count(), 0);
     }
 
     #[test]
@@ -1927,14 +2202,21 @@ mod tests {
             tokens_per_second: None,
             model: None,
         };
+        // A retry follows a rejection and nothing else, so the history that
+        // uses one is: rejected, then accepted.
+        let mut rejected = outcome.clone();
+        rejected.accepted = false;
+        rejected.validation_error = Some("unknown tone tag".to_string());
+
         let mut rows = Vec::new();
         for case in cases {
             for profile in ["lite", "standard"] {
-                for attempt in 1..=2 {
-                    rows.push(record_generation("r", case, profile, attempt,
-                        test_artifact(profile), benchmark_context(4096),
-                        first_attempt_fingerprint(case), &outcome));
-                }
+                rows.push(record_generation("r", case, profile, 1,
+                    test_artifact(profile), benchmark_context(4096),
+                    first_attempt_fingerprint(case), &rejected));
+                rows.push(record_generation("r", case, profile, 2,
+                    test_artifact(profile), benchmark_context(4096),
+                    first_attempt_fingerprint(case), &outcome));
             }
         }
 

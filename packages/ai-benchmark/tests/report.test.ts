@@ -73,7 +73,18 @@ function generationFor(
 function twoProfileRun(caseIds: string[]): BenchmarkRun {
   const generations: BenchmarkGeneration[] = [];
   for (const caseId of caseIds) {
+    // Lite fails these cases, and failing them completely means using the retry
+    // the policy owes it. A rejected first attempt with no second is not a Lite
+    // result at all; it is a run that stopped early, and the report now says so.
     generations.push(generationFor(caseId, 'lite', false));
+    generations.push(
+      generationFor(caseId, 'lite', false, {
+        id: `run:${caseId}:lite:2`,
+        attempt: 2,
+        retryUsed: true,
+        rawOutputPath: `raw/${caseId}.lite.2.txt`,
+      }),
+    );
     generations.push(generationFor(caseId, 'standard', true));
   }
   return {
