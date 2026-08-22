@@ -169,10 +169,42 @@ The evidence boundary also asks whether a row could have come from the validator
 at all. `normalizedOutputProblems` checked types; a blank narration or a dialogue
 line whose text is `'   '` typechecks perfectly and the application validator
 would never have produced it, so a row marked `accepted` carrying one is not
-evidence of anything. The line is drawn at *impossible*, not at *bad*: an unknown
-speaker, a tag outside the vocabulary and an ungrounded proposal are answers the
-validator could legitimately have accepted, and refusing them here would refuse
-to report the very failures the benchmark measures.
+evidence of anything. That function checks what can be checked without a
+suite. An unknown speaker, a tag outside the vocabulary and an ungrounded
+proposal are *also* impossible for an accepted row — `inference::validate`
+rejects all three — but answering that needs the case in hand, so it belongs to
+the next gate.
+
+`acceptedOutputContractProblems` is that gate: for every row claiming
+`accepted: true`, it applies the same case-specific semantics as
+`inference::validate` under `case_contract(case)` — speaker membership and
+required speakers, the tone vocabulary, the narration limit counted in scalar
+values, proposal and memory permission, obligation and grounding. A row that
+fails is not a bad answer to score; it is an acceptance the real validator could
+never have recorded, and everything downstream would have aggregated it as fact.
+One such row refuses the whole run: it is not dropped, relabelled or converted to
+a rejection, because a benchmark that edits its evidence into consistency is no
+longer evidence. What stays with the evaluator is quality — an answer the
+validator would have accepted and a reader would call weak.
+
+Both sides derive that contract independently, so
+`tests/fixtures/case-contracts.json` exports what Rust derives for all 65 cases
+and TypeScript asserts it derives the same, including the permitted proposal
+subjects.
+
+Each profile must also carry the artifact the project locked. Input parity proves
+a profile used one artifact throughout; it cannot prove it is the *right* one, so
+forged evidence could record Lite and Standard as the same digest, or two
+artifacts outside the lock, consistently per profile — and the report would
+publish an official comparison of one model against itself.
+`config/local-ai-models.lock.json` is imported directly, with no package-local
+copy, because a second list of digests would be a second authority. Seven
+identity fields are compared: `profileId`, `family`, `quantization`,
+`artifactFilename`, `sizeBytes`, `sha256`, `releaseApproved`. `source` is not
+among them — it records where the resolver found the bytes, which is runtime
+provenance, and the same locked artifact found in three places is still the same
+artifact. The two locked candidates must also name distinct artifacts, checked
+before any evidence is read.
 
 Narration length is counted as Rust counts it. `String.length` counts UTF-16 code
 units, so an emoji is two, while `chars().count()` says one — the report could

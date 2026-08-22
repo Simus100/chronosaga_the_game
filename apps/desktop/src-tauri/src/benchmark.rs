@@ -3641,24 +3641,33 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_ids_are_exported_for_the_typescript_evaluator() {
-        // Parity is checked, not asserted: each side computes the visible ids
-        // its own way and the fixture makes them compare.
+    fn the_case_contracts_are_exported_for_the_report_boundary() {
+        // The report boundary has to be able to ask whether an accepted row
+        // could have been accepted *for its own case*, which means deriving the
+        // same contract this crate derives. Two derivations, one exported set of
+        // answers: drift on either side fails here or there.
         let suite = load_suite().unwrap();
         let mut by_case = serde_json::Map::new();
         for case in &suite.cases {
+            let contract = case_contract(case);
             by_case.insert(
                 case.id.clone(),
-                serde_json::Value::Array(
-                    visible_scene_ids(case)
-                        .into_iter()
-                        .map(serde_json::Value::String)
-                        .collect(),
-                ),
+                serde_json::json!({
+                    "knownSpeakerIds": contract.known_speaker_ids,
+                    "requiredSpeakerIds": contract.required_speaker_ids,
+                    "allowedToneTags": contract.allowed_tone_tags,
+                    "maxNarrationChars": contract.max_narration_chars,
+                    "allowEventProposals": contract.allow_event_proposals,
+                    "requireEventProposal": contract.require_event_proposal,
+                    "allowMemorySuggestions": contract.allow_memory_suggestions,
+                    "requireMemorySuggestion": contract.require_memory_suggestion,
+                    "allowedSubjectIds": contract.allowed_subject_ids,
+                    "knownCharacterIds": contract.known_character_ids,
+                }),
             );
         }
         let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../packages/ai-benchmark/tests/fixtures/scene-subject-ids.json");
+            .join("../../../packages/ai-benchmark/tests/fixtures/case-contracts.json");
         let produced =
             serde_json::to_string_pretty(&serde_json::Value::Object(by_case)).unwrap() + "\n";
 
@@ -3677,8 +3686,8 @@ mod tests {
         assert_eq!(
             committed.replace("\r\n", "\n"),
             produced,
-            "the scene ids the validator grounds on changed; check the TypeScript \
-             evaluator still sees the same ones"
+            "the contracts the validator derives changed; regenerate the fixture and \
+             check the TypeScript report boundary derives the same ones"
         );
     }
 

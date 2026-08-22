@@ -15,6 +15,9 @@ import {
   taskMismatches,
 } from '../src/report.js';
 import { asHardFails, validateHumanReview, type HumanReview } from '../src/human-review.js';
+import { acceptedOutputContractProblems, caseSubjectIds } from '../src/contract.js';
+import { lockedArtifact, lockedArtifactProblems } from '../src/model-lock.js';
+import rootModelLock from '../../../config/local-ai-models.lock.json' with { type: 'json' };
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 import type { ScoreSheet } from '../src/scoring.js';
@@ -144,6 +147,266 @@ function fairRun(): BenchmarkRun {
     ]),
   };
 }
+
+describe('accepted evidence must satisfy its own case contract', () => {
+  const first = caseIds[0]!;
+  const testCase = () => suite.cases.find(entry => entry.id === first)!;
+
+  /** `fairRun` with the first Lite row's accepted output edited. */
+  function withOutput(edit: (output: NonNullable<BenchmarkGeneration['normalizedOutput']>) => void) {
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === first,
+    )!;
+    edit(row.normalizedOutput!);
+    return run;
+  }
+
+  it('A: a fully case-compliant accepted row passes', () => {
+    expect(acceptedOutputContractProblems(suite, fairRun())).toEqual([]);
+    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+  });
+
+  it('B: an unknown speaker marked accepted is impossible evidence', () => {
+    // Corrects an assumption I stated earlier: the Rust validator rejects this,
+    // so it is not a bad answer to score — it is an acceptance that could never
+    // have been recorded.
+    const run = withOutput(output => {
+      output.dialogue = [{ speakerId: 'ghost_999', text: 'Non esisto.' }];
+    });
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(/unknown speaker: ghost_999/);
+    expect(() => buildComparison(suite, run)).toThrow(/could not have accepted/);
+  });
+
+  it('C: a missing required speaker marked accepted is refused', () => {
+    expect(testCase().constraints.requiredSpeakerIds?.length).toBeGreaterThan(0);
+    const run = withOutput(output => void (output.dialogue = []));
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(/dialogue from/);
+  });
+
+  it('D: a tone tag outside the vocabulary is refused', () => {
+    const run = withOutput(output => void (output.toneTags = ['epico']));
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(/unknown tone tag: epico/);
+  });
+
+  it('E: narration over the case limit is refused', () => {
+    const limit = testCase().constraints.maxNarrationChars;
+    const run = withOutput(output => void (output.narration = 'a'.repeat(limit + 1)));
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(
+      new RegExp(`narration is ${limit + 1} characters`),
+    );
+  });
+
+  it('F: narration length uses the same scalar count as Rust', () => {
+    const limit = testCase().constraints.maxNarrationChars;
+    const atLimit = withOutput(output => void (output.narration = '🌍'.repeat(limit)));
+    // 2 * limit UTF-16 code units, and Rust accepts it, so this must too.
+    expect(acceptedOutputContractProblems(suite, atLimit)).toEqual([]);
+    const over = withOutput(output => void (output.narration = '🌍'.repeat(limit + 1)));
+    expect(acceptedOutputContractProblems(suite, over)).toHaveLength(1);
+  });
+
+  it('G: a proposal where proposals are forbidden is refused', () => {
+    expect(testCase().constraints.allowEventProposals ?? false).toBe(false);
+    const run = withOutput(output => {
+      output.eventProposals = [{ subjectId: 'settlement_helios', topic: 't', rationale: 'r' }];
+    });
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(/event_proposals are not accepted/);
+  });
+
+  it('H and I: a required proposal must be present and grounded', () => {
+    const inviting = suite.cases.find(entry => entry.constraints.requireEventProposal)!;
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === inviting.id,
+    )!;
+
+    row.normalizedOutput!.eventProposals = [];
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(
+      /required field missing or empty: event_proposals/,
+    );
+
+    row.normalizedOutput!.eventProposals = [
+      { subjectId: 'settlement_fake', topic: 't', rationale: 'r' },
+    ];
+    expect(caseSubjectIds(inviting)).not.toContain('settlement_fake');
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(
+      /event proposal is about 'settlement_fake', which the scene does not contain/,
+    );
+  });
+
+  it('J: a memory suggestion where they are forbidden is refused', () => {
+    const run = withOutput(output => {
+      output.memorySuggestions = [{ characterId: 'mara_001', summary: 's' }];
+    });
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(
+      /memory_suggestions are not accepted/,
+    );
+  });
+
+  it('K and L: a required memory must be present and about a real character', () => {
+    const inviting = suite.cases.find(entry => entry.constraints.requireMemorySuggestion)!;
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === inviting.id,
+    )!;
+
+    row.normalizedOutput!.memorySuggestions = [];
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(
+      /required field missing or empty: memory_suggestions/,
+    );
+
+    row.normalizedOutput!.memorySuggestions = [{ characterId: 'ghost_999', summary: 's' }];
+    expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(/unknown speaker: ghost_999/);
+  });
+
+  it('M: rejected rows are left alone', () => {
+    // A rejection carries normalizedOutput: null and its validator errors. There
+    // is no payload to re-check, and inventing one would prove nothing.
+    const run = fairRun();
+    const row = run.generations[0]!;
+    row.accepted = false;
+    row.validatorErrors = ['unknown tone tag: epico'];
+    row.normalizedOutput = null;
+    expect(acceptedOutputContractProblems(suite, run)).toEqual([]);
+  });
+
+  it('N and O: one impossible row refuses the whole report', () => {
+    const run = withOutput(output => void (output.toneTags = ['epico']));
+    expect(run.generations.length).toBe(suite.cases.length * 2);
+    expect(() => buildComparison(suite, run)).toThrow(/could not have accepted/);
+  });
+
+  it('leaves genuine quality failures to the evaluator', () => {
+    // A grounded, in-vocabulary, in-limit answer that is simply weak stays in
+    // the run and gets scored. Refusing it here would refuse to report the
+    // failures the benchmark exists to measure.
+    const run = withOutput(output => void (output.narration = 'Non succede nulla di utile.'));
+    expect(acceptedOutputContractProblems(suite, run)).toEqual([]);
+    expect(() => buildComparison(suite, run)).not.toThrow();
+  });
+});
+
+describe('each profile carries the artifact the project locked', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+
+  /** `fairRun` with every row of `profile` carrying `artifact` overrides. */
+  function withArtifact(profile: BenchmarkProfile, over: Record<string, unknown>) {
+    const run = fairRun();
+    for (const generation of run.generations) {
+      if (generation.profile !== profile) continue;
+      generation.artifact = { ...generation.artifact, ...over } as typeof generation.artifact;
+    }
+    return run;
+  }
+
+  it('A and B: the locked identities pass', () => {
+    expect(lockedArtifactProblems(fairRun(), both)).toEqual([]);
+    for (const profile of both) {
+      const locked = lockedArtifact(profile)!;
+      const row = fairRun().generations.find(entry => entry.profile === profile)!;
+      expect(row.artifact.sha256).toBe(locked.sha256);
+      expect(row.artifact.artifactFilename).toBe(locked.artifactFilename);
+    }
+  });
+
+  it('C and D: a profile carrying the other one\'s digest is refused', () => {
+    for (const [profile, other] of [
+      ['lite', 'standard'],
+      ['standard', 'lite'],
+    ] as const) {
+      const run = withArtifact(profile, { sha256: lockedArtifact(other)!.sha256 });
+      expect(lockedArtifactProblems(run, both)[0], profile).toMatch(/sha256 is/);
+      expect(() => buildComparison(suite, run)).toThrow(/unlocked artifacts/);
+    }
+  });
+
+  it('E: both profiles carrying the Lite artifact is refused', () => {
+    // One model against itself under two names, which is the whole hazard.
+    const lite = lockedArtifact('lite')!;
+    const run = withArtifact('standard', { ...lite, profileId: 'standard' });
+    expect(lockedArtifactProblems(run, both).length).toBeGreaterThan(0);
+  });
+
+  it('F and G: an arbitrary but internally consistent artifact is refused', () => {
+    const forged = {
+      family: 'MysteryModel-9B',
+      quantization: 'Q8_0',
+      artifactFilename: 'mystery.gguf',
+      sizeBytes: 123,
+      sha256: 'f'.repeat(64),
+    };
+    for (const profile of both) {
+      const run = withArtifact(profile, forged);
+      expect(lockedArtifactProblems(run, both).length, profile).toBeGreaterThan(0);
+    }
+    // And the same forged artifact on both profiles is refused too.
+    let run = withArtifact('lite', forged);
+    for (const generation of run.generations) {
+      if (generation.profile === 'standard') {
+        generation.artifact = { ...generation.artifact, ...forged } as typeof generation.artifact;
+      }
+    }
+    expect(lockedArtifactProblems(run, both).length).toBeGreaterThan(0);
+  });
+
+  it('H through L: every locked identity field is checked', () => {
+    const drift: Array<[string, unknown]> = [
+      ['artifactFilename', 'renamed.gguf'],
+      ['sizeBytes', 999],
+      ['family', 'SomethingElse'],
+      ['quantization', 'Q8_0'],
+      ['releaseApproved', true],
+    ];
+    for (const [field, value] of drift) {
+      const run = withArtifact('lite', { [field]: value });
+      const problems = lockedArtifactProblems(run, both);
+      expect(problems, field).toHaveLength(1);
+      expect(problems[0], field).toContain(field);
+    }
+  });
+
+  it('M: where the resolver found the bytes does not change their identity', () => {
+    // `source` is runtime provenance, not something the lock defines.
+    for (const source of ['packaged payload', 'user model library', 'development workspace']) {
+      expect(lockedArtifactProblems(withArtifact('lite', { source }), both), source).toEqual([]);
+    }
+  });
+
+  it('N: the lock is the only authority, checked against the root file itself', () => {
+    // Not a claim about the import statement: the values the gate compares
+    // against are read out of config/local-ai-models.lock.json here and matched
+    // field for field. Editing the root lock without the gate following would
+    // fail this test, which is what "no second authority" has to mean.
+    const authoritative = (rootModelLock as unknown as {
+      profiles: Record<string, Record<string, unknown>>;
+    }).profiles;
+    expect(Object.keys(authoritative).sort()).toEqual([...both].sort());
+    for (const profile of both) {
+      const locked = lockedArtifact(profile)! as unknown as Record<string, unknown>;
+      for (const field of Object.keys(locked)) {
+        expect(locked[field], `${profile}.${field}`).toEqual(authoritative[profile]![field]);
+      }
+    }
+  });
+
+  it('O: the two locked candidates are distinct artifacts', () => {
+    const lite = lockedArtifact('lite')!;
+    const standard = lockedArtifact('standard')!;
+    expect(lite.sha256).not.toBe(standard.sha256);
+    expect(lite.artifactFilename).not.toBe(standard.artifactFilename);
+    expect(lite.family).not.toBe(standard.family);
+  });
+
+  it('one mismatched row invalidates the whole official report', () => {
+    const run = fairRun();
+    run.generations.at(-1)!.artifact = {
+      ...run.generations.at(-1)!.artifact,
+      sha256: 'a'.repeat(64),
+    };
+    expect(() => buildComparison(suite, run)).toThrow(/unlocked artifacts/);
+  });
+});
 
 describe('a report is bound to the exact contents of its suite', () => {
   it('A: the unchanged suite passes', () => {

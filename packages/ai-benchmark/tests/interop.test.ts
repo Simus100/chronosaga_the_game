@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
 import rustRequirements from './fixtures/official-evidence-requirements.json' with { type: 'json' };
-import rustSceneIds from './fixtures/scene-subject-ids.json' with { type: 'json' };
+import rustContracts from './fixtures/case-contracts.json' with { type: 'json' };
 import rustSuiteDigest from './fixtures/suite-content-digest.json' with { type: 'json' };
 import { suiteContentDigest } from '../src/report.js';
 import { sha256Hex } from '../src/digest.js';
+import { caseSubjectIds } from '../src/contract.js';
 import { OFFICIAL_EVIDENCE_REQUIREMENTS } from '../src/report.js';
 import {
   normalizedOutputProblems,
@@ -71,60 +72,71 @@ describe('the exact suite both sides bind to', () => {
   });
 });
 
-describe('the scene both sides ground against', () => {
-  // The TypeScript evaluator walks worldStateSlice for id-shaped strings and
-  // keys; the Rust application validator now does the same for proposal
-  // subjects. The fixture is what makes them compare rather than each asserting
-  // against itself: ai_case_049 shows settlement.controllingFactionId and no
-  // character at all, so a proposal about that faction obeyed the prompt and was
-  // refused by a validator that had never collected it.
-  const ID = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
-
-  function visibleIds(value: unknown, found: Set<string> = new Set()): Set<string> {
-    if (typeof value === 'string') {
-      if (ID.test(value)) found.add(value);
-      return found;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) visibleIds(item, found);
-      return found;
-    }
-    if (value && typeof value === 'object') {
-      for (const [key, nested] of Object.entries(value)) {
-        if (ID.test(key)) found.add(key);
-        visibleIds(nested, found);
-      }
-    }
-    return found;
+describe('the case contract both sides derive', () => {
+  // The report boundary must be able to ask whether an accepted row could have
+  // been accepted *for its own case*, which means deriving the same contract the
+  // Rust validator derives. Two derivations, one exported set of answers: drift
+  // on either side fails here or there. ai_case_049 is the case that made this
+  // concrete — it shows settlement.controllingFactionId and has no characters,
+  // so a proposal about that faction is grounded and nothing else would say so.
+  interface ExportedContract {
+    knownSpeakerIds: string[];
+    requiredSpeakerIds: string[];
+    allowedToneTags: string[];
+    maxNarrationChars: number;
+    allowEventProposals: boolean;
+    requireEventProposal: boolean;
+    allowMemorySuggestions: boolean;
+    requireMemorySuggestion: boolean;
+    allowedSubjectIds: string[];
+    knownCharacterIds: string[];
   }
+  const exported = rustContracts as unknown as Record<string, ExportedContract>;
 
-  const exported = rustSceneIds as Record<string, string[]>;
-
-  it('I: agrees case by case across the whole suite', () => {
+  it('agrees on the permitted proposal subjects for every case', () => {
     const suite = loadSuite();
     expect(Object.keys(exported)).toHaveLength(suite.cases.length);
     for (const entry of suite.cases) {
-      const mine = [...visibleIds(entry.worldStateSlice)].sort();
-      const theirs = [...(exported[entry.id] ?? [])].sort();
-      expect(theirs, entry.id).toEqual(mine);
+      expect(caseSubjectIds(entry), entry.id).toEqual(exported[entry.id]!.allowedSubjectIds);
     }
   });
 
-  it('sees the faction the scene names even where no character carries it', () => {
-    const suite = loadSuite();
-    const entry = suite.cases.find(candidate => candidate.id === 'ai_case_049')!;
-    expect(entry.characters).toHaveLength(0);
-    expect(visibleIds(entry.worldStateSlice).has('faction_compact')).toBe(true);
-    expect(exported.ai_case_049).toContain('faction_compact');
-  });
-
-  it('collects no prose and invents nothing', () => {
+  it('agrees on every other contract field the report boundary reads', () => {
     const suite = loadSuite();
     for (const entry of suite.cases) {
-      const serialised = JSON.stringify(entry.worldStateSlice);
-      for (const id of exported[entry.id] ?? []) {
-        expect(ID.test(id), `${entry.id}: ${id}`).toBe(true);
-        expect(serialised, `${entry.id}: ${id} is not in the scene`).toContain(id);
+      const theirs = exported[entry.id]!;
+      const constraints = entry.constraints;
+      expect(constraints.knownSpeakerIds, entry.id).toEqual(theirs.knownSpeakerIds);
+      expect(constraints.requiredSpeakerIds ?? [], entry.id).toEqual(theirs.requiredSpeakerIds);
+      expect(constraints.allowedToneTags, entry.id).toEqual(theirs.allowedToneTags);
+      expect(constraints.maxNarrationChars, entry.id).toBe(theirs.maxNarrationChars);
+      expect(constraints.allowEventProposals ?? false, entry.id).toBe(theirs.allowEventProposals);
+      expect(constraints.requireEventProposal ?? false, entry.id).toBe(theirs.requireEventProposal);
+      expect(constraints.allowMemorySuggestions ?? false, entry.id).toBe(
+        theirs.allowMemorySuggestions,
+      );
+      expect(constraints.requireMemorySuggestion ?? false, entry.id).toBe(
+        theirs.requireMemorySuggestion,
+      );
+      expect(entry.characters.map(character => character.id), entry.id).toEqual(
+        theirs.knownCharacterIds,
+      );
+    }
+  });
+
+  it('grounds the faction the scene names even where no character carries it', () => {
+    const entry = loadSuite().cases.find(candidate => candidate.id === 'ai_case_049')!;
+    expect(entry.characters).toHaveLength(0);
+    expect(caseSubjectIds(entry)).toContain('faction_compact');
+    expect(exported.ai_case_049!.allowedSubjectIds).toContain('faction_compact');
+  });
+
+  it('invents nothing: every permitted subject occurs in the case', () => {
+    const suite = loadSuite();
+    for (const entry of suite.cases) {
+      const serialised = JSON.stringify([entry.worldStateSlice, entry.characters, entry.recentDelta]);
+      for (const id of caseSubjectIds(entry)) {
+        expect(serialised, `${entry.id}: ${id}`).toContain(id);
       }
     }
   });

@@ -5,6 +5,7 @@ import { evaluateObjectively } from '../src/objective.js';
 import { loadSuite } from '../src/suite.js';
 import type { BenchmarkGeneration, BenchmarkRun } from '../src/result.js';
 import { suiteContentDigest } from '../src/report.js';
+import { lockedArtifact } from '../src/model-lock.js';
 
 /**
  * The benchmark reads the world; it never writes it.
@@ -120,7 +121,14 @@ describe('benchmark isolation from authoritative state', () => {
         generation(caseId),
         { ...generation(caseId), id: `run:${caseId}:standard:1`, profile: 'standard' as const,
           servedModel: 'standard',
-          artifact: { ...generation(caseId).artifact, profileId: 'standard' as const } },
+          // The Standard row carries Standard's locked artifact. It used to
+          // carry Lite's with only profileId changed, which is precisely the
+          // forged shape the locked-artifact gate exists to refuse.
+          artifact: {
+            ...generation(caseId).artifact,
+            ...lockedArtifact('standard')!,
+            profileId: 'standard' as const,
+          } },
       ]),
     });
 

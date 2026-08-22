@@ -1,0 +1,1718 @@
+{
+  "ai_case_001": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "water"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "mara_001"
+    ]
+  },
+  "ai_case_002": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "tarek_001",
+      "faction_compact",
+      "settlement_helios",
+      "prod_recycler_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "tarek_001"
+    ],
+    "knownSpeakerIds": [
+      "tarek_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "tarek_001"
+    ]
+  },
+  "ai_case_003": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "ira_001",
+      "faction_compact",
+      "settlement_helios",
+      "relay_route_contested"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "ira_001"
+    ],
+    "knownSpeakerIds": [
+      "ira_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "ira_001"
+    ]
+  },
+  "ai_case_004": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "sela_001",
+      "faction_compact",
+      "settlement_helios",
+      "faction_front"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "sela_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "sela_001"
+    ]
+  },
+  "ai_case_005": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "brann_001"
+    ]
+  },
+  "ai_case_006": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "medicine"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "mara_001"
+    ]
+  },
+  "ai_case_007": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "ira_001",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "ira_001"
+    ],
+    "knownSpeakerIds": [
+      "ira_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "ira_001"
+    ]
+  },
+  "ai_case_008": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "brann_001",
+      "water"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001",
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001",
+      "brann_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "mara_001",
+      "brann_001"
+    ]
+  },
+  "ai_case_009": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "sela_001",
+      "faction_front"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "brann_001",
+      "sela_001"
+    ]
+  },
+  "ai_case_010": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "tarek_001",
+      "faction_compact",
+      "settlement_helios",
+      "mara_001",
+      "prod_recycler_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "tarek_001",
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "tarek_001",
+      "mara_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "tarek_001",
+      "mara_001"
+    ]
+  },
+  "ai_case_011": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "ira_001",
+      "faction_compact",
+      "settlement_helios",
+      "brann_001",
+      "relay_route_contested"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "ira_001",
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "ira_001",
+      "brann_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "ira_001",
+      "brann_001"
+    ]
+  },
+  "ai_case_012": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "sela_001",
+      "faction_compact",
+      "settlement_helios",
+      "mara_001",
+      "group_labor"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "sela_001",
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "sela_001",
+      "mara_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "sela_001",
+      "mara_001"
+    ]
+  },
+  "ai_case_013": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "tarek_001",
+      "energy"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001",
+      "tarek_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001",
+      "tarek_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "brann_001",
+      "tarek_001"
+    ]
+  },
+  "ai_case_014": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "water",
+      "food",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_015": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "settlement_helios",
+      "faction_compact"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_016": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "water",
+      "prod_recycler_01",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_017": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "water_shortage_risk",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_018": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "credits",
+      "relay_debt_called",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_019": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 300,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_020": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "ira_001",
+      "faction_compact",
+      "settlement_helios",
+      "relay_route_contested"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "ira_001"
+    ],
+    "knownSpeakerIds": [
+      "ira_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_021": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "squad_compact_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_022": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "medicine"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_023": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "sela_001",
+      "faction_compact",
+      "settlement_helios",
+      "group_labor"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "sela_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_024": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "tarek_001",
+      "faction_compact",
+      "settlement_helios",
+      "prod_recycler_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "tarek_001"
+    ],
+    "knownSpeakerIds": [
+      "tarek_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_025": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "ira_001",
+      "faction_compact",
+      "settlement_helios",
+      "mara_001",
+      "water"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "ira_001",
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "ira_001",
+      "mara_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_026": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_027": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_front",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_028": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "group_security",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_029": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "group_security"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_030": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "group_labor"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_031": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "faction_front",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_032": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "water",
+      "cohort_industrial",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_033": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "supply"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_034": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "tarek_001",
+      "faction_compact",
+      "settlement_helios",
+      "prod_recycler_01",
+      "water"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "tarek_001"
+    ],
+    "knownSpeakerIds": [
+      "tarek_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_035": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "credits",
+      "energy",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_036": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "tarek_001",
+      "prod_recycler_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001",
+      "tarek_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001",
+      "tarek_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "mara_001",
+      "tarek_001"
+    ]
+  },
+  "ai_case_037": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "squad_compact_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_038": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "squad_compact_01",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_039": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "squad_front_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_040": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_041": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "sela_001",
+      "squad_compact_01",
+      "faction_front"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": [
+      "brann_001",
+      "sela_001"
+    ]
+  },
+  "ai_case_042": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_043": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "settlement_helios",
+      "faction_compact"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_044": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_045": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_046": {
+    "allowEventProposals": true,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "water"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 400,
+    "requireEventProposal": true,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_047": {
+    "allowEventProposals": true,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "squad_compact_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001"
+    ],
+    "maxNarrationChars": 400,
+    "requireEventProposal": true,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_048": {
+    "allowEventProposals": true,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "sela_001",
+      "faction_compact",
+      "settlement_helios",
+      "group_labor"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "sela_001"
+    ],
+    "maxNarrationChars": 400,
+    "requireEventProposal": true,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_049": {
+    "allowEventProposals": true,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "relay_debt_called",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": true,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_050": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": true,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "water"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": true,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_051": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": true,
+    "allowedSubjectIds": [
+      "tarek_001",
+      "faction_compact",
+      "settlement_helios",
+      "prod_recycler_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "tarek_001"
+    ],
+    "knownSpeakerIds": [
+      "tarek_001"
+    ],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": true,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_052": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": true,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "sela_001",
+      "squad_compact_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": true,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_053": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": true,
+    "allowedSubjectIds": [
+      "ira_001",
+      "faction_compact",
+      "settlement_helios",
+      "relay_route_contested"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "ira_001"
+    ],
+    "knownSpeakerIds": [
+      "ira_001"
+    ],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": true,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_054": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "water"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 300,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_055": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "squad_compact_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001"
+    ],
+    "maxNarrationChars": 300,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_056": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "sela_001",
+      "faction_compact",
+      "settlement_helios",
+      "group_labor"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "sela_001"
+    ],
+    "maxNarrationChars": 300,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_057": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "tarek_001",
+      "faction_compact",
+      "settlement_helios",
+      "prod_recycler_01"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "tarek_001"
+    ],
+    "knownSpeakerIds": [
+      "tarek_001"
+    ],
+    "maxNarrationChars": 300,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_058": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "ira_001",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "ira_001"
+    ],
+    "knownSpeakerIds": [
+      "ira_001"
+    ],
+    "maxNarrationChars": 300,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_059": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_060": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "credits",
+      "relay_debt_called"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_061": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 400,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_062": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "sela_001",
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "sela_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_063": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "mara_001",
+      "faction_compact",
+      "settlement_helios",
+      "water",
+      "cohort_industrial"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "mara_001"
+    ],
+    "knownSpeakerIds": [
+      "mara_001"
+    ],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_064": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "brann_001",
+      "faction_compact",
+      "settlement_helios",
+      "sela_001",
+      "squad_compact_01",
+      "group_labor"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "knownSpeakerIds": [
+      "brann_001",
+      "sela_001"
+    ],
+    "maxNarrationChars": 600,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  },
+  "ai_case_065": {
+    "allowEventProposals": false,
+    "allowMemorySuggestions": false,
+    "allowedSubjectIds": [
+      "faction_compact",
+      "settlement_helios"
+    ],
+    "allowedToneTags": [
+      "tense",
+      "hopeful",
+      "grim",
+      "resolute",
+      "weary"
+    ],
+    "knownCharacterIds": [],
+    "knownSpeakerIds": [],
+    "maxNarrationChars": 500,
+    "requireEventProposal": false,
+    "requireMemorySuggestion": false,
+    "requiredSpeakerIds": []
+  }
+}

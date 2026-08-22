@@ -230,12 +230,14 @@ export interface NormalizedOutput {
  * is not evidence of anything. `dialogue: [{ speakerId: 'mara_001', text: '   ' }]`
  * typechecks perfectly and could never have been accepted.
  *
- * The line is drawn at *impossible*, not at *bad*. Whether a speaker belongs to
- * the scene, whether a tone tag is in the vocabulary, whether a proposal is
- * grounded, whether the narration is any good — those are answers the validator
- * could legitimately have accepted and the evaluator exists to judge. Turning
- * them into malformed evidence would refuse to report the very failures the
- * benchmark is built to measure.
+ * This function checks what can be checked without a suite: shape, and values
+ * that are intrinsically impossible whatever the case. Whether a speaker belongs
+ * to *this* scene, whether a tone tag is in *this* vocabulary and whether a
+ * proposal is grounded in *this* case are equally impossible for an accepted
+ * row — `inference::validate` rejects all of them — but answering that needs the
+ * case, so it belongs to `acceptedOutputContractProblems` at the report
+ * boundary. What stays with the evaluator is quality: an answer the validator
+ * would have accepted and a reader would call weak.
  *
  * Unknown keys are refused, because the authoritative cross-language contract
  * refuses them: `StructuredNarration`, `DialogueLine`, `EventProposal` and

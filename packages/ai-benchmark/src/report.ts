@@ -8,6 +8,8 @@
 
 import type { BenchmarkCase, BenchmarkSuite, BenchmarkTask } from './case.js';
 import { sha256Hex } from './digest.js';
+import { acceptedOutputContractProblems } from './contract.js';
+import { lockedArtifactProblems } from './model-lock.js';
 import {
   MAX_ATTEMPTS,
   OFFICIAL_COMPARISON_PROFILES,
@@ -1113,6 +1115,27 @@ export function buildComparison(
     throw new Error(
       `refusing to evaluate a run against a different suite: ${binding.join('; ')}`,
     );
+  }
+
+  // With the exact suite established, every row claiming acceptance can be held
+  // against its own case's contract. A row the application validator would have
+  // rejected is not a bad answer to score; it is an accepted status that could
+  // never have been recorded, and everything below would aggregate it as fact.
+  const impossible = acceptedOutputContractProblems(suite, run);
+  if (impossible.length > 0) {
+    const shown = impossible.slice(0, 5);
+    throw new Error(
+      `refusing evidence the application validator could not have accepted: ${shown.join('; ')}` +
+        (impossible.length > shown.length ? `; and ${impossible.length - shown.length} more` : ''),
+    );
+  }
+
+  // And the profiles must be the artifacts the project locked. Parity proves a
+  // profile used one artifact throughout; this proves it is the right one, so a
+  // comparison cannot be one model against itself under two names.
+  const artifacts = lockedArtifactProblems(run, compared);
+  if (artifacts.length > 0) {
+    throw new Error(`refusing evidence from unlocked artifacts: ${artifacts.join('; ')}`);
   }
 
   // Only now, with the suite proven to be the one that was run, can coverage be

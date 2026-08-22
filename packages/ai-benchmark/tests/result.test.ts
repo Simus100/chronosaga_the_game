@@ -366,11 +366,16 @@ describe('the normalized output shape is checked at runtime', () => {
     expect(normalizedOutputProblems(valid())).toEqual([]);
   });
 
-  it('does not confuse a bad answer with impossible evidence', () => {
-    // An unknown speaker, a tag outside the vocabulary and an ungrounded
-    // proposal are all things the validator could legitimately have accepted;
-    // they are the evaluator's business, not this boundary's. Refusing them here
-    // would refuse to report the very failures the benchmark measures.
+  it('checks shape and intrinsic value, and leaves case semantics alone', () => {
+    // These pass *this* function, and that is correct — an unknown speaker, a
+    // tag outside the vocabulary and an ungrounded proposal are all
+    // well-shaped values, and this boundary has no suite to judge them against.
+    //
+    // An earlier comment here claimed they were outputs the application
+    // validator could legitimately have accepted. That was wrong: Rust
+    // `inference::validate` rejects all three. They are impossible accepted
+    // evidence, and `acceptedOutputContractProblems` refuses them at the report
+    // boundary, where the case is in hand.
     expect(
       normalizedOutputProblems({
         ...valid(),
