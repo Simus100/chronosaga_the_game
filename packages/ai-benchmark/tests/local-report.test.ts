@@ -14,6 +14,7 @@ import { caseSubjectIds } from '../src/contract.js';
 import type { BenchmarkGeneration, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 import * as packageRoot from '../src/index.js';
+import * as officialSurface from '../src/adapters/local-report.js';
 
 /**
  * The trusted publication path.
@@ -280,7 +281,41 @@ describe('the public entry point evaluates its own checkout', () => {
     expect(/repositoryRoot\s*[?:]/.test(source)).toBe(false);
     expect(/checkout\s*[?:]\s*ReportCheckoutIdentity/.test(source)).toBe(false);
     expect(source).toContain('executingCheckoutDirectory()');
-    expect(source).toContain('import.meta.url');
+    expect(source).toContain('fileURLToPath(import.meta.url)');
+
+    // Scanned over code with comments stripped: the file's own doc explains that
+    // process.cwd() is deliberately not consulted, and a naive substring search
+    // matched the explanation rather than an actual call.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    for (const forbidden of ['process.cwd', 'process.env', 'argv', 'run.metadata']) {
+      expect(code.includes(forbidden), forbidden).toBe(false);
+    }
+  });
+
+  it('D again, exhaustively: no export reaches a report with a chosen repository', () => {
+    // Every function on both public surfaces, given a real alternate repository
+    // path in each of eight argument positions.
+    const alternate = repositoryWithOneCommit('export const decoy = 3;\n');
+    const produced: string[] = [];
+    for (const surface of [packageRoot, officialSurface] as Array<Record<string, unknown>>) {
+      for (const [name, value] of Object.entries(surface)) {
+        if (typeof value !== 'function') continue;
+        for (let position = 0; position < 8; position += 1) {
+          const args = Array.from({ length: 8 }, (_, index) =>
+            index === position ? alternate.root : undefined,
+          );
+          try {
+            const result = (value as (...rest: unknown[]) => unknown)(...args);
+            if (result && typeof result === 'object' && 'profiles' in result) {
+              produced.push(`${name}(arg${position})`);
+            }
+          } catch {
+            /* refusing is the expected outcome */
+          }
+        }
+      }
+    }
+    expect(produced).toEqual([]);
   });
 
   it('B: the identity it uses is this checkout\'s actual HEAD', () => {
