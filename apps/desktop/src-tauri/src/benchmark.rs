@@ -229,12 +229,76 @@ fn case_subject_ids(case: &BenchmarkCase) -> Vec<String> {
             push(part);
         }
     }
-    if let Some(settlement) = case.world_state_slice.get("settlement") {
-        if let Some(id) = settlement.get("id").and_then(|value| value.as_str()) {
-            push(id);
+    // Everything the scene actually shows, not just the settlement's own id.
+    //
+    // The prompt tells the model that a subjectId must be an id present in the
+    // scene, and the scene it can see is the whole slice. `ai_case_049` prints
+    // `settlement.controllingFactionId = faction_compact` and contains no
+    // character at all, so a proposal about that faction obeyed the instruction
+    // exactly and the validator refused it: the benchmark marking down an answer
+    // for reading the context it was given.
+    collect_scene_ids(&case.world_state_slice, &mut push);
+    ids
+}
+
+/// Whether a string is shaped like an entity id in this project.
+///
+/// `mara_001`, `settlement_helios`, `faction_compact`. The same rule the
+/// TypeScript evaluator applies, so the two sides agree about what counts as an
+/// identifier rather than each having its own notion.
+fn is_entity_id(value: &str) -> bool {
+    let mut segments = value.split('_');
+    let Some(first) = segments.next() else {
+        return false;
+    };
+    if first.is_empty() || !first.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return false;
+    }
+    if !first.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+        return false;
+    }
+    let mut had_segment = false;
+    for segment in segments {
+        had_segment = true;
+        if segment.is_empty()
+            || !segment
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            return false;
         }
     }
-    ids
+    had_segment
+}
+
+/// Every id-shaped string visibly present in a slice of scene data.
+///
+/// Values and keys alike: an object keyed by entity id names that entity as
+/// plainly as a field holding it. Only id-shaped strings — prose is not an
+/// identifier, and an underscore is not a licence, since the id must occur in
+/// the data the model was actually shown.
+fn collect_scene_ids(value: &serde_json::Value, push: &mut impl FnMut(&str)) {
+    match value {
+        serde_json::Value::String(text) => {
+            if is_entity_id(text) {
+                push(text);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_scene_ids(item, push);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, nested) in fields {
+                if is_entity_id(key) {
+                    push(key);
+                }
+                collect_scene_ids(nested, push);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The system prompt, identical for every profile.
@@ -289,6 +353,29 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
     // The worked example has to agree with the instruction. Showing an empty
     // array to a case that demands a proposal contradicts the sentence above it,
     // and the example is what a small model copies.
+    // The worked example is an instance of the contract, not decoration. A
+    // zero-speaker case was told "non produrre dialogo" and then shown a line to
+    // copy — and a small model copies the example, earning an UnknownSpeaker
+    // rejection for following the prompt.
+    //
+    // Permission produces no example either: showing a line where none is owed
+    // adds an obligation the contract does not contain. Only a required speaker
+    // appears, and by name, because the identity is constrained and "..." would
+    // invite the model to guess one.
+    let dialogue_example = if case.constraints.required_speaker_ids.is_empty() {
+        "[]".to_string()
+    } else {
+        format!(
+            "[{}]",
+            case.constraints
+                .required_speaker_ids
+                .iter()
+                .map(|speaker| format!("{{\"speakerId\": \"{speaker}\", \"text\": \"...\"}}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
     let proposal_example = if case.constraints.require_event_proposal {
         "[{\"subjectId\": \"...\", \"topic\": \"...\", \"rationale\": \"...\"}]"
     } else {
@@ -345,7 +432,7 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
          - {proposals};\n\
          - {memories}.{structure}\n\n\
          {envelope}:\n\
-         {{\"narration\": \"...\", \"dialogue\": [{{\"speakerId\": \"...\", \"text\": \"...\"}}], \
+         {{\"narration\": \"...\", \"dialogue\": {dialogue_example}, \
          \"tone_tags\": [\"...\"], \"event_proposals\": {proposal_example}, \"memory_suggestions\": {memory_example}}}",
         language = case.constraints.language,
         speakers = speakers,
@@ -355,6 +442,7 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
         memories = memories,
         numbers = numbers,
         structure = structure,
+        dialogue_example = dialogue_example,
         proposal_example = proposal_example,
         memory_example = memory_example,
         envelope = envelope,
@@ -3065,6 +3153,353 @@ mod tests {
             assert!(prompt.contains("DEVONO parlare"), "{id}: {prompt}");
             for speaker in &case.constraints.required_speaker_ids {
                 assert!(prompt.contains(speaker.as_str()), "{id}: {prompt}");
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Scene grounding
+    // ---------------------------------------------------------------------
+
+    /// Every id-shaped string visible in one case's slice, computed here rather
+    /// than taken from the code under test.
+    fn visible_scene_ids(case: &BenchmarkCase) -> Vec<String> {
+        /// The id shape, spelled out independently of the code under test.
+        fn shaped(text: &str) -> bool {
+            let parts: Vec<&str> = text.split('_').collect();
+            parts.len() > 1
+                && parts[0].starts_with(|c: char| c.is_ascii_lowercase())
+                && parts.iter().all(|part| {
+                    !part.is_empty()
+                        && part
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                })
+        }
+        fn keep(text: &str, out: &mut Vec<String>) {
+            if shaped(text) && !out.iter().any(|existing| existing == text) {
+                out.push(text.to_string());
+            }
+        }
+        fn walk(value: &serde_json::Value, out: &mut Vec<String>) {
+            match value {
+                serde_json::Value::String(text) => keep(text, out),
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        walk(item, out);
+                    }
+                }
+                serde_json::Value::Object(fields) => {
+                    for (key, nested) in fields {
+                        keep(key, out);
+                        walk(nested, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut ids = Vec::new();
+        walk(&case.world_state_slice, &mut ids);
+        ids
+    }
+
+    #[test]
+    fn a_and_b_the_faction_the_scene_names_is_a_valid_subject() {
+        // The finding exactly: ai_case_049 has no characters at all and prints
+        // settlement.controllingFactionId. A proposal about that faction read
+        // the context it was given and was refused for it.
+        let suite = load_suite().unwrap();
+        let case = suite
+            .cases
+            .iter()
+            .find(|candidate| candidate.id == "ai_case_049")
+            .expect("the case exists");
+        assert!(case.characters.is_empty(), "the case has nobody to inherit a faction from");
+
+        let subjects = case_subject_ids(case);
+        assert!(subjects.iter().any(|id| id == "faction_compact"), "{subjects:?}");
+        assert!(subjects.iter().any(|id| id == "settlement_helios"), "{subjects:?}");
+    }
+
+    #[test]
+    fn c_d_e_and_f_the_walk_reads_values_keys_and_arrays_but_not_prose() {
+        let scene = serde_json::json!({
+            "settlement": {
+                "id": "settlement_helios",
+                "name": "Helios Reach",
+                "controllingFactionId": "faction_compact",
+                "garrison": ["squad_alpha", "una pattuglia stanca"],
+                "faction_compact": { "standing": 0.4 },
+                "nested": { "deep": { "id": "relay_north_02" } }
+            },
+            "turn": 9
+        });
+        let mut found: Vec<String> = Vec::new();
+        collect_scene_ids(&scene, &mut |id| {
+            if !found.iter().any(|existing| existing == id) {
+                found.push(id.to_string());
+            }
+        });
+
+        assert!(found.contains(&"settlement_helios".to_string()), "C: {found:?}");
+        assert!(found.contains(&"relay_north_02".to_string()), "C nested: {found:?}");
+        assert!(found.contains(&"faction_compact".to_string()), "D key: {found:?}");
+        assert!(found.contains(&"squad_alpha".to_string()), "E array: {found:?}");
+        assert!(!found.contains(&"Helios Reach".to_string()), "F: {found:?}");
+        assert!(
+            !found.iter().any(|id| id.contains(' ')),
+            "F: prose is not an identifier: {found:?}"
+        );
+        assert!(!found.contains(&"turn".to_string()), "a bare word is not an id");
+    }
+
+    #[test]
+    fn an_underscore_alone_does_not_make_an_identifier() {
+        for text in ["Faction_Compact", "_leading", "trailing_", "a__b", "faction compact", "turn"] {
+            assert!(!is_entity_id(text), "'{text}' must not be collected");
+        }
+        for text in ["mara_001", "settlement_helios", "faction_compact", "relay_north_02"] {
+            assert!(is_entity_id(text), "'{text}' is an id");
+        }
+    }
+
+    #[test]
+    fn g_an_id_absent_from_the_scene_is_still_refused() {
+        let suite = load_suite().unwrap();
+        let case = suite
+            .cases
+            .iter()
+            .find(|candidate| candidate.id == "ai_case_049")
+            .expect("the case exists");
+        assert!(
+            !case_subject_ids(case).iter().any(|id| id == "settlement_fake"),
+            "grounding was widened to shape, not abolished"
+        );
+
+        let payload = "{\"narration\": \"Helios Reach tace.\", \"dialogue\": [], \
+                       \"tone_tags\": [], \"event_proposals\": [{\"subjectId\": \
+                       \"settlement_fake\", \"topic\": \"t\", \"rationale\": \"r\"}], \
+                       \"memory_suggestions\": []}";
+        assert!(matches!(
+            crate::inference::validate(payload, &case_contract(case)),
+            Err(crate::inference::ValidationError::AuthoritativeClaim(_))
+        ));
+    }
+
+    #[test]
+    fn h_a_proposal_about_the_scene_faction_is_accepted() {
+        let suite = load_suite().unwrap();
+        let case = suite
+            .cases
+            .iter()
+            .find(|candidate| candidate.id == "ai_case_049")
+            .expect("the case exists");
+        let tag = case.constraints.allowed_tone_tags[0].clone();
+        let payload = format!(
+            "{{\"narration\": \"Helios Reach tace.\", \"dialogue\": [], \
+             \"tone_tags\": [\"{tag}\"], \"event_proposals\": [{{\"subjectId\": \
+             \"faction_compact\", \"topic\": \"debito\", \"rationale\": \"Il relay e' \
+             stato richiamato.\"}}], \"memory_suggestions\": []}}"
+        );
+        crate::inference::validate(&payload, &case_contract(case))
+            .unwrap_or_else(|error| panic!("{}", error.message()));
+    }
+
+    #[test]
+    fn i_every_visible_scene_id_is_a_permitted_subject() {
+        // The suite-wide invariant rather than a list of special cases: whatever
+        // the model can read in the slice, it may legitimately name.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let subjects = case_subject_ids(case);
+            for visible in visible_scene_ids(case) {
+                assert!(
+                    subjects.contains(&visible),
+                    "{}: the scene shows '{visible}' and the validator would refuse it",
+                    case.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn j_the_older_grounding_sources_are_untouched() {
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let subjects = case_subject_ids(case);
+            for character in &case.characters {
+                assert!(subjects.contains(&character.id), "{}", case.id);
+                if let Some(faction) = &character.faction_id {
+                    assert!(subjects.contains(faction), "{}", case.id);
+                }
+                if let Some(location) = &character.location_id {
+                    assert!(subjects.contains(location), "{}", case.id);
+                }
+            }
+            for change in &case.recent_delta.changes {
+                for part in change.key.split('.') {
+                    assert!(subjects.contains(&part.to_string()), "{}: {part}", case.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn subjects_are_deduplicated_and_stable() {
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let subjects = case_subject_ids(case);
+            let unique: std::collections::BTreeSet<&String> = subjects.iter().collect();
+            assert_eq!(unique.len(), subjects.len(), "{} repeats a subject", case.id);
+            assert_eq!(subjects, case_subject_ids(case), "{} is not deterministic", case.id);
+        }
+    }
+
+    #[test]
+    fn the_scene_ids_are_exported_for_the_typescript_evaluator() {
+        // Parity is checked, not asserted: each side computes the visible ids
+        // its own way and the fixture makes them compare.
+        let suite = load_suite().unwrap();
+        let mut by_case = serde_json::Map::new();
+        for case in &suite.cases {
+            by_case.insert(
+                case.id.clone(),
+                serde_json::Value::Array(
+                    visible_scene_ids(case)
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/ai-benchmark/tests/fixtures/scene-subject-ids.json");
+        let produced =
+            serde_json::to_string_pretty(&serde_json::Value::Object(by_case)).unwrap() + "\n";
+
+        if env::var("CHRONOSAGA_UPDATE_FIXTURES").ok().as_deref() == Some("1") {
+            fs::create_dir_all(fixture_path.parent().unwrap()).unwrap();
+            fs::write(&fixture_path, &produced).unwrap();
+            return;
+        }
+
+        let committed = fs::read_to_string(&fixture_path).unwrap_or_else(|error| {
+            panic!(
+                "missing {}: {error}. Regenerate with CHRONOSAGA_UPDATE_FIXTURES=1",
+                fixture_path.display()
+            )
+        });
+        assert_eq!(
+            committed.replace("\r\n", "\n"),
+            produced,
+            "the scene ids the validator grounds on changed; check the TypeScript \
+             evaluator still sees the same ones"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // The worked dialogue example
+    // ---------------------------------------------------------------------
+
+    /// The `dialogue` array as the worked example renders it.
+    fn worked_dialogue(case: &BenchmarkCase) -> String {
+        let prompt = system_prompt(case);
+        let line = prompt.lines().last().expect("the example is the last line");
+        let start = line.find("\"dialogue\": ").expect("the example names dialogue") + 12;
+        let rest = &line[start..];
+        let end = rest.find("], \"tone_tags\"").expect("the example is well formed") + 1;
+        rest[..end].to_string()
+    }
+
+    #[test]
+    fn a_b_and_c_a_case_that_obliges_nobody_is_shown_no_line() {
+        let suite = load_suite().unwrap();
+
+        // A and B: no speakers at all. ai_case_049 was told "non produrre
+        // dialogo" and then shown a line to copy.
+        let silent = suite
+            .cases
+            .iter()
+            .find(|case| case.constraints.known_speaker_ids.is_empty())
+            .expect("some case has nobody in it");
+        assert_eq!(worked_dialogue(silent), "[]");
+        assert_eq!(
+            worked_dialogue(
+                suite
+                    .cases
+                    .iter()
+                    .find(|case| case.id == "ai_case_049")
+                    .expect("the case exists")
+            ),
+            "[]"
+        );
+
+        // C: permitted but not required. Showing a line would add an obligation
+        // the contract does not contain.
+        let permissive = suite
+            .cases
+            .iter()
+            .find(|case| {
+                !case.constraints.known_speaker_ids.is_empty()
+                    && case.constraints.required_speaker_ids.is_empty()
+            })
+            .expect("some case permits speech without demanding it");
+        assert_eq!(worked_dialogue(permissive), "[]");
+    }
+
+    #[test]
+    fn d_e_and_f_a_required_speaker_is_shown_by_name() {
+        let suite = load_suite().unwrap();
+
+        let one = suite
+            .cases
+            .iter()
+            .find(|case| case.constraints.required_speaker_ids.len() == 1)
+            .expect("some case requires one voice");
+        let example = worked_dialogue(one);
+        assert!(example.contains(&one.constraints.required_speaker_ids[0]), "{example}");
+        assert!(!example.contains("\"speakerId\": \"...\""), "D: {example}");
+
+        let two = suite
+            .cases
+            .iter()
+            .find(|case| case.constraints.required_speaker_ids.len() == 2)
+            .expect("some case requires two voices");
+        let example = worked_dialogue(two);
+        for speaker in &two.constraints.required_speaker_ids {
+            assert!(example.contains(speaker.as_str()), "E: {example}");
+        }
+    }
+
+    #[test]
+    fn g_h_i_and_j_every_worked_example_is_a_valid_instance_of_its_contract() {
+        // The invariant, derived over the whole suite: every speaker shown is
+        // one the scene contains, and every speaker owed appears.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let example = worked_dialogue(case);
+            for speaker in &case.constraints.known_speaker_ids {
+                // Presence is not required, only legality; checked below.
+                let _ = speaker;
+            }
+            for required in &case.constraints.required_speaker_ids {
+                assert!(
+                    example.contains(required.as_str()),
+                    "H: {} owes a line from {required} and the example omits it: {example}",
+                    case.id
+                );
+            }
+            // G and I: nothing in the example is a speaker the scene forbids.
+            for fragment in example.split("\"speakerId\": \"").skip(1) {
+                let shown = fragment.split('"').next().expect("a speaker id");
+                assert!(
+                    case.constraints.known_speaker_ids.iter().any(|id| id == shown),
+                    "{} shows '{shown}', which the scene does not contain",
+                    case.id
+                );
+            }
+            if case.constraints.known_speaker_ids.is_empty() {
+                assert_eq!(example, "[]", "{} has nobody to speak", case.id);
             }
         }
     }

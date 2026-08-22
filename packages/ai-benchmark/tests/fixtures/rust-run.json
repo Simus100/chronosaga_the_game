@@ -25,7 +25,7 @@
       "fallbackProfile": null,
       "fallbackUsed": false,
       "id": "run_001:ai_case_001:lite:1",
-      "inputFingerprint": "4d03354dc16deb350cac503bca9277da18c03ce6f8b930059ecd4291c9a6110b",
+      "inputFingerprint": "18651c52df027717757a959b407ce150348d83d0369c99a3f543a4f664d4b5b4",
       "latencyMs": 8916,
       "normalizedOutput": {
         "dialogue": [
@@ -81,7 +81,7 @@
       "fallbackProfile": null,
       "fallbackUsed": false,
       "id": "run_001:ai_case_001:standard:1",
-      "inputFingerprint": "4d03354dc16deb350cac503bca9277da18c03ce6f8b930059ecd4291c9a6110b",
+      "inputFingerprint": "18651c52df027717757a959b407ce150348d83d0369c99a3f543a4f664d4b5b4",
       "latencyMs": 26326,
       "normalizedOutput": null,
       "profile": "standard",

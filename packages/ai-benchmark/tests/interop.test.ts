@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
 import rustRequirements from './fixtures/official-evidence-requirements.json' with { type: 'json' };
+import rustSceneIds from './fixtures/scene-subject-ids.json' with { type: 'json' };
 import { OFFICIAL_EVIDENCE_REQUIREMENTS } from '../src/report.js';
 import {
   normalizedOutputProblems,
@@ -33,6 +34,65 @@ describe('the shared definition of official evidence', () => {
 
   it('declares each requirement exactly once', () => {
     expect(new Set(rustRequirements).size).toBe(rustRequirements.length);
+  });
+});
+
+describe('the scene both sides ground against', () => {
+  // The TypeScript evaluator walks worldStateSlice for id-shaped strings and
+  // keys; the Rust application validator now does the same for proposal
+  // subjects. The fixture is what makes them compare rather than each asserting
+  // against itself: ai_case_049 shows settlement.controllingFactionId and no
+  // character at all, so a proposal about that faction obeyed the prompt and was
+  // refused by a validator that had never collected it.
+  const ID = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+
+  function visibleIds(value: unknown, found: Set<string> = new Set()): Set<string> {
+    if (typeof value === 'string') {
+      if (ID.test(value)) found.add(value);
+      return found;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visibleIds(item, found);
+      return found;
+    }
+    if (value && typeof value === 'object') {
+      for (const [key, nested] of Object.entries(value)) {
+        if (ID.test(key)) found.add(key);
+        visibleIds(nested, found);
+      }
+    }
+    return found;
+  }
+
+  const exported = rustSceneIds as Record<string, string[]>;
+
+  it('I: agrees case by case across the whole suite', () => {
+    const suite = loadSuite();
+    expect(Object.keys(exported)).toHaveLength(suite.cases.length);
+    for (const entry of suite.cases) {
+      const mine = [...visibleIds(entry.worldStateSlice)].sort();
+      const theirs = [...(exported[entry.id] ?? [])].sort();
+      expect(theirs, entry.id).toEqual(mine);
+    }
+  });
+
+  it('sees the faction the scene names even where no character carries it', () => {
+    const suite = loadSuite();
+    const entry = suite.cases.find(candidate => candidate.id === 'ai_case_049')!;
+    expect(entry.characters).toHaveLength(0);
+    expect(visibleIds(entry.worldStateSlice).has('faction_compact')).toBe(true);
+    expect(exported.ai_case_049).toContain('faction_compact');
+  });
+
+  it('collects no prose and invents nothing', () => {
+    const suite = loadSuite();
+    for (const entry of suite.cases) {
+      const serialised = JSON.stringify(entry.worldStateSlice);
+      for (const id of exported[entry.id] ?? []) {
+        expect(ID.test(id), `${entry.id}: ${id}`).toBe(true);
+        expect(serialised, `${entry.id}: ${id} is not in the scene`).toContain(id);
+      }
+    }
   });
 });
 

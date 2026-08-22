@@ -243,6 +243,29 @@ about the same row. The contract now carries `require_event_proposal` and
 the retry the policy owes. Requiring what is not permitted is a contract defect,
 same as for speakers. Production permits neither, so it requires neither.
 
+Grounding for proposal subjects reads the whole scene, because the whole scene is
+what the model was shown. The Rust validator collected character ids, their
+factions and locations, delta keys and `settlement.id`; the TypeScript evaluator
+walked `worldStateSlice` recursively for id-shaped strings and keys. `ai_case_049`
+prints `settlement.controllingFactionId = faction_compact` and contains no
+character at all, so a proposal about that faction obeyed the prompt exactly and
+the validator refused it — the benchmark marking down an answer for reading the
+context it was given. Both sides now walk the slice with the same id shape
+(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$`), and `tests/fixtures/scene-subject-ids.json`
+makes them compare case by case rather than each asserting against itself.
+Widened to shape, not abolished: an underscore is not a licence, and an invented
+`settlement_fake` is refused exactly as before.
+
+The worked example is an instance of the contract, not decoration. The speaker
+instruction was conditional and the example was not, so a zero-speaker case was
+told *non produrre dialogo* and immediately shown a line to copy — and a small
+model copies the example, earning an `UnknownSpeaker` rejection for following the
+prompt. The `dialogue` example is built from the obligations now, the way the
+proposal and memory examples already were: `[]` when nobody is obliged, and one
+line per required speaker **by name** when somebody is, since the identity is
+constrained and `"..."` would invite a guess. Permission alone still produces no
+line: showing one would add an obligation the contract does not contain.
+
 Formatting strictness belongs to `strictJsonOnly` and to nothing else. Every case
 was told *senza blocchi di codice* while only the five strict cases were ever
 measured for it, so an ordinary case could break a rule it had been given, have
