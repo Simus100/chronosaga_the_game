@@ -59,6 +59,7 @@ function generation(caseId: string): BenchmarkGeneration {
     latencyMs: 1000,
     tokensGenerated: 100,
     tokensPerSecond: 12,
+    servedModel: 'lite',
     rawOutputPath: `raw/${caseId}.lite.1.txt`,
     rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
@@ -116,6 +117,7 @@ describe('benchmark isolation from authoritative state', () => {
       generations: caseIds.flatMap(caseId => [
         generation(caseId),
         { ...generation(caseId), id: `run:${caseId}:standard:1`, profile: 'standard' as const,
+          servedModel: 'standard',
           artifact: { ...generation(caseId).artifact, profileId: 'standard' as const } },
       ]),
     });

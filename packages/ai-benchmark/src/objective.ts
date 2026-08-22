@@ -70,8 +70,25 @@ export interface ObjectiveEvaluation {
 /** Entity ids in this project look like `mara_001`, `settlement_helios`. */
 const ENTITY_ID = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
 
+/**
+ * Every piece of prose the model wrote, as one corpus for identifier checks.
+ *
+ * Proposals and memory suggestions are typed, and the application validator
+ * grounds their typed parts: `subjectId` must be an entity the case put on the
+ * table, `characterId` a character in the scene. Their *prose* was ungrounded —
+ * a rationale reading "settlement_fake ha perso le riserve", or a summary saying
+ * "ricorda mem_secret_999", carried an invented id past every deterministic
+ * check while the typed fields stayed impeccable. Free text is where invention
+ * hides, so all of it is examined, by the same detector, with nothing widened
+ * and no check changing confidence.
+ */
 function collectText(output: NormalizedOutput): string {
-  return [output.narration, ...output.dialogue.map(line => line.text)].join('\n');
+  return [
+    output.narration,
+    ...output.dialogue.map(line => line.text),
+    ...output.eventProposals.flatMap(proposal => [proposal.topic, proposal.rationale]),
+    ...output.memorySuggestions.map(suggestion => suggestion.summary),
+  ].join('\n');
 }
 
 /** Every entity id the case legitimately puts on the table. */

@@ -40,6 +40,7 @@ function generation(over: Partial<BenchmarkGeneration> = {}): BenchmarkGeneratio
     latencyMs: 1000,
     tokensGenerated: 100,
     tokensPerSecond: 12,
+    servedModel: 'lite',
     rawOutputPath: 'raw/c1.lite.1.txt',
     rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {

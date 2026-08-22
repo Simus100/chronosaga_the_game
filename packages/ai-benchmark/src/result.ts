@@ -13,6 +13,23 @@ import type { BenchmarkTask } from './case.js';
 export type BenchmarkProfile = 'lite' | 'standard';
 
 /**
+ * The profiles a P0.5 official comparison compares, in canonical order.
+ *
+ * Lite versus Standard is the question the benchmark exists to answer, so the
+ * set is not the caller's to choose: a full-suite Lite-only run satisfies every
+ * coverage rule there is and compares nothing. Declared here beside the type
+ * rather than as a string list at the report boundary, and the guard below makes
+ * a new profile a compile error instead of a silently unmeasured one.
+ */
+export const OFFICIAL_COMPARISON_PROFILES = ['lite', 'standard'] as const;
+
+type UncomparedProfile = Exclude<BenchmarkProfile, (typeof OFFICIAL_COMPARISON_PROFILES)[number]>;
+// If this line stops compiling, a profile was added to BenchmarkProfile without
+// deciding whether the official comparison covers it.
+const _everyProfileIsCompared: UncomparedProfile[] = [];
+void _everyProfileIsCompared;
+
+/**
  * How many times the benchmark may ask one model one case.
  *
  * The plan fixes a first attempt plus **at most one** retry. A model that needed
@@ -122,6 +139,16 @@ export interface BenchmarkGeneration {
   latencyMs: number;
   tokensGenerated: number | null;
   tokensPerSecond: number | null;
+  /**
+   * The model the runtime said produced this response.
+   *
+   * `null` is the shape the runtime can emit, not a shape this run may keep: a
+   * response that does not say who produced it cannot be attributed, and
+   * `validateRun` refuses it. The runner's preflight probe proves the right
+   * model was loaded before the first prompt and nothing about the rows after
+   * it, so every row carries its own answer and every row is checked against it.
+   */
+  servedModel: string | null;
   /**
    * Path to the raw output, relative to the run directory.
    *
@@ -285,6 +312,26 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     }
     if (!generation.fallbackUsed && generation.fallbackProfile !== null) {
       at('fallbackProfile', 'no fallback happened, so none may be recorded');
+    }
+
+    // Attribution, per row. The alias the runtime reports is the alias the
+    // runtime was launched under, which is the profile id, so a row whose
+    // answering model is anything else was produced by a model this row does not
+    // name. A fallback answers under the profile it fell back to; anything else
+    // is a swap the run did not intend.
+    const expectedModel = generation.fallbackProfile ?? generation.profile;
+    if (generation.servedModel === null) {
+      at(
+        'servedModel',
+        'the runtime did not say which model produced this response, so it cannot be ' +
+          'attributed to any artifact',
+      );
+    } else if (generation.servedModel !== expectedModel) {
+      at(
+        'servedModel',
+        `answered by '${generation.servedModel}' but recorded under '${expectedModel}'; ` +
+          'the run cannot be reported as evidence about either',
+      );
     }
   }
 

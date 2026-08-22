@@ -1248,6 +1248,33 @@ pub fn serving_identity_verdict(expected_alias: &str, served: &[String]) -> Resu
     ))
 }
 
+/// Whether the model that answered *this* response is the one being measured.
+///
+/// [`serving_identity_verdict`] asks the endpoint once, before the first prompt.
+/// That closes the incumbent-process hole and nothing else: it is a snapshot, and
+/// a runtime that swaps models afterwards would keep answering, keep reporting
+/// the other alias, and every row after the swap would be filed under an artifact
+/// that did not produce it. The preflight makes the first row trustworthy; this
+/// makes every row trustworthy.
+///
+/// Silence is refused too. A response that does not say which model produced it
+/// cannot be attributed, and attributing it anyway is exactly the assumption the
+/// preflight exists to stop making.
+pub fn response_identity_verdict(expected_alias: &str, reported: Option<&str>) -> Result<(), String> {
+    match reported {
+        Some(alias) if alias == expected_alias => Ok(()),
+        Some(alias) => Err(format!(
+            "the response was produced by '{alias}' but the benchmark is measuring \
+             '{expected_alias}'; the runtime changed models mid-run and this row cannot \
+             be attributed to either with confidence"
+        )),
+        None => Err(format!(
+            "the runtime did not say which model answered, so this row cannot be \
+             attributed to '{expected_alias}' by anything except assumption"
+        )),
+    }
+}
+
 /// Resolve the requested benchmark profile against the locked profile ids.
 ///
 /// Two different situations that used to look identical from the outside:
@@ -1766,7 +1793,7 @@ mod tests {
             prompt_tokens: None,
             completion_tokens: None,
             tokens_per_second: None,
-            model: None,
+            model: Some("lite".to_string()),
         };
         let rows: Vec<GenerationRecord> = (1..=3)
             .map(|attempt| {
@@ -2189,7 +2216,9 @@ mod tests {
             prompt_tokens: None,
             completion_tokens: None,
             tokens_per_second: None,
-            model: None,
+            // A rejected answer still says who produced it: rejection is the
+            // validator's verdict on the content, not a failure to attribute.
+            model: Some("standard".to_string()),
         };
 
         serde_json::json!({
@@ -2869,6 +2898,100 @@ mod tests {
         assert!(gate < first_persist, "and before any row is written");
     }
 
+    // ---------------------------------------------------------------------
+    // Per-response identity
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_response_from_the_measured_model_is_accepted() {
+        response_identity_verdict("lite", Some("lite")).expect("A: lite answered a lite benchmark");
+        response_identity_verdict("standard", Some("standard")).expect("B: standard answered");
+    }
+
+    #[test]
+    fn a_response_from_the_other_model_is_refused() {
+        // C and D. The preflight cannot see this: it happened after the probe.
+        let error = response_identity_verdict("lite", Some("standard"))
+            .expect_err("standard answered a lite benchmark");
+        assert!(error.contains("produced by 'standard'"), "{error}");
+        assert!(error.contains("measuring 'lite'"), "{error}");
+        assert!(error.contains("changed models mid-run"), "{error}");
+
+        let reverse = response_identity_verdict("standard", Some("lite"))
+            .expect_err("lite answered a standard benchmark");
+        assert!(reverse.contains("produced by 'lite'"), "{reverse}");
+    }
+
+    #[test]
+    fn a_response_that_names_no_model_is_refused() {
+        // E. Silence is not agreement. Filing it under the selected profile is
+        // the assumption the preflight exists to stop making.
+        let error = response_identity_verdict("lite", None).expect_err("nothing was reported");
+        assert!(error.contains("did not say which model answered"), "{error}");
+        assert!(error.contains("except assumption"), "{error}");
+    }
+
+    #[test]
+    fn the_response_check_precedes_the_row() {
+        // I and J, at the level that matters: a mismatched answer must never
+        // become a row at all, so the check has to sit between the request and
+        // the record. Anchored on runner-only code and searched from the end,
+        // because these strings also appear in this test.
+        let source = include_str!("benchmark.rs");
+        let request = source
+            .rfind("block_on(provider.generate(")
+            .expect("the runner generates");
+        let check = source[request..]
+            .find("response_identity_verdict(&profile, outcome.model.as_deref())")
+            .map(|offset| request + offset)
+            .expect("the runner checks who answered");
+        let record = source[request..]
+            .find("let record = record_generation(")
+            .map(|offset| request + offset)
+            .expect("the runner records");
+        let persist = source[request..]
+            .find("persist(&directory, &record, &outcome.raw)")
+            .map(|offset| request + offset)
+            .expect("the runner persists");
+
+        assert!(check < record, "the answer must be attributed before it becomes a row");
+        assert!(check < persist, "and before anything is written");
+    }
+
+    #[test]
+    fn a_mismatched_response_ends_the_run_rather_than_being_dropped() {
+        // The rule stated as code: refusal is total. Dropping the row would
+        // leave a run whose coverage silently shrank and whose remaining numbers
+        // came from an unknown mixture of two models.
+        let source = include_str!("benchmark.rs");
+        let call = source
+            .rfind("response_identity_verdict(&profile, outcome.model.as_deref())")
+            .expect("the runner checks");
+        let tail = &source[call..call + 200];
+        assert!(
+            tail.contains("panic!"),
+            "a wrong-model answer must end the run, not be skipped: {tail}"
+        );
+        assert!(!tail.contains("continue"), "{tail}");
+    }
+
+    #[test]
+    fn the_interop_fixture_attributes_every_row() {
+        // H. The fixture is what the TypeScript contract is checked against, so
+        // a row without an answering model would teach the other side that such
+        // rows are normal.
+        let run = interop_fixture();
+        let rows = run["generations"].as_array().expect("the fixture has rows");
+        assert!(!rows.is_empty());
+        for row in rows {
+            assert_eq!(
+                row["servedModel"], row["profile"],
+                "{} is filed under a model that did not answer it",
+                row["id"]
+            );
+        }
+    }
+
     #[test]
     fn a_record_keeps_the_model_the_runtime_reported() {
         let suite = load_suite().unwrap();
@@ -3527,6 +3650,13 @@ mod tests {
                 request_parameters(&context),
             ))
             .expect("the request must reach the local runtime");
+
+            // Per-response attribution, before the row exists. A single answer
+            // from the wrong model invalidates the run rather than being dropped
+            // quietly: a benchmark that discards inconvenient rows is measuring
+            // its own filter.
+            response_identity_verdict(&profile, outcome.model.as_deref())
+                .unwrap_or_else(|error| panic!("{} {error}", case.id));
 
             let record = record_generation(
                 &run_id,

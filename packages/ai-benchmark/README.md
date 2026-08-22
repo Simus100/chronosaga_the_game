@@ -147,6 +147,16 @@ against the five locked categories and the generations the run actually
 contains; the comparison reports machine and human disqualifications separately
 and never merges either into a score.
 
+Grounding reads all the prose, not only the narration and dialogue. Proposals and
+memory suggestions are typed, and the application validator grounds their typed
+parts — `subjectId` must be an entity the case put on the table, `characterId` a
+character in the scene. Their prose was ungrounded, so a rationale reading
+*settlement_fake ha perso le riserve* or a summary saying *ricorda
+mem_secret_999* carried an invented id past every deterministic check while the
+typed fields stayed impeccable. Free text is where invention hides, so `topic`,
+`rationale` and `summary` join the same corpus, examined by the same detector.
+Nothing was widened and no check changed confidence.
+
 ## Permission is not requirement
 
 `knownSpeakerIds` says who *may* speak; `requiredSpeakerIds` says who *must*.
@@ -198,6 +208,18 @@ vacuous truth — both compared sets are empty, so nothing is missing and nothin
 disagrees — and renders `caseCount: 0` with empty summaries. An interrupted or
 half-copied evidence directory looks exactly like that. Every compared profile
 must have rows, and at least one case must have been answered by all of them.
+
+Which profiles are compared is not the caller's to choose. Every gate below
+takes the list as given, so `buildComparison(suite, run, ['lite'])` measured
+coverage against Lite alone, found it complete, and published a full-suite
+Lite-only run as an official comparison that compared nothing — a wrong list does
+not produce a wrong answer, it produces a confident answer to a different
+question. An official comparison is exactly one Lite and one Standard, taken from
+`OFFICIAL_COMPARISON_PROFILES` beside the type rather than a string list at the
+boundary, and a new profile added to `BenchmarkProfile` without a decision is a
+compile error. Duplicates are refused too: comparing a profile with itself
+renders two identical columns as though they were evidence of a difference.
+Order is normalised, so the same evidence always reads Lite then Standard.
 
 Having something to compare is not the same as having the right thing. A smoke
 pass over ten cases on a dirty checkout is structurally impeccable and supports
@@ -279,8 +301,20 @@ and refuses unless it matches the selected profile, so that
 recorded artifact identity == verified selected model == actual serving model
 ```
 
-Each row also keeps the model the runtime reported for that response, so a swap
-mid-run would leave a trace in the evidence rather than passing silently. `top_p`
+That is a snapshot, and it closes exactly one hole. A runtime that swaps models
+afterwards keeps answering, keeps reporting the other alias, and every row after
+the swap would be filed under an artifact that did not produce it. So each
+response is checked as well, between the request and the row: the runner refuses
+before `record_generation`, and `servedModel` is part of the TypeScript contract
+where `validateRun` requires it to be present and to match the profile the row is
+recorded under — the profile it fell back to, when it fell back.
+
+Refusal is total. A single mismatched response ends the run rather than being
+dropped, because a benchmark that discards inconvenient rows is measuring its own
+filter: the coverage would silently shrink and the remaining numbers would come
+from an unknown mixture of two models. `validateRun` runs first in
+`buildComparison`, so a mismatched row never reaches scoring, latency or any
+aggregate. `top_p`
 and `seed` are configured explicitly rather than left to the server, because
 "whatever the runtime defaulted to" is not reproducible. The product smoke keeps
 its own parameters and records `null` for the two it does not set, rather than

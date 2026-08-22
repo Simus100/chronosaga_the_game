@@ -6,6 +6,7 @@ import {
   inputParityProblems,
   judgementProblems,
   officialEvidenceProblems,
+  officialProfileSetProblem,
   OFFICIAL_EVIDENCE_REQUIREMENTS,
   suiteBindingProblems,
   taskMismatches,
@@ -14,7 +15,12 @@ import { asHardFails, validateHumanReview, type HumanReview } from '../src/human
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 import type { ScoreSheet } from '../src/scoring.js';
-import { MAX_ATTEMPTS, MAX_RETRIES, validateRun } from '../src/result.js';
+import {
+  MAX_ATTEMPTS,
+  MAX_RETRIES,
+  OFFICIAL_COMPARISON_PROFILES,
+  validateRun,
+} from '../src/result.js';
 
 const suite = loadSuite();
 const SHA = {
@@ -63,6 +69,7 @@ function generationFor(
     latencyMs: 8000,
     tokensGenerated: 120,
     tokensPerSecond: 15,
+    servedModel: profile,
     rawOutputPath: `raw/${caseId}.${profile}.1.txt`,
     rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
@@ -105,6 +112,155 @@ function fairRun(): BenchmarkRun {
     ]),
   };
 }
+
+describe('an official comparison is exactly Lite versus Standard', () => {
+  it('A: lite and standard is the comparison', () => {
+    expect(officialProfileSetProblem(['lite', 'standard'])).toBeNull();
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'])).not.toThrow();
+  });
+
+  it('B: the order the caller passes does not matter', () => {
+    expect(officialProfileSetProblem(['standard', 'lite'])).toBeNull();
+    expect(() => buildComparison(suite, fairRun(), ['standard', 'lite'])).not.toThrow();
+  });
+
+  it('J: and the report is always Lite then Standard', () => {
+    // Same evidence, two call orders, one reading.
+    const asked = buildComparison(suite, fairRun(), ['standard', 'lite']);
+    expect(asked.profiles.map(entry => entry.profile)).toEqual(['lite', 'standard']);
+    expect(asked).toEqual(buildComparison(suite, fairRun(), ['lite', 'standard']));
+  });
+
+  it('C and D: one profile alone is not a comparison', () => {
+    for (const only of [['lite'], ['standard']] as const) {
+      const problem = officialProfileSetProblem([...only]);
+      expect(problem, only[0]).toMatch(/is absent, so nothing is being compared/);
+      expect(() => buildComparison(suite, fairRun(), [...only])).toThrow(
+        /refusing to build an official comparison/,
+      );
+    }
+  });
+
+  it('I: a complete 65-case Lite-only run can never become an official comparison', () => {
+    // The defect in full. Every coverage rule is satisfied — for Lite — and the
+    // run answers nothing the benchmark was built to ask.
+    const run = fairRun();
+    run.generations = run.generations.filter(generation => generation.profile === 'lite');
+    expect(validateRun(run)).toEqual([]);
+    expect(officialEvidenceProblems(suite, run, ['lite'])).toEqual([]);
+    expect(() => buildComparison(suite, run, ['lite'])).toThrow(
+      /refusing to build an official comparison/,
+    );
+  });
+
+  it('E: an empty profile list is refused', () => {
+    expect(officialProfileSetProblem([])).toMatch(/no profiles were given/);
+    expect(() => buildComparison(suite, fairRun(), [])).toThrow(/no profiles were given/);
+  });
+
+  it('F and G: a profile compared with itself is not a comparison', () => {
+    expect(officialProfileSetProblem(['lite', 'lite'])).toMatch(/appears more than once/);
+    expect(officialProfileSetProblem(['lite', 'standard', 'lite'])).toMatch(
+      /appears more than once/,
+    );
+    expect(() => buildComparison(suite, fairRun(), ['lite', 'lite'])).toThrow(
+      /comparing a profile with itself/,
+    );
+  });
+
+  it('H: an unknown profile is refused and named', () => {
+    const problem = officialProfileSetProblem(['lite', 'turbo' as BenchmarkProfile]);
+    expect(problem).toMatch(/'turbo' is not a benchmark profile/);
+  });
+
+  it('takes the profile ids from the contract, not from a list written here', () => {
+    expect([...OFFICIAL_COMPARISON_PROFILES]).toEqual(['lite', 'standard']);
+    expect(officialProfileSetProblem([...OFFICIAL_COMPARISON_PROFILES])).toBeNull();
+  });
+
+  it('refuses the profile set before any other gate reads it', () => {
+    // Everything downstream takes the list as given, so a wrong list does not
+    // produce a wrong answer — it produces a confident answer to another
+    // question. This run is empty as well, and the profile set is what it says.
+    const run = fairRun();
+    run.generations = [];
+    expect(() => buildComparison(suite, run, ['lite'])).toThrow(
+      /refusing to build an official comparison/,
+    );
+  });
+});
+
+describe('every row is attributed to the model that answered it', () => {
+  it('A and B: a row answered by its own profile is valid', () => {
+    expect(validateRun(fairRun())).toEqual([]);
+  });
+
+  it('C and D: a row answered by the other model is refused', () => {
+    for (const [profile, served] of [
+      ['lite', 'standard'],
+      ['standard', 'lite'],
+    ] as const) {
+      const run = fairRun();
+      const row = run.generations.find(generation => generation.profile === profile)!;
+      row.servedModel = served;
+      const problems = validateRun(run);
+      expect(problems.map(problem => problem.field)).toContain('servedModel');
+      expect(problems[0]!.message).toMatch(
+        new RegExp(`answered by '${served}' but recorded under '${profile}'`),
+      );
+    }
+  });
+
+  it('E: a row that names no model at all is refused', () => {
+    const run = fairRun();
+    run.generations[0]!.servedModel = null;
+    const problems = validateRun(run);
+    expect(problems[0]!.field).toBe('servedModel');
+    expect(problems[0]!.message).toMatch(/did not say which model produced this response/);
+  });
+
+  it('F and G: a mismatched row never reaches evaluation or any aggregate', () => {
+    // validateRun runs first in buildComparison, so nothing downstream — scoring,
+    // latency, retry counts, acceptance rates — ever sees the row.
+    const run = fairRun();
+    run.generations.find(generation => generation.profile === 'lite')!.servedModel = 'standard';
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+  });
+
+  it('J: one wrong row invalidates the run, however many are right', () => {
+    const run = fairRun();
+    expect(validateRun(run)).toEqual([]);
+    run.generations.at(-1)!.servedModel = 'lite';
+    expect(validateRun(run)).not.toEqual([]);
+    expect(() => buildComparison(suite, run)).toThrow();
+  });
+
+  it('I: a swap partway through a run is caught at the row where it happened', () => {
+    // The shape of a real mid-run swap: the preflight probe passed, the first
+    // rows are honest, and everything after the swap names the other model.
+    const run = fairRun();
+    const half = Math.floor(run.generations.length / 2);
+    for (const generation of run.generations.slice(half)) {
+      generation.servedModel = generation.profile === 'lite' ? 'standard' : 'lite';
+    }
+    const problems = validateRun(run);
+    expect(problems.length).toBe(run.generations.length - half);
+    expect(problems.every(problem => problem.field === 'servedModel')).toBe(true);
+    expect(problems[0]!.generationId).toBe(run.generations[half]!.id);
+  });
+
+  it('a fallback row is attributed to the profile it fell back to', () => {
+    const run = fairRun();
+    const row = run.generations.find(generation => generation.profile === 'standard')!;
+    row.fallbackUsed = true;
+    row.fallbackProfile = 'lite';
+    row.servedModel = 'lite';
+    expect(validateRun(run).filter(problem => problem.field === 'servedModel')).toEqual([]);
+
+    row.servedModel = 'standard';
+    expect(validateRun(run).map(problem => problem.field)).toContain('servedModel');
+  });
+});
 
 describe('official comparison evidence', () => {
   const both: BenchmarkProfile[] = ['lite', 'standard'];
@@ -344,6 +500,7 @@ describe('retries and fairness', () => {
       attempt: 2,
       retryUsed: true,
       inputFingerprint: fingerprint,
+      servedModel: profile,
       rawOutputPath: `raw/${first}.${profile}.2.txt`,
     });
   }
@@ -434,6 +591,7 @@ describe('attempt histories must be coherent', () => {
       validatorErrors: accepted ? [] : ['unknown tone tag'],
       normalizedOutput: accepted ? generationFor(first, profile).normalizedOutput : null,
       inputFingerprint: attempt === 1 ? FINGERPRINT : fingerprint,
+      servedModel: profile,
       rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
     });
   }
@@ -582,6 +740,7 @@ describe('a retry must follow a rejection', () => {
       accepted,
       validatorErrors: accepted ? [] : ['unknown tone tag'],
       normalizedOutput: accepted ? generationFor(first, profile).normalizedOutput : null,
+      servedModel: profile,
       rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
       inputFingerprint: attempt === 1 ? FINGERPRINT : 'b'.repeat(64),
     });
@@ -766,6 +925,7 @@ describe('a structurally invalid run never reaches an aggregate', () => {
         id: `run:${first}:lite:2`,
         attempt: 2,
         retryUsed: false,
+        servedModel: 'lite',
         rawOutputPath: `raw/${first}.lite.2.txt`,
       }),
     );
@@ -824,6 +984,7 @@ describe('one retry, and only one', () => {
       accepted,
       validatorErrors: accepted ? [] : ['unknown tone tag'],
       normalizedOutput: accepted ? generationFor(first, profile).normalizedOutput : null,
+      servedModel: profile,
       rawOutputPath: `raw/${first}.${profile}.${attempt}.txt`,
       inputFingerprint: attempt === 1 ? FINGERPRINT : 'b'.repeat(64),
     });

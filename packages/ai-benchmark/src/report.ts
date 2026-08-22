@@ -9,6 +9,7 @@
 import type { BenchmarkCase, BenchmarkSuite, BenchmarkTask } from './case.js';
 import {
   MAX_ATTEMPTS,
+  OFFICIAL_COMPARISON_PROFILES,
   validateRun,
   type BenchmarkGeneration,
   type BenchmarkProfile,
@@ -307,6 +308,52 @@ export function comparableEvidenceProblems(
     );
   }
   return problems;
+}
+
+/**
+ * Whether these are the profiles an official comparison compares.
+ *
+ * The profile list was the caller's to choose, and every gate downstream took it
+ * as given: `buildComparison(suite, run, ['lite'])` measured coverage against
+ * Lite alone, found it complete, and published a full-suite Lite-only run as an
+ * `official_comparison` that compared nothing. Duplicates were worse than
+ * useless — `['lite', 'lite']` compares a profile with itself and renders two
+ * identical columns as though they were evidence of a difference.
+ *
+ * Exactly one Lite and one Standard, from
+ * {@link OFFICIAL_COMPARISON_PROFILES} rather than a list written out here.
+ * Order is not the caller's concern either: the report is always Lite then
+ * Standard, so two runs of the same evidence read the same way.
+ */
+export function officialProfileSetProblem(profiles: BenchmarkProfile[]): string | null {
+  const expected = [...OFFICIAL_COMPARISON_PROFILES];
+  if (profiles.length === 0) {
+    return `an official comparison compares ${expected.join(' and ')}; no profiles were given`;
+  }
+
+  const counts = new Map<string, number>();
+  for (const profile of profiles) {
+    counts.set(profile, (counts.get(profile) ?? 0) + 1);
+  }
+
+  const unknown = [...counts.keys()].filter(
+    profile => !expected.includes(profile as BenchmarkProfile),
+  );
+  if (unknown.length > 0) {
+    return `'${unknown.join("', '")}' is not a benchmark profile; an official comparison compares ${expected.join(' and ')}`;
+  }
+
+  const duplicated = [...counts.entries()].filter(([, count]) => count > 1).map(([id]) => id);
+  if (duplicated.length > 0) {
+    return `'${duplicated.join("', '")}' appears more than once; comparing a profile with itself is not a comparison`;
+  }
+
+  const absent = expected.filter(profile => !counts.has(profile));
+  if (absent.length > 0) {
+    return `an official comparison needs ${expected.join(' and ')}; '${absent.join("', '")}' ${absent.length === 1 ? 'is' : 'are'} absent, so nothing is being compared`;
+  }
+
+  return null;
 }
 
 /**
@@ -760,6 +807,18 @@ export function buildComparison(
   sheet: ScoreSheet | null = null,
   review: HumanReview | null = null,
 ): ComparisonReport {
+  // Before anything at all: which profiles are being compared. Every gate below
+  // takes this list as given — coverage, parity, evidence — so a wrong list does
+  // not produce a wrong answer, it produces a confident answer to a different
+  // question.
+  const profileProblem = officialProfileSetProblem(profiles);
+  if (profileProblem !== null) {
+    throw new Error(`refusing to build an official comparison: ${profileProblem}`);
+  }
+  // Canonical order from here down, so the same evidence always reads the same
+  // way whichever order the caller happened to pass.
+  const compared: BenchmarkProfile[] = [...OFFICIAL_COMPARISON_PROFILES];
+
   // The authoritative structural check comes first, before parity, evaluation or
   // any aggregate. These runs are loaded from external JSON and `validateRun`
   // already owns every cross-field invariant: an accepted attempt 1 claiming
@@ -783,7 +842,7 @@ export function buildComparison(
   }
 
   // Something to compare, before asking whether the comparison is fair.
-  const evidence = comparableEvidenceProblems(run, profiles);
+  const evidence = comparableEvidenceProblems(run, compared);
   if (evidence.length > 0) {
     throw new Error(`no comparable evidence: ${evidence.join('; ')}`);
   }
@@ -802,7 +861,7 @@ export function buildComparison(
   // Only now, with the suite proven to be the one that was run, can coverage be
   // measured against it. This is the gate that separates an official
   // Lite-versus-Standard report from a smoke pass rendered in the same shape.
-  const official = officialEvidenceProblems(suite, run, profiles);
+  const official = officialEvidenceProblems(suite, run, compared);
   if (official.length > 0) {
     throw new Error(
       `refusing to publish run ${run.metadata.runId} as an official comparison: ` +
@@ -839,7 +898,7 @@ export function buildComparison(
     );
   }
 
-  const parity = inputParityProblems(run, profiles);
+  const parity = inputParityProblems(run, compared);
   if (parity.length > 0) {
     throw new Error(
       `profiles did not see identical case inputs, so they cannot be compared: ${parity.join('; ')}`,
@@ -851,12 +910,12 @@ export function buildComparison(
   const allCaseIds = new Set(run.generations.map(generation => generation.caseId));
 
   for (const caseId of [...allCaseIds].sort()) {
-    const acceptedBy = profiles.filter(profile =>
+    const acceptedBy = compared.filter(profile =>
       run.generations.some(
         generation => generation.caseId === caseId && generation.profile === profile && generation.accepted,
       ),
     );
-    if (acceptedBy.length > 0 && acceptedBy.length < profiles.length) {
+    if (acceptedBy.length > 0 && acceptedBy.length < compared.length) {
       const testCase = cases.get(caseId);
       if (testCase) divergentCases.push({ caseId, task: testCase.task, acceptedBy });
     }
@@ -868,7 +927,7 @@ export function buildComparison(
     gitCommit: run.metadata.gitCommit,
     generatedAt: new Date(0).toISOString(),
     caseCount: allCaseIds.size,
-    profiles: profiles.map(profile => summarise(suite, run, profile, sheet, review)),
+    profiles: compared.map(profile => summarise(suite, run, profile, sheet, review)),
     divergentCases,
   };
 }

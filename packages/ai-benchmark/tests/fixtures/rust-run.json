@@ -93,7 +93,7 @@
       "rawOutputPath": "raw/ai_case_001.standard.1.txt",
       "retryUsed": false,
       "runId": "run_001",
-      "servedModel": null,
+      "servedModel": "standard",
       "task": "single_npc_dialogue",
       "tokensGenerated": null,
       "tokensPerSecond": null,

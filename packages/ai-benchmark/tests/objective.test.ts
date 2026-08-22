@@ -87,6 +87,7 @@ function generation(over: Partial<BenchmarkGeneration> = {}): BenchmarkGeneratio
     accepted: true,
     validatorErrors: [],
     retryUsed: false,
+    servedModel: 'lite',
     fallbackUsed: false,
     fallbackProfile: null,
     latencyMs: 8000,
@@ -528,5 +529,150 @@ describe('the deterministic evaluator', () => {
       );
       expect(evaluation.caseId).toBe(testCase.id);
     }
+  });
+});
+
+describe('grounding reaches inside structured suggestions', () => {
+  /** The case fixture, with proposals and memory suggestions permitted. */
+  function invitingCase(): BenchmarkCase {
+    const testCase = caseFixture();
+    testCase.constraints.allowEventProposals = true;
+    testCase.constraints.allowMemorySuggestions = true;
+    return testCase;
+  }
+
+  function evaluate(over: Partial<NormalizedOutput>) {
+    return evaluateObjectively(
+      invitingCase(),
+      generation({ normalizedOutput: output(over) }),
+    );
+  }
+
+  const check = (result: ReturnType<typeof evaluate>, id: string) =>
+    result.checks.find(entry => entry.id === id)!;
+
+  it('A: a rationale built from the case passes', () => {
+    const result = evaluate({
+      eventProposals: [
+        {
+          subjectId: 'settlement_helios',
+          topic: 'razionamento',
+          rationale: "settlement_helios ha perso acqua e mara_001 ha firmato il razionamento.",
+        },
+      ],
+    });
+    expect(check(result, 'entity_references_exist').passed).toBe(true);
+  });
+
+  it('B: an invented settlement hidden in a rationale is found', () => {
+    // The gap exactly: subjectId is impeccable, the prose is not, and every
+    // deterministic check passed before.
+    const result = evaluate({
+      eventProposals: [
+        {
+          subjectId: 'settlement_helios',
+          topic: 'razionamento',
+          rationale: 'settlement_fake ha perso le riserve.',
+        },
+      ],
+    });
+    const entities = check(result, 'entity_references_exist');
+    expect(entities.passed).toBe(false);
+    expect(entities.detail).toMatch(/settlement_fake/);
+    expect(entities.confidence).toBe('deterministic');
+  });
+
+  it('C: an invented faction hidden in a topic is found', () => {
+    const result = evaluate({
+      eventProposals: [
+        { subjectId: 'mara_001', topic: 'faction_fake', rationale: 'Serve una decisione.' },
+      ],
+    });
+    expect(check(result, 'entity_references_exist').detail).toMatch(/faction_fake/);
+  });
+
+  it('D: a memory summary built from the case passes', () => {
+    const result = evaluate({
+      memorySuggestions: [
+        { characterId: 'mara_001', summary: 'mara_001 ricorda mem_mara_ration.' },
+      ],
+    });
+    expect(check(result, 'entity_references_exist').passed).toBe(true);
+    expect(check(result, 'memory_attribution_valid').passed).toBe(true);
+  });
+
+  it('E: an unknown entity in a summary is found', () => {
+    const result = evaluate({
+      memorySuggestions: [
+        { characterId: 'mara_001', summary: 'Ha parlato con brann_999 al deposito.' },
+      ],
+    });
+    expect(check(result, 'entity_references_exist').detail).toMatch(/brann_999/);
+  });
+
+  it('F: a memory the case never granted, named in a summary, is a hard fail', () => {
+    const result = evaluate({
+      memorySuggestions: [
+        { characterId: 'mara_001', summary: 'Ricorda mem_secret_999 dal turno scorso.' },
+      ],
+    });
+    const memories = check(result, 'memory_attribution_valid');
+    expect(memories.passed).toBe(false);
+    expect(memories.detail).toMatch(/mem_secret_999/);
+    expect(result.hardFails.map(fail => fail.category)).toContain(
+      'incompatible_memory_attribution',
+    );
+    expect(result.hardFails.every(fail => fail.determinedBy === 'machine')).toBe(true);
+  });
+
+  it('G: typed subjectId and characterId validation is untouched', () => {
+    // Still the application validator's job, and still checked there. This
+    // corpus reads prose; it does not restate the typed rules.
+    const result = evaluate({
+      eventProposals: [
+        { subjectId: 'settlement_helios', topic: 'acqua', rationale: 'La riserva scende.' },
+      ],
+      memorySuggestions: [{ characterId: 'mara_001', summary: 'Ha firmato.' }],
+    });
+    expect(result.deterministicFailures).toBe(0);
+  });
+
+  it('H: ordinary prose with no identifier-like tokens is unaffected', () => {
+    const plain = evaluate({
+      eventProposals: [
+        {
+          subjectId: 'mara_001',
+          topic: 'razionamento',
+          rationale: "L'acqua non basta e la gente ha paura di quello che verra'.",
+        },
+      ],
+      memorySuggestions: [
+        { characterId: 'mara_001', summary: 'Ha deciso di ridurre le porzioni.' },
+      ],
+    });
+    const bare = evaluateObjectively(invitingCase(), generation({ normalizedOutput: output() }));
+    expect(plain.deterministicFailures).toBe(bare.deterministicFailures);
+    expect(check(plain, 'entity_references_exist').passed).toBe(true);
+  });
+
+  it('I: no check changed confidence in the process', () => {
+    // Widening the corpus must not turn a heuristic into a disqualification.
+    const result = evaluate({
+      memorySuggestions: [{ characterId: 'mara_001', summary: 'Ha visto brann_001 al molo.' }],
+    });
+    expect(check(result, 'no_absent_character_claims').confidence).toBe('heuristic');
+    expect(result.hardFails.map(fail => fail.category)).not.toContain('invented_entity');
+    expect(result.reviewSignals.every(signal => signal.checkId !== 'entity_references_exist')).toBe(
+      true,
+    );
+  });
+
+  it('an empty suggestion list changes nothing', () => {
+    const withNone = evaluateObjectively(
+      invitingCase(),
+      generation({ normalizedOutput: output() }),
+    );
+    expect(withNone.checks.map(entry => entry.id)).toContain('entity_references_exist');
+    expect(check(withNone, 'entity_references_exist').passed).toBe(true);
   });
 });

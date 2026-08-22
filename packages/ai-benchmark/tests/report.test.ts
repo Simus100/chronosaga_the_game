@@ -50,6 +50,7 @@ function generationFor(
     latencyMs: profile === 'lite' ? 8000 : 12000,
     tokensGenerated: 120,
     tokensPerSecond: profile === 'lite' ? 18 : 12,
+    servedModel: profile,
     rawOutputPath: `raw/${caseId}.${profile}.1.txt`,
     rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: accepted
