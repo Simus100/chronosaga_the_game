@@ -3,7 +3,7 @@ import rootRuntimeLock from '../../../config/local-ai-runtime.lock.json' with { 
 import { describe, expect, it } from 'vitest';
 import {
   attemptHistoryProblems,
-  buildComparison,
+  buildComparisonWithTrustedCheckout,
   comparableEvidenceProblems,
   inputParityProblems,
   judgementProblems,
@@ -34,7 +34,7 @@ import {
 } from '../src/result.js';
 
 /**
- * `buildComparison` with a checkout that matches the run being reported.
+ * `buildComparisonWithTrustedCheckout` with a checkout that matches the run being reported.
  *
  * Every existing test describes a report produced from the run's own commit,
  * which is the ordinary case. Deriving it from the run here simulates that
@@ -43,13 +43,13 @@ import {
  * explicitly.
  */
 function reportedFromItsOwnCheckout(
-  suiteUnderTest: Parameters<typeof buildComparison>[0],
-  run: Parameters<typeof buildComparison>[1],
-  profiles?: Parameters<typeof buildComparison>[2],
-  sheet?: Parameters<typeof buildComparison>[3],
-  review?: Parameters<typeof buildComparison>[4],
+  suiteUnderTest: Parameters<typeof buildComparisonWithTrustedCheckout>[0],
+  run: Parameters<typeof buildComparisonWithTrustedCheckout>[1],
+  profiles?: Parameters<typeof buildComparisonWithTrustedCheckout>[2],
+  sheet?: Parameters<typeof buildComparisonWithTrustedCheckout>[3],
+  review?: Parameters<typeof buildComparisonWithTrustedCheckout>[4],
 ) {
-  return buildComparison(suiteUnderTest, run, profiles, sheet, review, {
+  return buildComparisonWithTrustedCheckout(suiteUnderTest, run, profiles, sheet, review, {
     gitCommit: run.metadata.gitCommit,
     gitDirty: false,
   });
@@ -710,7 +710,7 @@ describe('every row is attributed to the model that answered it', () => {
   });
 
   it('F and G: a mismatched row never reaches evaluation or any aggregate', () => {
-    // validateRun runs first in buildComparison, so nothing downstream — scoring,
+    // validateRun runs first in buildComparisonWithTrustedCheckout, so nothing downstream — scoring,
     // latency, retry counts, acceptance rates — ever sees the row.
     const run = fairRun();
     run.generations.find(generation => generation.profile === 'lite')!.servedModel = 'standard';
@@ -965,7 +965,7 @@ describe('a truthy acceptance flag cannot become a successful result', () => {
       ),
     ).toBe(true);
 
-    // And it never gets there: validateRun is the first gate in buildComparison,
+    // And it never gets there: validateRun is the first gate in buildComparisonWithTrustedCheckout,
     // so the refusal is the structural one, not a coverage complaint.
     expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
     expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow(/coverage/);

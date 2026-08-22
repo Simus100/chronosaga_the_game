@@ -12,10 +12,39 @@
 export * from './case.js';
 export * from './result.js';
 export * from './structure.js';
-export * from './checkout.js';
+
 export * from './objective.js';
 export * from './scoring.js';
 export * from './hard-fail.js';
 export * from './human-review.js';
-export * from './report.js';
+// Explicit rather than `export *`, so that the pure comparison primitive stays
+// off the public surface. It accepts a caller-constructed checkout identity;
+// publishing an official comparison goes through `@paa/ai-benchmark/local-report`,
+// which reads the repository instead of being told about it.
+export {
+  caseIdsFor,
+  inputParityProblems,
+  comparableEvidenceProblems,
+  officialProfileSetProblem,
+  OFFICIAL_EVIDENCE_REQUIREMENTS,
+  officialEvidenceProblems,
+  judgementProblems,
+  suiteContentDigest,
+  suiteBindingProblems,
+  scorePopulationProblems,
+  reviewPopulationProblems,
+  attributionProblems,
+  attemptHistories,
+  terminalGeneration,
+  terminalGenerations,
+  unfinishedHistories,
+  attemptHistoryProblems,
+  taskMismatches,
+  renderComparison,
+  type ProfileSummary,
+  type ComparisonReport,
+  type OfficialEvidenceRequirement,
+  type OfficialEvidenceProblem,
+  type AttemptHistory,
+} from './report.js';
 export * from './suite.js';

@@ -368,6 +368,24 @@ refusals, kept distinct because they mean different things: no identity at all i
 a wiring mistake, an undeterminable commit a broken environment, a dirty tree a
 discipline problem, and a mismatch the actual reproducibility failure.
 
+The comparison is published through `@paa/ai-benchmark/local-report`, and that
+subpath exists because the previous shape had the trust the wrong way round. The
+pure builder takes the checkout identity as an *argument*, so a caller could hand
+it `{ gitCommit: run.metadata.gitCommit, gitDirty: false }` and satisfy the
+binding without Git ever being consulted — the evidence vouching for itself. The
+test helpers were written that way, which was the tell.
+
+`buildLocalOfficialComparison` has no checkout parameter. There is nothing to
+forge because there is nothing to pass: it reads the repository itself. The pure
+builder is renamed `buildComparisonWithTrustedCheckout` and is deliberately
+absent from the package entry point, so the forgeable path is not the reachable
+one. Reproducibility follows from the API rather than from remembering which
+helper to call.
+
+This is not a defence against editing the source — nothing in a library is. It
+stops an ordinary caller, or a CLI written next month, from saying *trust me,
+this checkout is commit X* when the code can simply look.
+
 The adapter is the only file under `src/` that touches Git, and it is not
 re-exported from the entry point — a test walks the tree to prove the pure
 library imports nothing from `node:`. No network is involved; `git rev-parse` and

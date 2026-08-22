@@ -1136,12 +1136,26 @@ function summarise(
 }
 
 /**
- * Build the comparison.
+ * Build the comparison, given a checkout identity somebody else established.
+ *
+ * **Not the way to publish an official comparison.** This is the pure core: it
+ * takes the checkout as an argument, which means a caller can hand it
+ * `{ gitCommit: run.metadata.gitCommit, gitDirty: false }` and satisfy the
+ * binding without anybody having asked Git anything. That is fine for a unit
+ * test, which needs to drive both sides of the boundary deterministically, and
+ * useless as a guarantee.
+ *
+ * The guarantee lives in `adapters/local-report.ts`, whose
+ * `buildLocalOfficialComparison` has no checkout parameter at all and reads the
+ * real repository itself. This function is deliberately absent from the package
+ * entry point so that the forgeable path is not the public one — reproducibility
+ * should follow from the API a caller can reach, not from remembering which
+ * helper to call.
  *
  * Throws when the profiles did not see identical inputs, because a report that
  * quietly compares different work is worse than no report.
  */
-export function buildComparison(
+export function buildComparisonWithTrustedCheckout(
   suite: BenchmarkSuite,
   run: BenchmarkRun,
   profiles: BenchmarkProfile[] = ['lite', 'standard'],

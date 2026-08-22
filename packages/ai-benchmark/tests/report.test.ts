@@ -1,7 +1,7 @@
 import { lockedRuntime } from '../src/runtime-lock.js';
 import { describe, expect, it } from 'vitest';
 import {
-  buildComparison,
+  buildComparisonWithTrustedCheckout,
   inputParityProblems,
   renderComparison,
   suiteContentDigest,
@@ -10,7 +10,7 @@ import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src
 import { loadSuite } from '../src/suite.js';
 
 /**
- * `buildComparison` with a checkout that matches the run being reported.
+ * `buildComparisonWithTrustedCheckout` with a checkout that matches the run being reported.
  *
  * Every existing test describes a report produced from the run's own commit,
  * which is the ordinary case. Deriving it from the run here simulates that
@@ -19,13 +19,13 @@ import { loadSuite } from '../src/suite.js';
  * explicitly.
  */
 function reportedFromItsOwnCheckout(
-  suiteUnderTest: Parameters<typeof buildComparison>[0],
-  run: Parameters<typeof buildComparison>[1],
-  profiles?: Parameters<typeof buildComparison>[2],
-  sheet?: Parameters<typeof buildComparison>[3],
-  review?: Parameters<typeof buildComparison>[4],
+  suiteUnderTest: Parameters<typeof buildComparisonWithTrustedCheckout>[0],
+  run: Parameters<typeof buildComparisonWithTrustedCheckout>[1],
+  profiles?: Parameters<typeof buildComparisonWithTrustedCheckout>[2],
+  sheet?: Parameters<typeof buildComparisonWithTrustedCheckout>[3],
+  review?: Parameters<typeof buildComparisonWithTrustedCheckout>[4],
 ) {
-  return buildComparison(suiteUnderTest, run, profiles, sheet, review, {
+  return buildComparisonWithTrustedCheckout(suiteUnderTest, run, profiles, sheet, review, {
     gitCommit: run.metadata.gitCommit,
     gitDirty: false,
   });

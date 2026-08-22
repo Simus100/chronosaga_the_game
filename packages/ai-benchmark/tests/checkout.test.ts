@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
 import { checkoutBindingProblems, type ReportCheckoutIdentity } from '../src/checkout.js';
 import { readLocalCheckout } from '../src/adapters/local-checkout.js';
-import { buildComparison, suiteContentDigest } from '../src/report.js';
+import { buildComparisonWithTrustedCheckout, suiteContentDigest } from '../src/report.js';
 import { lockedArtifact } from '../src/model-lock.js';
 import { caseSubjectIds } from '../src/contract.js';
 import { lockedRuntime } from '../src/runtime-lock.js';
@@ -83,7 +83,7 @@ describe('a report is bound to the checkout that produced the run', () => {
   it('A: the run\'s own commit, on a clean tree, passes this gate', () => {
     const run = officialRun(COMMIT_A);
     expect(checkoutBindingProblems(run, clean(COMMIT_A))).toEqual([]);
-    expect(() => buildComparison(suite, run, ['lite', 'standard'], null, null, clean(COMMIT_A)))
+    expect(() => buildComparisonWithTrustedCheckout(suite, run, ['lite', 'standard'], null, null, clean(COMMIT_A)))
       .not.toThrow();
   });
 
@@ -100,7 +100,7 @@ describe('a report is bound to the checkout that produced the run', () => {
     expect(problems[0]).toContain(COMMIT_A);
     expect(problems[0]).toContain(COMMIT_B);
     expect(problems[0]).toMatch(/the locks may still match while the evaluator does not/);
-    expect(() => buildComparison(suite, run, ['lite', 'standard'], null, null, clean(COMMIT_B)))
+    expect(() => buildComparisonWithTrustedCheckout(suite, run, ['lite', 'standard'], null, null, clean(COMMIT_B)))
       .toThrow(/refusing to report from a checkout that is not the run's/);
   });
 
@@ -110,7 +110,7 @@ describe('a report is bound to the checkout that produced the run', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatch(/uncommitted changes/);
     expect(() =>
-      buildComparison(suite, run, ['lite', 'standard'], null, null, {
+      buildComparisonWithTrustedCheckout(suite, run, ['lite', 'standard'], null, null, {
         gitCommit: COMMIT_A,
         gitDirty: true,
       }),
@@ -121,7 +121,7 @@ describe('a report is bound to the checkout that produced the run', () => {
     const run = officialRun(COMMIT_A);
     expect(checkoutBindingProblems(run, null)[0]).toMatch(/no trusted checkout identity/);
     // Omitting the argument entirely must not quietly succeed.
-    expect(() => buildComparison(suite, run)).toThrow(/no trusted checkout identity/);
+    expect(() => buildComparisonWithTrustedCheckout(suite, run)).toThrow(/no trusted checkout identity/);
   });
 
   it('F: an undeterminable commit is refused, and distinguishably', () => {
@@ -143,7 +143,7 @@ describe('a report is bound to the checkout that produced the run', () => {
       const problems = checkoutBindingProblems(run, identity);
       expect(problems.length, JSON.stringify(gitDirty) ?? 'undefined').toBeGreaterThan(0);
       expect(() =>
-        buildComparison(suite, run, ['lite', 'standard'], null, null, identity),
+        buildComparisonWithTrustedCheckout(suite, run, ['lite', 'standard'], null, null, identity),
       ).toThrow(/refusing to report from a checkout that is not the run's/);
     }
     // And a real boolean still works both ways.
@@ -181,9 +181,9 @@ describe('a report is bound to the checkout that produced the run', () => {
 
     // And nothing inside the run can stand in for the checkout: the only path
     // to a passing report is an argument the caller obtained elsewhere.
-    expect(() => buildComparison(suite, run)).toThrow(/no trusted checkout identity/);
+    expect(() => buildComparisonWithTrustedCheckout(suite, run)).toThrow(/no trusted checkout identity/);
     expect(
-      buildComparison(suite, run, ['lite', 'standard'], null, null, clean(COMMIT_B)).profiles,
+      buildComparisonWithTrustedCheckout(suite, run, ['lite', 'standard'], null, null, clean(COMMIT_B)).profiles,
     ).toHaveLength(2);
   });
 
@@ -194,25 +194,25 @@ describe('a report is bound to the checkout that produced the run', () => {
     const wrongSuite = structuredClone(run);
     wrongSuite.metadata.suiteContentSha256 = 'd'.repeat(64);
     expect(() =>
-      buildComparison(suite, wrongSuite, ['lite', 'standard'], null, null, checkout),
+      buildComparisonWithTrustedCheckout(suite, wrongSuite, ['lite', 'standard'], null, null, checkout),
     ).toThrow(/different suite/);
 
     const wrongRuntime = structuredClone(run);
     wrongRuntime.metadata.runtimeReleaseTag = 'b99999';
     expect(() =>
-      buildComparison(suite, wrongRuntime, ['lite', 'standard'], null, null, checkout),
+      buildComparisonWithTrustedCheckout(suite, wrongRuntime, ['lite', 'standard'], null, null, checkout),
     ).toThrow(/runtime_provenance/);
 
     const wrongModel = structuredClone(run);
     wrongModel.generations[0]!.artifact.sha256 = 'e'.repeat(64);
     expect(() =>
-      buildComparison(suite, wrongModel, ['lite', 'standard'], null, null, checkout),
+      buildComparisonWithTrustedCheckout(suite, wrongModel, ['lite', 'standard'], null, null, checkout),
     ).toThrow(/unlocked artifacts/);
 
     const malformed = structuredClone(run) as unknown as Record<string, unknown>;
     (malformed.generations as BenchmarkGeneration[])[0]!.latencyMs = '100' as never;
     expect(() =>
-      buildComparison(suite, malformed as unknown as BenchmarkRun, ['lite', 'standard'], null, null, checkout),
+      buildComparisonWithTrustedCheckout(suite, malformed as unknown as BenchmarkRun, ['lite', 'standard'], null, null, checkout),
     ).toThrow(/structurally invalid run/);
   });
 });
