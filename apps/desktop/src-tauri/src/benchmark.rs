@@ -5334,10 +5334,14 @@ mod tests {
         let start = source
             .find(concat!("fn smoke_run_executes_real_cases_", "through_the_application_boundary()"))
             .expect("the runner exists");
+        // No newline characters in the delimiter: Git checks this file out with
+        // CRLF on Windows, and a needle written with a bare line feed silently
+        // fails to match there. It did — the slice ran to the end of the file and
+        // a test matched its own comment. Green locally, red in CI.
         let end = source[start..]
-            .find("\n    #[test]\n")
+            .find("    #[test]")
             .map(|offset| start + offset)
-            .unwrap_or(source.len());
+            .expect("another test follows the runner");
         &source[start..end]
     }
 
@@ -5366,8 +5370,9 @@ mod tests {
 
     #[test]
     fn e_no_second_literal_governs_the_same_policy() {
-        // A stray `from_secs(180)` beside the constant would be the two-clock
-        // problem returning under a different name.
+        // A stray duration literal beside the constant would be the two-clock
+        // problem returning under a different name. The literal is not written
+        // out in this comment, so the test cannot match its own prose.
         let runner = runner_body();
         assert!(
             !runner.contains(concat!("from_", "secs(180)")),
