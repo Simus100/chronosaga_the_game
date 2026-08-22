@@ -6,7 +6,9 @@ import {
   inputParityProblems,
   judgementProblems,
   officialEvidenceProblems,
+  renderComparison,
   officialProfileSetProblem,
+  reviewPopulationProblems,
   scorePopulationProblems,
   terminalGenerations,
   OFFICIAL_EVIDENCE_REQUIREMENTS,
@@ -752,6 +754,212 @@ describe('a rejected first attempt is owed its retry', () => {
     expect(MAX_ATTEMPTS).toBe(MAX_RETRIES + 1);
     const atCeiling = withHistory('lite', [[1, false], [2, false]]);
     expect(officialEvidenceProblems(suite, atCeiling, both)).toEqual([]);
+  });
+});
+
+describe('an unreviewed case is not a case with no findings', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+  const first = caseIds[0]!;
+
+  /** A review declaring the whole terminal population, with the given findings. */
+  function fullReview(run: BenchmarkRun, hardFails: HumanReview['hardFails'] = []): HumanReview {
+    return {
+      runId: 'run',
+      suiteVersion: suite.suiteVersion,
+      reviewedGenerationIds: terminalGenerations(run, both).map(generation => generation.id),
+      hardFails,
+    };
+  }
+
+  const finding = (generationId: string) => ({
+    generationId,
+    category: 'contradicts_state_delta' as const,
+    detail: 'Says the shortage ended; the delta says water fell.',
+    reviewedBy: 'simone',
+    reviewedAt: '2026-08-21T00:00:00.000Z',
+  });
+
+  it('A and B: with no review, the human and combined counts are unknown', () => {
+    // The defect: this rendered `human 0`, which claims a review that never
+    // happened found nothing.
+    const report = buildComparison(suite, fairRun(), both, null, null);
+    for (const profile of report.profiles) {
+      expect(profile.humanHardFailedCases).toBeNull();
+      expect(profile.humanHardFailsByCategory).toBeNull();
+      expect(profile.hardFailedCases).toBeNull();
+      // Machine evaluation always happened, so its count is a number.
+      expect(typeof profile.machineHardFailedCases).toBe('number');
+    }
+  });
+
+  it('C: a complete review with no findings is the only valid zero', () => {
+    const run = fairRun();
+    const report = buildComparison(suite, run, both, null, fullReview(run));
+    for (const profile of report.profiles) {
+      expect(profile.humanHardFailedCases).toBe(0);
+      expect(profile.humanHardFailsByCategory).not.toBeNull();
+    }
+  });
+
+  it('D: a complete review with one finding counts it', () => {
+    const run = fairRun();
+    const report = buildComparison(
+      suite, run, both, null, fullReview(run, [finding(`run:${first}:lite:1`)]),
+    );
+    const lite = report.profiles.find(profile => profile.profile === 'lite')!;
+    expect(lite.humanHardFailedCases).toBe(1);
+    expect(lite.humanHardFailsByCategory!.contradicts_state_delta).toBe(1);
+    expect(lite.hardFailedCases).toBe(1);
+  });
+
+  it('E, F and G: a review short of the population is refused', () => {
+    for (const short of both) {
+      const run = fairRun();
+      const review = fullReview(run);
+      review.reviewedGenerationIds = review.reviewedGenerationIds.filter(
+        id => id !== `run:${first}:${short}:1`,
+      );
+      const problems = reviewPopulationProblems(run, both, review);
+      expect(problems, short).toHaveLength(1);
+      expect(problems[0], short).toMatch(new RegExp(`^${short} has 1 of ${suite.cases.length}`));
+      expect(problems[0], short).toContain(first);
+      expect(() => buildComparison(suite, run, both, null, review)).toThrow(/incomplete review/);
+    }
+  });
+
+  it('H: equal counts over different cases is still incomplete', () => {
+    const run = fairRun();
+    const all = terminalGenerations(run, both);
+    const review = fullReview(run);
+    review.reviewedGenerationIds = [
+      ...all.filter(entry => entry.profile === 'lite').slice(0, 10),
+      ...all.filter(entry => entry.profile === 'standard').slice(-10),
+    ].map(entry => entry.id);
+    const problems = reviewPopulationProblems(run, both, review);
+    expect(problems.some(problem => problem.startsWith('lite has'))).toBe(true);
+    expect(problems.some(problem => problem.startsWith('standard has'))).toBe(true);
+  });
+
+  it('I: a generation listed as reviewed twice is refused', () => {
+    const run = fairRun();
+    const review = fullReview(run);
+    review.reviewedGenerationIds.push(review.reviewedGenerationIds[0]!);
+    const problems = validateHumanReview(review, new Set(run.generations.map(g => g.id)));
+    expect(problems.map(problem => problem.message)).toContain('listed as reviewed twice');
+    expect(() => buildComparison(suite, run, both, null, review)).toThrow(/malformed judgement/);
+  });
+
+  it('J: a reviewed generation the run does not contain is refused', () => {
+    const run = fairRun();
+    const review = fullReview(run);
+    review.reviewedGenerationIds.push('run:ghost:lite:1');
+    const problems = validateHumanReview(review, new Set(run.generations.map(g => g.id)));
+    expect(problems[0]!.message).toMatch(/not in the run/);
+  });
+
+  it('K: a finding on a generation nobody declared reviewing is refused', () => {
+    // The sheet would be saying it did not look there and reporting what it saw.
+    const run = fairRun();
+    const review = fullReview(run, [finding(`run:${first}:lite:1`)]);
+    review.reviewedGenerationIds = review.reviewedGenerationIds.filter(
+      id => id !== `run:${first}:lite:1`,
+    );
+    const problems = validateHumanReview(review, new Set(run.generations.map(g => g.id)));
+    expect(problems.some(problem => problem.message.includes('does not declare reviewing'))).toBe(
+      true,
+    );
+  });
+
+  it('L, M and N: the review target is the attempt that ended the history', () => {
+    // A retried case: attempt 2 is the answer, attempt 1 a superseded draft.
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === first,
+    )!;
+    const recovered = structuredClone(row);
+    row.accepted = false;
+    row.validatorErrors = ['unknown tone tag'];
+    row.normalizedOutput = null;
+    run.generations.push({
+      ...recovered,
+      id: `run:${first}:lite:2`,
+      attempt: 2,
+      retryUsed: true,
+      rawOutputPath: `raw/${first}.lite.2.txt`,
+    });
+
+    const targets = terminalGenerations(run, both).map(generation => generation.id);
+    expect(targets).toContain(`run:${first}:lite:2`);
+    expect(targets).not.toContain(`run:${first}:lite:1`);
+    expect(reviewPopulationProblems(run, both, fullReview(run))).toEqual([]);
+
+    // N: reviewing the superseded attempt instead is refused, and named.
+    const wrong = fullReview(run);
+    wrong.reviewedGenerationIds = wrong.reviewedGenerationIds.map(id =>
+      id === `run:${first}:lite:2` ? `run:${first}:lite:1` : id,
+    );
+    const problems = reviewPopulationProblems(run, both, wrong);
+    expect(problems.some(p => p.includes('not the attempt that ended that history'))).toBe(true);
+
+    // M: an exhausted retry is still the review target, disqualified or not.
+    const exhausted = fairRun();
+    const target = exhausted.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === first,
+    )!;
+    const second = structuredClone(target);
+    target.accepted = false;
+    target.validatorErrors = ['unknown tone tag'];
+    target.normalizedOutput = null;
+    exhausted.generations.push({
+      ...second,
+      id: `run:${first}:lite:2`,
+      attempt: 2,
+      retryUsed: true,
+      accepted: false,
+      validatorErrors: ['unknown tone tag'],
+      normalizedOutput: null,
+      rawOutputPath: `raw/${first}.lite.2.txt`,
+    });
+    expect(terminalGenerations(exhausted, both).map(g => g.id)).toContain(`run:${first}:lite:2`);
+    expect(reviewPopulationProblems(exhausted, both, fullReview(exhausted))).toEqual([]);
+  });
+
+  it('O: the expected population derives from the run, never a literal 65', () => {
+    const run = fairRun();
+    expect(terminalGenerations(run, both)).toHaveLength(suite.cases.length * 2);
+    const keep = new Set(suite.cases.slice(0, 10).map(entry => entry.id));
+    run.generations = run.generations.filter(generation => keep.has(generation.caseId));
+    expect(terminalGenerations(run, both)).toHaveLength(20);
+    expect(reviewPopulationProblems(run, both, fullReview(run))).toEqual([]);
+  });
+
+  it('P: complete scores with no review stays valid', () => {
+    const run = fairRun();
+    const report = buildComparison(suite, run, both, fullSheet(run), null);
+    for (const profile of report.profiles) {
+      expect(profile.humanMeanByAxis?.grounding).toBe(4);
+      expect(profile.humanHardFailedCases).toBeNull();
+    }
+  });
+
+  it('Q: a complete review with no scores stays valid', () => {
+    const run = fairRun();
+    const report = buildComparison(suite, run, both, null, fullReview(run));
+    for (const profile of report.profiles) {
+      expect(profile.humanMeanByAxis).toBeNull();
+      expect(profile.humanHardFailedCases).toBe(0);
+    }
+  });
+
+  it('R: the rendering shows unknown differently from zero', () => {
+    const run = fairRun();
+    const unknown = renderComparison(buildComparison(suite, run, both, null, null));
+    const zero = renderComparison(buildComparison(suite, run, both, null, fullReview(run)));
+
+    expect(unknown).toContain('not reviewed');
+    expect(unknown).not.toMatch(/human 0/);
+    expect(zero).toMatch(/human 0/);
+    expect(zero).not.toContain('not reviewed');
   });
 });
 
@@ -1935,6 +2143,11 @@ describe('judgement must be well formed before it is aggregated', () => {
   const reviewWith = (hardFails: HumanReview['hardFails']): HumanReview => ({
     runId: 'run',
     suiteVersion: suite.suiteVersion,
+    // A complete review of the terminal population: the only shape in which a
+    // human hard-fail count of any value, zero included, means anything.
+    reviewedGenerationIds: terminalGenerations(fairRun(), ['lite', 'standard']).map(
+      generation => generation.id,
+    ),
     hardFails,
   });
 
@@ -2038,6 +2251,9 @@ describe('human hard failures', () => {
     return {
       runId: 'run',
       suiteVersion: suite.suiteVersion,
+      reviewedGenerationIds: terminalGenerations(fairRun(), ['lite', 'standard']).map(
+        generation => generation.id,
+      ),
       hardFails: [
         {
           generationId: `run:${caseIds[0]}:lite:1`,
@@ -2090,7 +2306,7 @@ describe('human hard failures', () => {
     expect(lite.humanHardFailedCases).toBe(1);
     expect(lite.machineHardFailedCases).toBe(0);
     expect(lite.hardFailedCases).toBe(1);
-    expect(lite.humanHardFailsByCategory.contradicts_state_delta).toBe(1);
+    expect(lite.humanHardFailsByCategory!.contradicts_state_delta).toBe(1);
     expect(lite.hardFailsByCategory.contradicts_state_delta).toBe(0);
 
     // The other profile is untouched by a review of the first.

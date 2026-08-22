@@ -261,6 +261,25 @@ constraint that states the requirement — never on the task name. A first attem
 is not terminal, an accepted retry is recovered, and `strictJsonOnly` keeps its
 additional bare-JSON requirement on top.
 
+An unreviewed case is not a case with no findings. `HumanReview` could say *I
+found a problem here* and had no way to say *I looked here and found none*, so
+the report initialised human counts to zero and rendered `human 0` for a review
+that never happened — false evidence of coverage. `reviewedGenerationIds` states
+what was actually looked at, never inferred from `hardFails`, and a generation
+with zero findings still has to be listed. Without a review the human count, its
+category breakdown and the combined total are `null`, and the rendering says
+`— not reviewed` rather than `0`. `machineHardFailedCases` stays a number,
+because machine evaluation always happened.
+
+With a review supplied, it must cover exactly the terminal-generation
+population — the same population and the same helper as the score sheet, so
+there is no second retry-selection rule — and a finding on a generation the
+review does not declare reviewing is a contradiction. A partial review is refused
+rather than read as "nothing found" in the gaps. The two coverages are
+independent: complete scores with no review gives human means and unknown
+hard-fail counts, and a complete review with no scores gives the reverse. A
+complete review with no findings is the only situation in which `0` is true.
+
 Human scores are averaged over one population or not at all. `validateScoreSheet`
 asks whether each score is well formed; it never asked whether the set meant
 anything as a mean, so one hand-picked excellent Lite generation and a handful of
@@ -282,6 +301,16 @@ mem_secret_999* carried an invented id past every deterministic check while the
 typed fields stayed impeccable. Free text is where invention hides, so `topic`,
 `rationale` and `summary` join the same corpus, examined by the same detector.
 Nothing was widened and no check changed confidence.
+
+An explicit benchmark request never skips quietly. `CHRONOSAGA_BENCHMARK=1` with
+no `CHRONOSAGA_WORKSPACE_ROOT` used to return false, so the test skipped and
+`cargo test` exited green — and green meant either *the benchmark ran* or
+*somebody asked for it and nothing happened because a variable was missing*.
+Those are now three states, not two: not opting in is a skip, opting in and being
+unable to run is a failure, and the failure names the missing variable. It is
+checked before the suite is read, before the runtime is verified, before any
+metadata exists and long before a sidecar could start, with a source-order test
+proving that ordering. An ordinary `cargo test` still needs nothing configured.
 
 ## Permission is not requirement
 

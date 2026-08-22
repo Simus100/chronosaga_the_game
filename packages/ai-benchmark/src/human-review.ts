@@ -32,6 +32,18 @@ export interface HumanHardFail {
 export interface HumanReview {
   runId: string;
   suiteVersion: string;
+  /**
+   * Every generation a reviewer actually looked at.
+   *
+   * Stated, never inferred from `hardFails`. A review can only say "I found a
+   * problem here"; without this it cannot say "I looked here and found none",
+   * and an unreviewed generation is indistinguishable from a reviewed one with
+   * nothing to report. The report used to render `human 0` for both, which is
+   * false evidence of review coverage.
+   *
+   * A generation with zero findings still has to be listed.
+   */
+  reviewedGenerationIds: string[];
   hardFails: HumanHardFail[];
 }
 
@@ -54,6 +66,25 @@ export function validateHumanReview(
   const problems: ReviewProblem[] = [];
   if (!review.runId) problems.push({ field: 'runId', message: 'a review must name its run' });
 
+  const reviewed = new Set<string>();
+  for (const id of review.reviewedGenerationIds ?? []) {
+    if (!knownGenerationIds.has(id)) {
+      problems.push({
+        generationId: id,
+        field: 'reviewedGenerationIds',
+        message: 'claims to have reviewed a generation that is not in the run',
+      });
+    }
+    if (reviewed.has(id)) {
+      problems.push({
+        generationId: id,
+        field: 'reviewedGenerationIds',
+        message: 'listed as reviewed twice',
+      });
+    }
+    reviewed.add(id);
+  }
+
   for (const fail of review.hardFails) {
     const at = (field: string, message: string) =>
       problems.push({ generationId: fail.generationId, field, message });
@@ -69,6 +100,12 @@ export function validateHumanReview(
     }
     if (!fail.reviewedBy?.trim()) {
       at('reviewedBy', 'a disqualification needs an author');
+    }
+    // A finding about a generation nobody declared reviewing is a coverage
+    // contradiction: the sheet says it was not looked at and reports what was
+    // found there.
+    if (!reviewed.has(fail.generationId)) {
+      at('generationId', 'disqualifies a generation the review does not declare reviewing');
     }
   }
 

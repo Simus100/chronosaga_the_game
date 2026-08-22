@@ -1852,9 +1852,50 @@ fn host_facts() -> HostFacts {
     }
 }
 
-fn enabled() -> bool {
-    env::var(BENCHMARK_ENV).ok().as_deref() == Some("1")
-        && env::var(WORKSPACE_ENV).is_ok_and(|value| !value.trim().is_empty())
+/// What the environment is asking of the benchmark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BenchmarkRequest {
+    /// Nobody opted in. A normal `cargo test` skips, and that is correct.
+    Disabled,
+    /// Opted in, with the configuration the run needs.
+    Enabled { workspace_root: String },
+}
+
+/// Read the two environment variables into a request, or refuse.
+///
+/// The old predicate collapsed three situations into two. `CHRONOSAGA_BENCHMARK=1`
+/// with no workspace root returned false, so the test skipped and `cargo test`
+/// exited green — and green meant either "the benchmark ran" or "somebody asked
+/// for the benchmark and it silently did nothing because a variable was
+/// missing". Those must not look the same to an operator.
+///
+/// Not opting in is a skip. Opting in and being unable to run is a failure.
+///
+/// Pure, so it can be tested without mutating process-global environment across
+/// threads: the caller reads the variables and passes the values in.
+pub fn benchmark_request(
+    benchmark: Option<&str>,
+    workspace_root: Option<&str>,
+) -> Result<BenchmarkRequest, String> {
+    if benchmark != Some("1") {
+        return Ok(BenchmarkRequest::Disabled);
+    }
+    match workspace_root {
+        Some(root) if !root.trim().is_empty() => Ok(BenchmarkRequest::Enabled {
+            workspace_root: root.to_string(),
+        }),
+        Some(_) => Err(format!(
+            "{BENCHMARK_ENV}=1 asked for a benchmark run, but {WORKSPACE_ENV} is set to a blank \
+             value. Set it to the development workspace root, for example \
+             {WORKSPACE_ENV}=D:\\Chronosaga. Nothing was run."
+        )),
+        None => Err(format!(
+            "{BENCHMARK_ENV}=1 asked for a benchmark run, but {WORKSPACE_ENV} is not set. The \
+             models live outside the repository and the run cannot find them without it. Set it \
+             to the development workspace root, for example {WORKSPACE_ENV}=D:\\Chronosaga. \
+             Nothing was run."
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -5026,12 +5067,23 @@ mod tests {
     /// is deliberately not run here: this is about the plumbing, not the verdict.
     #[test]
     fn smoke_run_executes_real_cases_through_the_application_boundary() {
-        if !enabled() {
-            eprintln!(
-                "skipped: set {WORKSPACE_ENV} and {BENCHMARK_ENV}=1 to run against the real model"
-            );
-            return;
-        }
+        // First, before the suite is read, before the runtime is verified, before
+        // any metadata exists and long before a sidecar could start: an explicit
+        // request that cannot be honoured ends the run loudly rather than
+        // reporting a skip somebody will read as success.
+        let workspace = match benchmark_request(
+            env::var(BENCHMARK_ENV).ok().as_deref(),
+            env::var(WORKSPACE_ENV).ok().as_deref(),
+        ) {
+            Ok(BenchmarkRequest::Disabled) => {
+                eprintln!(
+                    "skipped: set {WORKSPACE_ENV} and {BENCHMARK_ENV}=1 to run against the real model"
+                );
+                return;
+            }
+            Ok(BenchmarkRequest::Enabled { workspace_root }) => workspace_root,
+            Err(error) => panic!("{error}"),
+        };
         // Before the suite is loaded, before the runtime is verified and long
         // before anything is spawned: a misspelled profile costs nothing.
         let profile = resolve_requested_profile(env::var("CHRONOSAGA_BENCHMARK_PROFILE").ok())
@@ -5041,7 +5093,6 @@ mod tests {
             .and_then(|value| value.parse().ok())
             .unwrap_or(3);
 
-        let workspace = env::var(WORKSPACE_ENV).expect("checked by enabled()");
         let suite = load_suite().expect("the suite must parse");
 
         // Resolve the selection first, before the runtime is verified, the
@@ -5251,12 +5302,84 @@ mod tests {
                 == 14
     }
 
+    // ---------------------------------------------------------------------
+    // Explicit benchmark requests
+    // ---------------------------------------------------------------------
+
     #[test]
-    fn the_runner_is_opt_in() {
-        // Without both variables the harness does nothing, so the ordinary test
-        // suite never depends on a multi-GB payload.
-        if env::var(BENCHMARK_ENV).is_err() {
-            assert!(!enabled());
+    fn a_and_i_not_opting_in_is_a_skip_and_needs_no_workspace() {
+        // The ordinary `cargo test` path: no opt-in, no requirement to configure
+        // anything, and no multi-GB payload involved.
+        for benchmark in [None, Some("0"), Some(""), Some("true"), Some("yes")] {
+            for workspace in [None, Some(""), Some(r"D:\Chronosaga")] {
+                assert_eq!(
+                    benchmark_request(benchmark, workspace),
+                    Ok(BenchmarkRequest::Disabled),
+                    "{benchmark:?} / {workspace:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn b_and_j_an_honourable_request_is_enabled_with_its_root() {
+        assert_eq!(
+            benchmark_request(Some("1"), Some(r"D:\Chronosaga")),
+            Ok(BenchmarkRequest::Enabled {
+                workspace_root: r"D:\Chronosaga".to_string()
+            })
+        );
+        // The value is carried through unchanged, not normalised: the run uses
+        // the path the operator gave it.
+        assert_eq!(
+            benchmark_request(Some("1"), Some(r"  D:\Chronosaga  ")),
+            Ok(BenchmarkRequest::Enabled {
+                workspace_root: r"  D:\Chronosaga  ".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn c_d_e_and_f_an_impossible_request_fails_and_names_the_variable() {
+        // The defect: these returned false, the test skipped, and cargo exited
+        // green — so green meant either "it ran" or "somebody asked and nothing
+        // happened". An operator cannot tell those apart.
+        for workspace in [None, Some(""), Some("   "), Some("\t\n")] {
+            let error = benchmark_request(Some("1"), workspace)
+                .expect_err("an explicit request that cannot run must fail");
+            assert!(error.contains(WORKSPACE_ENV), "F: {error}");
+            assert!(error.contains(BENCHMARK_ENV), "{error}");
+            assert!(
+                error.contains("asked for a benchmark run"),
+                "the error must say a benchmark was explicitly requested: {error}"
+            );
+            assert!(error.contains("Nothing was run"), "{error}");
+        }
+    }
+
+    #[test]
+    fn g_and_h_an_invalid_request_ends_the_run_before_anything_exists() {
+        // Order, not just outcome: the check has to sit ahead of the suite, the
+        // runtime verification, the metadata and the sidecar, or a failed
+        // request could still leave a directory or a process behind.
+        let source = include_str!("benchmark.rs");
+        let gate = source
+            .rfind("Err(error) => panic!(\"{error}\"),")
+            .expect("the runner refuses an impossible request");
+
+        // Split so these needles do not appear literally in this test's own
+        // source: another order test searches for the same strings, and finding
+        // this one instead would have it compare a test against a test.
+        for later in [
+            concat!("load_suite().", "expect("),
+            concat!("persist_", "metadata("),
+            concat!("BenchmarkRuntimeGuard::", "start("),
+            concat!("block_on(provider.", "generate("),
+        ] {
+            let at = source
+                .rfind(later)
+                .unwrap_or_else(|| panic!("the runner does {later} somewhere"));
+            assert!(gate < at, "the request must be refused before {later}");
         }
     }
 }

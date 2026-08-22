@@ -161,7 +161,11 @@ describe('the Lite vs Standard comparison', () => {
     const report = buildComparison(suite, twoProfileRun(caseIds));
     const standard = report.profiles.find(profile => profile.profile === 'standard')!;
     expect(standard.casesAccepted).toBe(caseIds.length);
-    expect(standard.hardFailedCases).toBe(0);
+    expect(standard.machineHardFailedCases).toBe(0);
+    // No human review was supplied, so the human half — and therefore the
+    // combined total — is unknown rather than zero.
+    expect(standard.humanHardFailedCases).toBeNull();
+    expect(standard.hardFailedCases).toBeNull();
   });
 
   it('carries the exact artifact identity into the summary', () => {

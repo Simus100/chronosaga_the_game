@@ -47,12 +47,24 @@ export interface ProfileSummary {
   heuristicWarnings: number;
   /** Cases disqualified by the deterministic evaluator. */
   machineHardFailedCases: number;
-  /** Cases a human reviewer disqualified. Never inferred from a low score. */
-  humanHardFailedCases: number;
-  /** Either kind. What a reader wants when asking "how many were unusable?". */
-  hardFailedCases: number;
+  /**
+   * Cases a human reviewer disqualified, or `null` when nobody has reviewed.
+   *
+   * Never inferred from a low score, and never zero by default: an unreviewed
+   * population has an unknown human hard-fail count, and reporting `0` for it
+   * would be a claim about work that has not happened.
+   */
+  humanHardFailedCases: number | null;
+  /**
+   * Either kind, or `null` when the human half is unknown.
+   *
+   * "How many were unusable?" cannot be answered while half the question is
+   * unanswered.
+   */
+  hardFailedCases: number | null;
   hardFailsByCategory: Record<HardFailCategory, number>;
-  humanHardFailsByCategory: Record<HardFailCategory, number>;
+  /** `null` until a complete review exists, for the same reason. */
+  humanHardFailsByCategory: Record<HardFailCategory, number> | null;
   /** Heuristic findings queued for review, which disqualify nothing. */
   reviewSignals: number;
   acceptanceByTask: Record<string, { attempted: number; accepted: number }>;
@@ -704,6 +716,63 @@ export function scorePopulationProblems(
 }
 
 /**
+ * Whether a supplied human review covers a population its counts can describe.
+ *
+ * The mirror of {@link scorePopulationProblems}, for the other kind of human
+ * judgement, and independent of it: scores complete with no review is a run with
+ * human means and unknown hard-fail counts; a review complete with no scores is
+ * the reverse. Neither implies the other, and both are legitimate.
+ *
+ * The population is the same one — the terminal generation of every
+ * `(profile, case)` — taken from the same helper, so there is no second
+ * retry-selection rule to drift. A partial review is refused rather than read as
+ * "no findings" in the gaps: silence about a generation nobody opened is not
+ * evidence that it was clean.
+ */
+export function reviewPopulationProblems(
+  run: BenchmarkRun,
+  profiles: BenchmarkProfile[],
+  review: HumanReview | null,
+): string[] {
+  if (review === null) return [];
+
+  const population = terminalGenerations(run, profiles);
+  const expected = new Set(population.map(generation => generation.id));
+  const declared = new Set(review.reviewedGenerationIds ?? []);
+  const byId = new Map(run.generations.map(generation => [generation.id, generation]));
+  const problems: string[] = [];
+
+  for (const id of declared) {
+    if (expected.has(id)) continue;
+    const generation = byId.get(id);
+    if (generation === undefined) continue; // validateHumanReview owns unknown ids
+    if (!profiles.includes(generation.profile)) {
+      problems.push(`${id} is not part of this comparison`);
+      continue;
+    }
+    problems.push(
+      `${id} is attempt ${generation.attempt} of ${generation.caseId} for ` +
+        `${generation.profile}, which is not the attempt that ended that history`,
+    );
+  }
+
+  for (const profile of profiles) {
+    const absent = population
+      .filter(generation => generation.profile === profile && !declared.has(generation.id))
+      .map(generation => generation.caseId);
+    if (absent.length === 0) continue;
+    const shown = absent.slice(0, 5);
+    problems.push(
+      `${profile} has ${absent.length} of ` +
+        `${population.filter(entry => entry.profile === profile).length} terminal generations ` +
+        `unreviewed (${shown.join(', ')}${absent.length > shown.length ? ', ...' : ''})`,
+    );
+  }
+
+  return problems;
+}
+
+/**
  * Whether a score sheet or review actually belongs to the run being reported.
  *
  * Both structures already carry `runId` and `suiteVersion`; this makes those
@@ -1010,6 +1079,10 @@ function summarise(
     if (caseMachineHardFailed || caseHumanHardFailed) hardFailedCases += 1;
   }
 
+  // Machine evaluation always happens; human review may not have. Without it the
+  // human counts are unknown rather than zero, and so is the combined total.
+  const humanReviewed = review !== null;
+
   const casesAttempted = byCase.size;
   const casesAccepted = [...byCase.values()].filter(attempts => attempts.some(a => a.accepted)).length;
   const first = generations.find(generation => generation.artifact.profileId === profile);
@@ -1044,10 +1117,10 @@ function summarise(
     heuristicWarnings,
     reviewSignals,
     machineHardFailedCases,
-    humanHardFailedCases,
-    hardFailedCases,
+    humanHardFailedCases: humanReviewed ? humanHardFailedCases : null,
+    hardFailedCases: humanReviewed ? hardFailedCases : null,
     hardFailsByCategory,
-    humanHardFailsByCategory,
+    humanHardFailsByCategory: humanReviewed ? humanHardFailsByCategory : null,
     acceptanceByTask,
     humanMeanByAxis,
   };
@@ -1180,6 +1253,15 @@ export function buildComparison(
     );
   }
 
+  // Independently: a review that covers part of the population cannot support a
+  // hard-fail count, and the gaps must not be read as "nothing found".
+  const reviewed = reviewPopulationProblems(run, compared, review);
+  if (reviewed.length > 0) {
+    throw new Error(
+      `refusing to count human hard failures over an incomplete review: ${reviewed.join('; ')}`,
+    );
+  }
+
   const mismatches = taskMismatches(suite, run);
   if (mismatches.length > 0) {
     throw new Error(
@@ -1236,8 +1318,9 @@ export function renderComparison(report: ComparisonReport): string {
     lines.push(`  median latency         ${profile.medianLatencyMs ?? '—'} ms`);
     lines.push(`  mean tokens/s          ${profile.meanTokensPerSecond?.toFixed(1) ?? '—'}`);
     lines.push(
-      `  hard-failed cases      ${profile.hardFailedCases} ` +
-        `(machine ${profile.machineHardFailedCases}, human ${profile.humanHardFailedCases})`,
+      `  hard-failed cases      ${profile.hardFailedCases ?? '—'} ` +
+        `(machine ${profile.machineHardFailedCases}, human ` +
+        `${profile.humanHardFailedCases ?? '— not reviewed'})`,
     );
     lines.push(`  review signals         ${profile.reviewSignals}`);
     lines.push('');
