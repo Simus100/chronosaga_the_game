@@ -5117,18 +5117,18 @@ mod tests {
             .map(|case| case.id.clone())
             .collect();
         assert!(!selected_ids.is_empty(), "nothing to run");
-        // The profile is known to be a real one by now, so an unresolvable
-        // manager means the payload is absent from *this machine* — a legitimate
-        // skip, and a different thing entirely from a typo.
-        let Some(manager) = crate::runtime_e2e::manager_for_profile_with_startup_timeout(
+        // A benchmark was explicitly requested, so an unresolvable payload is the
+        // reason it cannot happen — not a reason to report success. Only a
+        // caller who never opted in gets a skip, and that decision was already
+        // made above.
+        //
+        // The optional end-to-end tests keep their skip: they read the same
+        // construction through `manager_for_profile*`, which discards the reason.
+        let manager = crate::runtime_e2e::build_manager_for_profile(
             &profile,
             BENCHMARK_STARTUP_TIMEOUT_MS,
-        ) else {
-            eprintln!(
-                "skipped: {profile} is a locked profile but its payload is not present on this machine"
-            );
-            return;
-        };
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
 
         // Verify the bytes that are about to run, before anything is started.
         // Recording the lock's expected digest would describe a runtime that may
@@ -5352,7 +5352,7 @@ mod tests {
         let runner = runner_body();
 
         let configured = runner
-            .find(concat!("manager_for_profile_with_", "startup_timeout("))
+            .find(concat!("build_manager_", "for_profile("))
             .expect("the runner configures the manager's allowance");
         assert!(
             runner[configured..configured + 220].contains("BENCHMARK_STARTUP_TIMEOUT_MS"),
@@ -5424,23 +5424,134 @@ mod tests {
         // `manager()` builds a model-less runtime for the other end-to-end tests
         // and is not a profile path, so it is not counted here.
         let source = include_str!("runtime_e2e.rs");
+        // One definition of how a profile's model is resolved. It is reached
+        // from two thin wrappers — the shared constructor and the identity
+        // accessor the benchmark uses — and from nowhere else.
         assert_eq!(
-            source.matches("resolve_model_from_lock(profile_id)?").count(),
+            source.matches("fn resolve_model_from_lock(").count(),
             1,
             "only one function resolves a profile's model"
         );
-        let with_timeout = source
-            .find("pub(crate) fn manager_for_profile_with_startup_timeout(")
-            .expect("the explicit constructor exists");
+        let builder = source
+            .find("pub(crate) fn build_manager_for_profile(")
+            .expect("the shared constructor exists");
         assert!(
-            source[with_timeout..].contains("system_manager_with_config("),
+            source[builder..].contains("system_manager_with_config("),
             "and it is the one that builds the manager"
+        );
+
+        // The optional path delegates to it and discards the reason; the
+        // explicit path keeps the reason. One construction, two readings.
+        let optional = source
+            .find("pub(crate) fn manager_for_profile_with_startup_timeout(")
+            .expect("the optional constructor exists");
+        assert!(
+            source[optional..optional + 260].contains(concat!("build_manager_", "for_profile(")),
+            "the optional path must delegate rather than duplicate"
         );
     }
 
     // ---------------------------------------------------------------------
     // Explicit benchmark requests
     // ---------------------------------------------------------------------
+
+    #[test]
+    fn c_d_and_e_an_explicit_run_fails_when_it_cannot_be_built() {
+        // Without a payload on this machine the construction fails, and for an
+        // explicit request that is the reason the benchmark cannot happen — not
+        // a reason to print a skip and exit green.
+        //
+        // Exercised through the real construction path: on a machine without the
+        // payload it returns Err, and on one with it, Ok. Either way the error
+        // shape is what an operator would read.
+        for profile in crate::model_lock::KNOWN_PROFILE_IDS {
+            match crate::runtime_e2e::build_manager_for_profile(
+                profile,
+                BENCHMARK_STARTUP_TIMEOUT_MS,
+            ) {
+                Ok(_) => {
+                    // This machine has the payload; the Ok path is what the
+                    // runner then uses, and the skip is gone either way.
+                }
+                Err(error) => {
+                    assert!(error.contains(profile), "F: the error names the profile: {error}");
+                    assert!(error.contains("Nothing was run"), "{error}");
+                    assert!(
+                        error.contains("CHRONOSAGA_WORKSPACE_ROOT"),
+                        "the error must say what configuration is missing: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn f_the_two_failures_are_told_apart() {
+        // A missing runtime and a missing model are different problems and read
+        // differently, so an operator is not left guessing which half is absent.
+        let source = include_str!("runtime_e2e.rs");
+        let at = source
+            .find("pub(crate) fn build_manager_for_profile(")
+            .expect("the shared constructor exists");
+        let body = &source[at..];
+        assert!(body.contains("locked llama.cpp runtime could not be resolved"));
+        assert!(body.contains("locked model payload"));
+        // Needles without newline characters: this file is checked out with CRLF
+        // on Windows, and a message that wraps across a line continuation cannot
+        // be matched by a needle written with a bare line feed.
+        assert!(body.contains("its integrity check"));
+        assert!(body.contains("could not be resolved or"));
+    }
+
+    #[test]
+    fn g_h_and_i_the_failure_precedes_every_side_effect() {
+        // Ordering from the source, as with the request check: the construction
+        // is attempted before any metadata is written, before the RAII guard
+        // starts anything, and before the first prompt. An explicit run that
+        // cannot be built therefore leaves no evidence directory and no process.
+        let runner = runner_body();
+        let built = runner
+            .find(concat!("build_manager_", "for_profile("))
+            .expect("the runner builds its manager");
+
+        for later in [
+            concat!("persist_", "metadata("),
+            concat!("BenchmarkRuntimeGuard::", "start("),
+            concat!("block_on(provider.", "generate("),
+        ] {
+            let at = runner
+                .find(later)
+                .unwrap_or_else(|| panic!("the runner does {later}"));
+            assert!(built < at, "construction must be attempted before {later}");
+        }
+
+        // And it is a panic, not a return: a skip here would be the defect.
+        let tail = &runner[built..built + 220];
+        assert!(tail.contains("unwrap_or_else"), "{tail}");
+        assert!(tail.contains("panic!"), "{tail}");
+        assert!(!tail.contains("return;"), "an explicit request must not skip: {tail}");
+    }
+
+    #[test]
+    fn j_the_optional_end_to_end_path_still_skips() {
+        // `manager_for_profile*` keeps returning Option, so the ordinary tests
+        // that may run without a payload are untouched. Only the explicit
+        // benchmark reads the reason.
+        let source = include_str!("runtime_e2e.rs");
+        for signature in [
+            "pub(crate) fn manager_for_profile(profile_id: &str) -> Option<Arc<LocalAiRuntimeManager>>",
+            "pub(crate) fn manager_for_profile_with_startup_timeout(",
+        ] {
+            assert!(source.contains(signature), "{signature} must still exist");
+        }
+        let optional = source
+            .find("pub(crate) fn manager_for_profile_with_startup_timeout(")
+            .expect("it exists");
+        assert!(
+            source[optional..optional + 300].contains(".ok()"),
+            "the optional path discards the reason, which is what makes it a skip"
+        );
+    }
 
     #[test]
     fn a_and_i_not_opting_in_is_a_skip_and_needs_no_workspace() {

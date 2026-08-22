@@ -5,6 +5,7 @@ import rustContracts from './fixtures/case-contracts.json' with { type: 'json' }
 import rustSuiteDigest from './fixtures/suite-content-digest.json' with { type: 'json' };
 import { suiteContentDigest } from '../src/report.js';
 import { sha256Hex } from '../src/digest.js';
+import { lockedRuntime } from '../src/runtime-lock.js';
 import { caseSubjectIds } from '../src/contract.js';
 import { OFFICIAL_EVIDENCE_REQUIREMENTS } from '../src/report.js';
 import {
@@ -144,6 +145,22 @@ describe('the case contract both sides derive', () => {
 
 describe('evidence written by the Rust runner', () => {
   it('satisfies the declared TypeScript result contract', () => {
+    expect(validateRun(run)).toEqual([]);
+  });
+
+  it('R and I: the fixture\'s numbers and runtime identity are what the boundary demands', () => {
+    for (const generation of run.generations) {
+      expect(typeof generation.latencyMs, generation.id).toBe('number');
+      expect(Number.isSafeInteger(generation.latencyMs), generation.id).toBe(true);
+      for (const field of ['tokensGenerated', 'tokensPerSecond'] as const) {
+        const value = generation[field];
+        expect(value === null || typeof value === 'number', `${generation.id}.${field}`).toBe(true);
+      }
+      expect(Number.isSafeInteger(generation.attempt), generation.id).toBe(true);
+    }
+    // The Rust runner writes its runtime identity from the same committed lock.
+    expect(run.metadata.runtimeReleaseTag).toBe(lockedRuntime().releaseTag);
+    expect(run.metadata.runtimeExecutableSha256).toBe(lockedRuntime().executableSha256);
     expect(validateRun(run)).toEqual([]);
   });
 

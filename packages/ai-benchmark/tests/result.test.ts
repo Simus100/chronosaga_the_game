@@ -196,6 +196,94 @@ describe('the hard-fail taxonomy', () => {
   });
 });
 
+describe('numeric evidence must be real numbers', () => {
+  const withField = (field: string, value: unknown) =>
+    run([
+      { ...generation(), [field]: value } as unknown as BenchmarkGeneration,
+    ]);
+
+  const problemsFor = (field: string, value: unknown) =>
+    validateRun(withField(field, value)).filter(problem => problem.field === field);
+
+  it('A: zero and a positive integer latency pass', () => {
+    expect(problemsFor('latencyMs', 0)).toEqual([]);
+    expect(problemsFor('latencyMs', 8916)).toEqual([]);
+  });
+
+  it('B: a numeric string latency is refused', () => {
+    // The concrete case: "100" < 0 is false, so it used to pass.
+    const problems = problemsFor('latencyMs', '100');
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.message).toContain('a string');
+    expect(problems[0]!.message).toContain('must be a number');
+  });
+
+  it('C: NaN and the infinities are refused', () => {
+    for (const value of [NaN, Infinity, -Infinity]) {
+      expect(problemsFor('latencyMs', value), String(value)).toHaveLength(1);
+    }
+  });
+
+  it('D: a negative latency is refused', () => {
+    expect(problemsFor('latencyMs', -1)[0]!.message).toContain('negative');
+  });
+
+  it('E: a fractional latency is refused', () => {
+    expect(problemsFor('latencyMs', 12.5)[0]!.message).toContain('not a whole number');
+  });
+
+  it('F: a latency beyond exact representation is refused', () => {
+    const problems = problemsFor('latencyMs', Number.MAX_SAFE_INTEGER + 2);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.message).toContain('beyond the range');
+  });
+
+  it('G and H: tokensGenerated accepts null and non-negative integers', () => {
+    expect(problemsFor('tokensGenerated', null)).toEqual([]);
+    expect(problemsFor('tokensGenerated', 0)).toEqual([]);
+    expect(problemsFor('tokensGenerated', 120)).toEqual([]);
+  });
+
+  it('I: every other tokensGenerated shape is refused', () => {
+    for (const value of ['120', -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 2, undefined]) {
+      expect(problemsFor('tokensGenerated', value), String(value)).toHaveLength(1);
+    }
+  });
+
+  it('J and K: tokensPerSecond accepts null and finite non-negative numbers', () => {
+    expect(problemsFor('tokensPerSecond', null)).toEqual([]);
+    expect(problemsFor('tokensPerSecond', 0)).toEqual([]);
+    // f64, so fractions are legitimate here where they are not for a count.
+    expect(problemsFor('tokensPerSecond', 18.4)).toEqual([]);
+  });
+
+  it('L, M and N: a string, a non-finite value or a negative rate is refused', () => {
+    for (const value of ['18.4', NaN, Infinity, -Infinity, -0.5]) {
+      expect(problemsFor('tokensPerSecond', value), String(value)).toHaveLength(1);
+    }
+  });
+
+  it('the audit: attempt is validated too, for the same reason', () => {
+    // Found by the root-cause sweep. `attempt` selects the terminal generation,
+    // so it decides coverage, the human populations and the retry verdict. As a
+    // string it used to fail closed much further downstream, complaining about
+    // coverage rather than about the row that was malformed.
+    for (const value of ['1', 1.5, NaN, -1, 0]) {
+      expect(problemsFor('attempt', value), String(value)).toHaveLength(1);
+    }
+    expect(problemsFor('attempt', 1)).toEqual([]);
+    expect(problemsFor('attempt', '2')[0]!.message).toContain('must be a number');
+  });
+
+  it('S: the validator does not mutate the evidence', () => {
+    const row = { ...generation(), latencyMs: '100' } as unknown as BenchmarkGeneration;
+    const before = structuredClone(row);
+    validateRun(run([row]));
+    expect(row).toEqual(before);
+    expect(row.latencyMs as unknown).toBe('100');
+  });
+});
+
 describe('every raw-format flag is validated, coherently', () => {
   const runWithFormat = (rawFormat: unknown) =>
     run([

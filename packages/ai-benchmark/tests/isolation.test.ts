@@ -5,6 +5,7 @@ import { evaluateObjectively } from '../src/objective.js';
 import { loadSuite } from '../src/suite.js';
 import type { BenchmarkGeneration, BenchmarkRun } from '../src/result.js';
 import { suiteContentDigest } from '../src/report.js';
+import { lockedRuntime } from '../src/runtime-lock.js';
 import { lockedArtifact } from '../src/model-lock.js';
 
 /**
@@ -112,9 +113,8 @@ describe('benchmark isolation from authoritative state', () => {
         suiteSchemaVersion: 1,
         suiteContentSha256: suiteContentDigest(suite),
         runnerVersion: '0.1.0',
-        runtimeReleaseTag: 'b10343',
-        runtimeExecutableSha256:
-          '3e8c1a6b5d4f2907c8b1e6a4d7f0b3c5928e1d4a7b0c3f6e9d2a5b8c1e4f7a0d',
+        runtimeReleaseTag: lockedRuntime().releaseTag,
+        runtimeExecutableSha256: lockedRuntime().executableSha256,
         host: { os: 'Windows 11', arch: 'x86_64', cpu: 'i7', logicalCores: 24, totalRamMb: 65536 },
       },
       generations: caseIds.flatMap(caseId => [

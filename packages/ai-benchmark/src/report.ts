@@ -10,6 +10,7 @@ import type { BenchmarkCase, BenchmarkSuite, BenchmarkTask } from './case.js';
 import { sha256Hex } from './digest.js';
 import { acceptedOutputContractProblems } from './contract.js';
 import { lockedArtifactProblems } from './model-lock.js';
+import { runtimeProvenanceMismatches } from './runtime-lock.js';
 import {
   MAX_ATTEMPTS,
   OFFICIAL_COMPARISON_PROFILES,
@@ -459,6 +460,13 @@ export function officialEvidenceProblems(
       'runtime_provenance',
       `the runtime digest '${metadata.runtimeExecutableSha256}' is not a SHA-256`,
     );
+  }
+
+  // Well-formed is not the same as right. A forged row can satisfy every format
+  // rule above and still claim a runtime nobody in this repository locked, so
+  // the values are compared against the committed distribution itself.
+  for (const mismatch of runtimeProvenanceMismatches(metadata)) {
+    at('runtime_provenance', mismatch);
   }
   if (
     metadata.host.cpu.trim() === '' ||

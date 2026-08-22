@@ -322,6 +322,35 @@ typed fields stayed impeccable. Free text is where invention hides, so `topic`,
 `rationale` and `summary` join the same corpus, examined by the same detector.
 Nothing was widened and no check changed confidence.
 
+Runtime provenance is bound to the committed distribution, not merely to a
+plausible shape. The official gate checked that `runtimeReleaseTag` was non-empty
+and `runtimeExecutableSha256` was sixty-four lowercase hex — conditions any
+forged row satisfies. `config/local-ai-runtime.lock.json` is imported directly,
+the way the model lock is, and the two values must equal what it says.
+
+What that can prove is bounded, deliberately. It proves the run recorded the
+runtime **this checkout locks**. It cannot speak for the lock as it stood at
+`metadata.gitCommit`: the report has no Git history and will not acquire any, so
+reporting on an old run from a checkout whose lock has since moved is refused.
+Refusing to publish is the honest outcome when the runtime provenance cannot be
+vouched for from the code in hand. The Rust runner remains the run-time
+authority — it verifies all 51 distribution files byte for byte before the
+sidecar starts; this is about stored evidence loaded later, which nobody hashed.
+
+Numbers are checked for being numbers. `latencyMs: "100"` typechecks in the
+annotation, is a string at runtime, and `"100" < 0` is false — so it passed and
+reached the median, where two such rows make `"100" + "200"` into `"100200"`.
+Each field mirrors what Rust can serialise: `latencyMs` a `u64`, so finite,
+integral, non-negative and inside the range JavaScript holds exactly;
+`tokensGenerated` an `Option<u64>`; `tokensPerSecond` an `Option<f64>`, where
+fractions are legitimate. Nothing is parsed, coerced or defaulted.
+
+The same sweep found `attempt` one field away with the identical defect, so it is
+validated here too — it selects the terminal generation, and therefore decides
+coverage, the human populations and the retry verdict. As a string it used to
+fail closed much further downstream, complaining about coverage rather than about
+the row that was malformed.
+
 A benchmark run has one startup allowance. It used to have two: the runner polled
 for 180 seconds while the lifecycle manager underneath it was configured for the
 product's 30, so a model that became ready at second 40 had already been marked
@@ -336,7 +365,14 @@ and a benchmark measuring a 3B model from a cold page cache should not record a
 startup failure that says more about the disk than the model. The lifecycle tests
 use an injected clock, so none of this costs three real minutes.
 
-An explicit benchmark request never skips quietly. `CHRONOSAGA_BENCHMARK=1` with
+An explicit benchmark request never skips quietly. That now covers the payload as
+well as the configuration: once `CHRONOSAGA_BENCHMARK=1` has been accepted, a
+locked model that cannot be resolved, or fails its integrity check, or a runtime
+that is not present, ends the run rather than printing a skip. Only a caller who
+never opted in gets a skip. `build_manager_for_profile` returns the reason and
+`manager_for_profile*` discards it, so the optional end-to-end tests keep their
+skip and an ordinary `cargo test` still needs no multi-gigabyte payload — one
+construction, two readings of the same failure. `CHRONOSAGA_BENCHMARK=1` with
 no `CHRONOSAGA_WORKSPACE_ROOT` used to return false, so the test skipped and
 `cargo test` exited green — and green meant either *the benchmark ran* or
 *somebody asked for it and nothing happened because a variable was missing*.

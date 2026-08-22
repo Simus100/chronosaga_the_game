@@ -166,13 +166,42 @@ pub(crate) fn manager_for_profile_with_startup_timeout(
     profile_id: &str,
     startup_timeout_ms: u64,
 ) -> Option<Arc<LocalAiRuntimeManager>> {
-    let (directory, executable) = resolve_from_lock()?;
-    let model = resolve_model_from_lock(profile_id)?;
+    build_manager_for_profile(profile_id, startup_timeout_ms).ok()
+}
+
+/// The same construction, saying *why* it could not be done.
+///
+/// The optional callers above want a skip when this machine has no payload:
+/// an ordinary `cargo test` must not need multiple gigabytes on disk. A caller
+/// that explicitly asked for a benchmark wants the opposite — for it, "no
+/// payload" is the reason the run cannot happen, not a reason to report success.
+///
+/// One construction, two readings of the same failure. Nothing here resolves a
+/// model or a runtime a second time.
+pub(crate) fn build_manager_for_profile(
+    profile_id: &str,
+    startup_timeout_ms: u64,
+) -> Result<Arc<LocalAiRuntimeManager>, String> {
+    let (directory, executable) = resolve_from_lock().ok_or_else(|| {
+        format!(
+            "the locked llama.cpp runtime could not be resolved for profile '{profile_id}'. \
+             Check {WORKSPACE_ENV} points at the workspace holding \
+             runtime-assets/runtime, and that the executable named by \
+             config/local-ai-runtime.lock.json is present. Nothing was run."
+        )
+    })?;
+    let model = resolve_model_from_lock(profile_id).ok_or_else(|| {
+        format!(
+            "the locked model payload for profile '{profile_id}' could not be resolved or failed \
+             its integrity check. The GGUF lives outside the repository; check {WORKSPACE_ENV} \
+             and config/local-ai-models.lock.json. Nothing was run."
+        )
+    })?;
     let log_path = env::temp_dir().join(format!("chronosaga-e2e-{profile_id}.log"));
     let config = RuntimeConfig::new(LOOPBACK_HOST, DEFAULT_PORT, startup_timeout_ms)
         .expect("the loopback defaults must always be valid")
         .with_model(&model);
-    Some(Arc::new(system_manager_with_config(
+    Ok(Arc::new(system_manager_with_config(
         config,
         directory,
         executable,

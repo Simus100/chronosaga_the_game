@@ -350,6 +350,46 @@ export interface ResultProblem {
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /**
+ * Why a value is not the whole number Rust would have serialised, if it is not.
+ *
+ * `latencyMs: "100"` typechecks in the annotation and is a string at runtime, and
+ * `"100" < 0` is false, so it passed and then reached the median. Two such rows
+ * make `"100" + "200"` into `"100200"`, which is not a latency anybody measured.
+ *
+ * Mirrors Rust `u64`: a real number, finite, integral, non-negative, and inside
+ * the range JavaScript can hold exactly — beyond `Number.MAX_SAFE_INTEGER` the
+ * value read is not the value written. Nothing is parsed, coerced or defaulted.
+ */
+function wholeNumberProblem(value: unknown): string | null {
+  if (typeof value !== 'number') {
+    return value === undefined
+      ? 'is absent; it must be a number'
+      : `is ${JSON.stringify(value)}, a ${typeof value}; it must be a number`;
+  }
+  if (!Number.isFinite(value)) return `is ${String(value)}, which is not a finite number`;
+  if (!Number.isInteger(value)) return `is ${value}, which is not a whole number`;
+  if (value < 0) return `is ${value}, which is negative`;
+  if (!Number.isSafeInteger(value)) {
+    return `is ${value}, beyond the range JavaScript represents exactly`;
+  }
+  return null;
+}
+
+/**
+ * The same, for Rust `f64`: finite and non-negative, fractions allowed.
+ */
+function realNumberProblem(value: unknown): string | null {
+  if (typeof value !== 'number') {
+    return value === undefined
+      ? 'is absent; it must be a number'
+      : `is ${JSON.stringify(value)}, a ${typeof value}; it must be a number`;
+  }
+  if (!Number.isFinite(value)) return `is ${String(value)}, which is not a finite number`;
+  if (value < 0) return `is ${value}, which is negative`;
+  return null;
+}
+
+/**
  * Serialise a value with object keys sorted, recursively.
  *
  * The canonical form both languages hash. Arrays keep their order, because order
@@ -413,8 +453,36 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     seen.add(generation.id);
 
     if (generation.runId !== metadata.runId) at('runId', 'generation belongs to another run');
-    if (generation.attempt < 1) at('attempt', 'attempts are numbered from 1');
-    if (generation.latencyMs < 0) at('latencyMs', 'latency cannot be negative');
+    // Numbers, before anything compares or sums them. These arrive from external
+    // JSON, where the annotations say nothing, and a numeric string is happily
+    // ordered against a number and then concatenated by `+`.
+    //
+    // `attempt` is in this list because it is the same defect on a field that
+    // decides more than a metric: it selects the terminal generation, and so
+    // decides coverage, the human scoring population and the retry verdict. As a
+    // string it currently fails closed further downstream, but for the wrong
+    // reason and with a message about coverage rather than about the row.
+    const attemptProblem = wholeNumberProblem(generation.attempt);
+    if (attemptProblem !== null) {
+      at('attempt', `the attempt number ${attemptProblem}`);
+    } else if (generation.attempt < 1) {
+      at('attempt', 'attempts are numbered from 1');
+    }
+
+    const latencyProblem = wholeNumberProblem(generation.latencyMs);
+    if (latencyProblem !== null) at('latencyMs', `the latency ${latencyProblem}`);
+
+    // `Option<u64>` and `Option<f64>`: null is a real answer — the runtime does
+    // not always report token counts — and anything else must be the number it
+    // claims to be.
+    if (generation.tokensGenerated !== null) {
+      const problem = wholeNumberProblem(generation.tokensGenerated);
+      if (problem !== null) at('tokensGenerated', `the token count ${problem}`);
+    }
+    if (generation.tokensPerSecond !== null) {
+      const problem = realNumberProblem(generation.tokensPerSecond);
+      if (problem !== null) at('tokensPerSecond', `the throughput ${problem}`);
+    }
 
     if (!SHA256.test(generation.artifact.sha256)) {
       at('artifact.sha256', 'an artifact must be identified by a full SHA-256');

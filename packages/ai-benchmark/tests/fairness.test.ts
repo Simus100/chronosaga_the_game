@@ -1,3 +1,5 @@
+import { lockedRuntime, runtimeProvenanceMismatches } from '../src/runtime-lock.js';
+import rootRuntimeLock from '../../../config/local-ai-runtime.lock.json' with { type: 'json' };
 import { describe, expect, it } from 'vitest';
 import {
   attemptHistoryProblems,
@@ -139,8 +141,9 @@ function fairRun(): BenchmarkRun {
       suiteSchemaVersion: 1,
       suiteContentSha256: suiteContentDigest(suite),
       runnerVersion: '0.1.0',
-      runtimeReleaseTag: 'b10343',
-      runtimeExecutableSha256: '3e8c1a6b5d4f2907c8b1e6a4d7f0b3c5928e1d4a7b0c3f6e9d2a5b8c1e4f7a0d',
+      // The runtime this checkout locks, not an invented digest.
+      runtimeReleaseTag: lockedRuntime().releaseTag,
+      runtimeExecutableSha256: lockedRuntime().executableSha256,
       host: { os: 'Windows 11', arch: 'x86_64', cpu: 'i7', logicalCores: 24, totalRamMb: 65536 },
     },
     generations: caseIds.flatMap(caseId => [
@@ -407,6 +410,83 @@ describe('each profile carries the artifact the project locked', () => {
       sha256: 'a'.repeat(64),
     };
     expect(() => buildComparison(suite, run)).toThrow(/unlocked artifacts/);
+  });
+});
+
+describe('official evidence names the runtime this checkout locks', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+
+  const withRuntime = (over: Partial<{ tag: string; digest: string | null }>) => {
+    const run = fairRun();
+    if (over.tag !== undefined) run.metadata.runtimeReleaseTag = over.tag;
+    if (over.digest !== undefined) run.metadata.runtimeExecutableSha256 = over.digest;
+    return run;
+  };
+
+  it('A: the locked release and digest pass', () => {
+    expect(runtimeProvenanceMismatches(fairRun().metadata)).toEqual([]);
+    expect(officialEvidenceProblems(suite, fairRun(), both)).toEqual([]);
+  });
+
+  it('B: a syntactically valid but different release tag is refused', () => {
+    // Format was the only thing checked before, and any non-empty string has a
+    // valid format.
+    const run = withRuntime({ tag: 'b99999' });
+    const problems = runtimeProvenanceMismatches(run.metadata);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("'b99999'");
+    expect(problems[0]).toContain(lockedRuntime().releaseTag);
+    expect(() => buildComparison(suite, run)).toThrow(/runtime_provenance/);
+  });
+
+  it('C: an arbitrary well-formed digest is refused', () => {
+    const run = withRuntime({ digest: 'a'.repeat(64) });
+    expect(runtimeProvenanceMismatches(run.metadata)).toHaveLength(1);
+    expect(() => buildComparison(suite, run)).toThrow(/runtime_provenance/);
+  });
+
+  it('D and E: either half alone is enough to refuse', () => {
+    expect(runtimeProvenanceMismatches(withRuntime({ tag: 'b00001' }).metadata)).toHaveLength(1);
+    expect(runtimeProvenanceMismatches(withRuntime({ digest: 'b'.repeat(64) }).metadata)).toHaveLength(
+      1,
+    );
+  });
+
+  it('F: absent or malformed values keep their structural refusal', () => {
+    for (const run of [withRuntime({ digest: null }), withRuntime({ digest: 'abc123' })]) {
+      const requirements = officialEvidenceProblems(suite, run, both).map(
+        problem => problem.requirement,
+      );
+      expect(requirements).toContain('runtime_provenance');
+    }
+    const untagged = withRuntime({ tag: '   ' });
+    expect(
+      officialEvidenceProblems(suite, untagged, both).map(problem => problem.requirement),
+    ).toContain('runtime_provenance');
+  });
+
+  it('G: the expected values come from the committed lock, not from literals', () => {
+    const authoritative = rootRuntimeLock as unknown as {
+      releaseTag: string;
+      executableSha256: string;
+    };
+    expect(lockedRuntime().releaseTag).toBe(authoritative.releaseTag);
+    expect(lockedRuntime().executableSha256).toBe(authoritative.executableSha256);
+    expect(lockedRuntime().executableSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('H: one mismatch prevents every official aggregate', () => {
+    const run = withRuntime({ tag: 'b99999' });
+    expect(() => buildComparison(suite, run)).toThrow(/refusing to publish/);
+    expect(() => buildComparison(suite, run, both, fullSheet(run))).toThrow(/refusing to publish/);
+  });
+
+  it('J: nothing is mutated or repaired', () => {
+    const run = withRuntime({ tag: 'b99999' });
+    const before = structuredClone(run.metadata);
+    runtimeProvenanceMismatches(run.metadata);
+    expect(run.metadata).toEqual(before);
+    expect(run.metadata.runtimeReleaseTag).toBe('b99999');
   });
 });
 
@@ -754,6 +834,44 @@ describe('a rejected first attempt is owed its retry', () => {
     expect(MAX_ATTEMPTS).toBe(MAX_RETRIES + 1);
     const atCeiling = withHistory('lite', [[1, false], [2, false]]);
     expect(officialEvidenceProblems(suite, atCeiling, both)).toEqual([]);
+  });
+});
+
+describe('malformed metrics cannot corrupt an aggregate', () => {
+  it('O and P: neither the median nor the mean can see one', () => {
+    for (const [field, value] of [
+      ['latencyMs', '100'],
+      ['tokensPerSecond', '18.4'],
+      ['tokensGenerated', '120'],
+    ] as const) {
+      const run = fairRun();
+      (run.generations[0] as unknown as Record<string, unknown>)[field] = value;
+      expect(validateRun(run).some(problem => problem.field === field), field).toBe(true);
+      expect(() => buildComparison(suite, run), field).toThrow(/structurally invalid run/);
+    }
+  });
+
+  it('Q: the concrete "100" + "200" corruption is unreachable', () => {
+    // Two string latencies would have made the median read "100200".
+    const run = fairRun();
+    const lite = run.generations.filter(generation => generation.profile === 'lite');
+    (lite[0] as unknown as Record<string, unknown>).latencyMs = '100';
+    (lite[1] as unknown as Record<string, unknown>).latencyMs = '200';
+
+    // The arithmetic that would have happened, shown for what it is.
+    expect(('100' as unknown as number) + ('200' as unknown as number)).toBe('100200');
+
+    // And the run never reaches it.
+    expect(validateRun(run).filter(problem => problem.field === 'latencyMs')).toHaveLength(2);
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+  });
+
+  it('legitimate metrics still aggregate', () => {
+    const report = buildComparison(suite, fairRun());
+    for (const profile of report.profiles) {
+      expect(typeof profile.medianLatencyMs).toBe('number');
+      expect(typeof profile.meanTokensPerSecond).toBe('number');
+    }
   });
 });
 
