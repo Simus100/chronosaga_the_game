@@ -796,3 +796,72 @@ describe('an exhausted schema failure disqualifies any structured case', () => {
     expect(terminal).toHaveLength(1);
   });
 });
+
+describe('bare-JSON compliance is measured only where it was demanded', () => {
+  const fenced = { bareJson: false, codeFencePresent: true, wrapperTextPresent: false };
+  const bare = { bareJson: true, codeFencePresent: false, wrapperTextPresent: false };
+
+  const evaluateWith = (caseId: string, rawFormat: typeof bare) =>
+    evaluateObjectively(
+      suite.cases.find(entry => entry.id === caseId)!,
+      generation({
+        id: `run:${caseId}:lite:1`,
+        caseId,
+        task: suite.cases.find(entry => entry.id === caseId)!.task,
+        rawFormat,
+        normalizedOutput: output(),
+      }),
+    );
+
+  const strictCase = suite.cases.find(entry => entry.constraints.strictJsonOnly)!;
+  const ordinaryCase = suite.cases.find(entry => !entry.constraints.strictJsonOnly)!;
+
+  it('B: a strict case that arrived fenced fails deterministically', () => {
+    const result = evaluateWith(strictCase.id, fenced);
+    const check = result.checks.find(entry => entry.id === 'raw_output_is_bare_json')!;
+    expect(check.passed).toBe(false);
+    expect(check.confidence).toBe('deterministic');
+    expect(check.detail).toMatch(/code fence/);
+  });
+
+  it('C: a strict case that arrived bare passes', () => {
+    const check = evaluateWith(strictCase.id, bare).checks.find(
+      entry => entry.id === 'raw_output_is_bare_json',
+    )!;
+    expect(check.passed).toBe(true);
+  });
+
+  it('E and F: an ordinary fenced response is accepted and not marked down', () => {
+    // The validator unwraps the fence on purpose, and the case was never told a
+    // fence was forbidden, so there is nothing to fail.
+    const result = evaluateWith(ordinaryCase.id, fenced);
+    expect(result.checks.some(entry => entry.id === 'raw_output_is_bare_json')).toBe(false);
+    expect(result.checks.find(entry => entry.id === 'schema_valid')!.passed).toBe(true);
+  });
+
+  it('the raw format is still recorded for every generation, strict or not', () => {
+    // Evidence is kept either way; only the judgement is conditional.
+    for (const entry of [strictCase, ordinaryCase]) {
+      for (const observed of [bare, fenced]) {
+        const generationUnderTest = generation({
+          caseId: entry.id,
+          task: entry.task,
+          rawFormat: observed,
+          normalizedOutput: output(),
+        });
+        expect(generationUnderTest.rawFormat).toEqual(observed);
+      }
+    }
+  });
+
+  it('J: exactly the cases declaring strictJsonOnly are judged on bare JSON', () => {
+    const judged = suite.cases.filter(entry =>
+      evaluateWith(entry.id, bare).checks.some(check => check.id === 'raw_output_is_bare_json'),
+    );
+    expect(judged.map(entry => entry.id)).toEqual(
+      suite.cases.filter(entry => entry.constraints.strictJsonOnly).map(entry => entry.id),
+    );
+    expect(judged.length).toBeGreaterThan(0);
+    expect(judged.length).toBeLessThan(suite.cases.length);
+  });
+});

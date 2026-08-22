@@ -188,6 +188,14 @@ pub fn case_contract(case: &BenchmarkCase) -> OutputContract {
         // proposal gets exactly the production rejection.
         allow_event_proposals: case.constraints.allow_event_proposals,
         allow_memory_suggestions: case.constraints.allow_memory_suggestions,
+        // The case's own obligations, carried the rest of the way. The prompt
+        // and the evaluator already knew the difference; the validator did not,
+        // so a case whose whole task is to produce a proposal could return an
+        // empty array, be accepted, spend no retry, and be failed afterwards by
+        // the evaluator — acceptance and semantics disagreeing about the same
+        // row.
+        require_event_proposal: case.constraints.require_event_proposal,
+        require_memory_suggestion: case.constraints.require_memory_suggestion,
         // Grounding for suggestions, from the case's own slice. A proposal about
         // an invented settlement is refused rather than counted.
         allowed_subject_ids: case_subject_ids(case),
@@ -297,6 +305,25 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
     } else {
         ""
     };
+    // Formatting strictness belongs to `strictJsonOnly` and to nothing else.
+    //
+    // Every case was told "senza blocchi di codice" while only the strict cases
+    // were ever checked for it, so an ordinary case could be given a rule, break
+    // it, have the product validator unwrap the fence on purpose, and be recorded
+    // as fully compliant. The prompt and the evaluator disagreed about what had
+    // been asked, and the prompt was the one lying.
+    //
+    // Strict cases keep the bare-JSON demand and keep the deterministic
+    // `raw_output_is_bare_json` check that measures it. Ordinary cases still owe
+    // the structured contract — the object, its fields, its shape — and are not
+    // told a fence is forbidden, because the validator they are judged by
+    // deliberately tolerates one.
+    let envelope = if case.constraints.strict_json_only {
+        "Rispondi con un solo oggetto JSON: nessun blocco di codice, nessun testo \
+         prima o dopo"
+    } else {
+        "Rispondi con un oggetto JSON di questa forma"
+    };
     let numbers = if case.constraints.authoritative_numbers_read_only {
         "- i numeri di stato sono autorevoli e di sola lettura: descrivili, non cambiarli;"
     } else {
@@ -317,7 +344,7 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
          - la narrazione non supera {max} caratteri;\n\
          - {proposals};\n\
          - {memories}.{structure}\n\n\
-         Rispondi con un solo oggetto JSON, senza testo attorno e senza blocchi di codice:\n\
+         {envelope}:\n\
          {{\"narration\": \"...\", \"dialogue\": [{{\"speakerId\": \"...\", \"text\": \"...\"}}], \
          \"tone_tags\": [\"...\"], \"event_proposals\": {proposal_example}, \"memory_suggestions\": {memory_example}}}",
         language = case.constraints.language,
@@ -330,6 +357,7 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
         structure = structure,
         proposal_example = proposal_example,
         memory_example = memory_example,
+        envelope = envelope,
     )
 }
 
@@ -3037,6 +3065,150 @@ mod tests {
             assert!(prompt.contains("DEVONO parlare"), "{id}: {prompt}");
             for speaker in &case.constraints.required_speaker_ids {
                 assert!(prompt.contains(speaker.as_str()), "{id}: {prompt}");
+            }
+        }
+    }
+
+    #[test]
+    fn i_and_j_the_cases_that_demand_a_suggestion_carry_the_demand() {
+        // Read from the suite rather than remembered: the cases that require one
+        // are exactly the ones whose task is to produce one.
+        let suite = load_suite().unwrap();
+        let mut requiring_proposal = Vec::new();
+        let mut requiring_memory = Vec::new();
+
+        for case in &suite.cases {
+            let contract = case_contract(case);
+            assert_eq!(
+                contract.require_event_proposal, case.constraints.require_event_proposal,
+                "{} lost its proposal obligation on the way to the validator",
+                case.id
+            );
+            assert_eq!(
+                contract.require_memory_suggestion, case.constraints.require_memory_suggestion,
+                "{} lost its memory obligation on the way to the validator",
+                case.id
+            );
+            if contract.require_event_proposal {
+                requiring_proposal.push(case.id.as_str());
+                assert_eq!(case.task, "structured_event_proposal", "{}", case.id);
+            }
+            if contract.require_memory_suggestion {
+                requiring_memory.push(case.id.as_str());
+                assert_eq!(case.task, "memory_suggestion", "{}", case.id);
+            }
+        }
+
+        assert_eq!(
+            requiring_proposal,
+            ["ai_case_046", "ai_case_047", "ai_case_048", "ai_case_049"]
+        );
+        assert_eq!(
+            requiring_memory,
+            ["ai_case_050", "ai_case_051", "ai_case_052", "ai_case_053"]
+        );
+    }
+
+    #[test]
+    fn k_a_required_array_left_empty_is_rejected_rather_than_accepted() {
+        // The whole point of pushing this into the validator: rejection is what
+        // buys the retry. Accepting the empty array spent no attempt, inflated
+        // casesAccepted, and left the evaluator to disagree with the row.
+        let suite = load_suite().unwrap();
+        let empty = "{\"narration\": \"Helios Reach tace.\", \"dialogue\": [], \
+                     \"tone_tags\": [], \"event_proposals\": [], \"memory_suggestions\": []}";
+
+        for id in ["ai_case_046", "ai_case_050"] {
+            let case = suite.cases.iter().find(|c| c.id == id).expect("the case exists");
+            let error = crate::inference::validate(empty, &case_contract(case))
+                .expect_err("an empty array has not answered a case that demanded one");
+            assert!(
+                matches!(error, crate::inference::ValidationError::MissingField(_)),
+                "{id}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn n_every_case_still_builds_a_satisfiable_contract() {
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            assert!(
+                case_contract(case).contract_defect().is_none(),
+                "{} builds an unsatisfiable contract",
+                case.id
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Bare JSON belongs to strictJsonOnly
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_and_d_only_strict_cases_are_told_a_fence_is_forbidden() {
+        // The disagreement this closes: every case was told "senza blocchi di
+        // codice" while only the strict ones were ever measured for it, so an
+        // ordinary case could break a rule it had been given, have the validator
+        // unwrap the fence on purpose, and be recorded as fully compliant.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let prompt = system_prompt(case);
+            if case.constraints.strict_json_only {
+                assert!(prompt.contains("nessun blocco di codice"), "{}: {prompt}", case.id);
+                assert!(prompt.contains("nessun testo prima o dopo"), "{}", case.id);
+            } else {
+                assert!(
+                    !prompt.contains("blocco di codice") && !prompt.contains("blocchi di codice"),
+                    "{} is told a fence is forbidden and is never checked for it",
+                    case.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn j_exactly_the_declared_strict_cases_get_the_strict_instruction() {
+        let suite = load_suite().unwrap();
+        let told: Vec<&str> = suite
+            .cases
+            .iter()
+            .filter(|case| system_prompt(case).contains("nessun blocco di codice"))
+            .map(|case| case.id.as_str())
+            .collect();
+        let declared: Vec<&str> = suite
+            .cases
+            .iter()
+            .filter(|case| case.constraints.strict_json_only)
+            .map(|case| case.id.as_str())
+            .collect();
+        assert_eq!(told, declared);
+        assert!(!declared.is_empty() && declared.len() < suite.cases.len());
+    }
+
+    #[test]
+    fn i_every_case_is_still_asked_for_the_structured_object() {
+        // Relaxing the envelope must not relax the contract: the object, its
+        // fields and its shape are still demanded of every case.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            assert!(case.constraints.structured_output, "{}", case.id);
+            let prompt = system_prompt(case);
+            assert!(prompt.contains("oggetto JSON"), "{}", case.id);
+            for field in ["narration", "dialogue", "tone_tags", "event_proposals", "memory_suggestions"] {
+                assert!(prompt.contains(field), "{} omits {field}", case.id);
+            }
+        }
+    }
+
+    #[test]
+    fn h_the_prompt_never_mentions_the_profile_that_will_answer_it() {
+        // Both models must be asked the same question, whatever the envelope.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let prompt = system_prompt(case);
+            for profile in crate::model_lock::KNOWN_PROFILE_IDS {
+                assert!(!prompt.contains(profile), "{} names {profile}", case.id);
             }
         }
     }

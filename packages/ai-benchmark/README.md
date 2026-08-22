@@ -232,6 +232,28 @@ memory-suggestion or location-description case permits speech without demanding
 it, and the prompt says which it is: `DEVONO parlare` when a voice is needed,
 `nessuno e' obbligato` when it is not. Unknown-speaker grounding is untouched.
 
+The same distinction governs proposals and memory suggestions, and it reaches
+the validator too. `case_contract` used to pass only the *allow* flags, so a case
+whose whole task is to produce a proposal — `ai_case_046` to `049`, and `050` to
+`053` for memories — could return an empty array and be **accepted**: the row
+recorded `accepted: true`, spent no retry, inflated `casesAccepted`, and was then
+failed by the objective evaluator, with acceptance and semantics disagreeing
+about the same row. The contract now carries `require_event_proposal` and
+`require_memory_suggestion` beside the permissions, and rejection is what buys
+the retry the policy owes. Requiring what is not permitted is a contract defect,
+same as for speakers. Production permits neither, so it requires neither.
+
+Formatting strictness belongs to `strictJsonOnly` and to nothing else. Every case
+was told *senza blocchi di codice* while only the five strict cases were ever
+measured for it, so an ordinary case could break a rule it had been given, have
+the product validator unwrap the fence on purpose, and be recorded as fully
+compliant — the prompt and the evaluator disagreeing about what had been asked,
+with the prompt the one lying. Strict cases keep the bare-JSON demand and the
+deterministic `raw_output_is_bare_json` check that measures it. Ordinary cases
+still owe the structured contract in full and are simply not told a fence is
+forbidden. The validator's tolerant unwrapping is unchanged, and `rawFormat` is
+still recorded for every generation — only the judgement is conditional.
+
 The distinction reaches the application validator, not just the evaluator. Before
 this, `OutputContract` knew only who *may* speak and rejected empty dialogue
 whenever anyone was listed — so a case could tell the model nobody was obliged to
