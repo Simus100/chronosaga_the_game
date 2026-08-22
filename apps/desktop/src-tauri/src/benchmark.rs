@@ -30,6 +30,19 @@ use crate::inference::OutputContract;
 use serde::Deserialize;
 use std::{env, fs, path::PathBuf};
 
+/// How long a benchmark run allows a model to become ready.
+///
+/// One number, used by both the lifecycle manager and the loop that waits on it.
+/// The benchmark previously polled for 180 seconds over a manager configured for
+/// 30, so the manager gave up first and the watcher stopped polling a model that
+/// might still have been loading: the advertised allowance was fiction.
+///
+/// Longer than the product default on purpose. A player should never wait three
+/// minutes, and a benchmark measuring a 3B model from a cold page cache should
+/// not record a startup failure that says more about disk than about the model.
+/// [`crate::local_ai_runtime::DEFAULT_STARTUP_TIMEOUT_MS`] is unchanged.
+pub const BENCHMARK_STARTUP_TIMEOUT_MS: u64 = 180_000;
+
 const BENCHMARK_ENV: &str = "CHRONOSAGA_BENCHMARK";
 const WORKSPACE_ENV: &str = "CHRONOSAGA_WORKSPACE_ROOT";
 
@@ -5107,7 +5120,10 @@ mod tests {
         // The profile is known to be a real one by now, so an unresolvable
         // manager means the payload is absent from *this machine* — a legitimate
         // skip, and a different thing entirely from a typo.
-        let Some(manager) = crate::runtime_e2e::manager_for_profile(&profile) else {
+        let Some(manager) = crate::runtime_e2e::manager_for_profile_with_startup_timeout(
+            &profile,
+            BENCHMARK_STARTUP_TIMEOUT_MS,
+        ) else {
             eprintln!(
                 "skipped: {profile} is a locked profile but its payload is not present on this machine"
             );
@@ -5175,7 +5191,9 @@ mod tests {
         // function, including a panic inside a request, stops and reaps it.
         let mut guard = BenchmarkRuntimeGuard::start(manager).expect("the runtime must start");
         assert!(
-            guard.wait_until_ready(std::time::Duration::from_secs(180)),
+            guard.wait_until_ready(std::time::Duration::from_millis(
+                BENCHMARK_STARTUP_TIMEOUT_MS
+            )),
             "the runtime never became ready"
         );
 
@@ -5300,6 +5318,119 @@ mod tests {
                 .filter(|c| c.is_ascii_digit())
                 .count()
                 == 14
+    }
+
+    // ---------------------------------------------------------------------
+    // The startup allowance
+    // ---------------------------------------------------------------------
+
+    /// The smoke runner's own body.
+    ///
+    /// The runner is a `#[test]` like everything else here, so a whole-file
+    /// search finds whichever test happens to mention the same string last.
+    /// These checks are about the runner, so they read the runner.
+    fn runner_body() -> &'static str {
+        let source = include_str!("benchmark.rs");
+        let start = source
+            .find(concat!("fn smoke_run_executes_real_cases_", "through_the_application_boundary()"))
+            .expect("the runner exists");
+        let end = source[start..]
+            .find("\n    #[test]\n")
+            .map(|offset| start + offset)
+            .unwrap_or(source.len());
+        &source[start..end]
+    }
+
+    #[test]
+    fn c_and_d_one_number_governs_the_manager_and_the_wait() {
+        // The runner configures the lifecycle with the benchmark allowance and
+        // waits on it with the same value. Two clocks was the whole defect.
+        let runner = runner_body();
+
+        let configured = runner
+            .find(concat!("manager_for_profile_with_", "startup_timeout("))
+            .expect("the runner configures the manager's allowance");
+        assert!(
+            runner[configured..configured + 220].contains("BENCHMARK_STARTUP_TIMEOUT_MS"),
+            "the manager must be given the benchmark allowance"
+        );
+
+        let waited = runner
+            .find(concat!("wait_until_", "ready(std::time::Duration::from_millis("))
+            .expect("the runner waits for readiness");
+        assert!(
+            runner[waited..waited + 160].contains("BENCHMARK_STARTUP_TIMEOUT_MS"),
+            "the wait must use the same allowance"
+        );
+    }
+
+    #[test]
+    fn e_no_second_literal_governs_the_same_policy() {
+        // A stray `from_secs(180)` beside the constant would be the two-clock
+        // problem returning under a different name.
+        let runner = runner_body();
+        assert!(
+            !runner.contains(concat!("from_", "secs(180)")),
+            "the startup allowance is BENCHMARK_STARTUP_TIMEOUT_MS, not a literal"
+        );
+        assert!(
+            !runner.contains("180_000"),
+            "the number belongs to the constant, not to the runner"
+        );
+
+        // And the constant itself is written once, outside the test module.
+        let source = include_str!("benchmark.rs");
+        let declaration = source
+            .find("pub const BENCHMARK_STARTUP_TIMEOUT_MS")
+            .expect("the constant is declared");
+        assert_eq!(
+            source[declaration..]
+                .matches(concat!("= 180", "_000;"))
+                .count(),
+            1
+        );
+        assert_eq!(BENCHMARK_STARTUP_TIMEOUT_MS, 180_000);
+    }
+
+    #[test]
+    fn b_the_ordinary_manager_keeps_the_product_default() {
+        // `manager_for_profile` still means "the product's allowance"; only the
+        // explicit variant differs, and only in that number.
+        let source = include_str!("runtime_e2e.rs");
+        let at = source
+            .find("pub(crate) fn manager_for_profile(")
+            .expect("the ordinary constructor exists");
+        let body = &source[at..at + 260];
+        assert!(
+            body.contains("DEFAULT_STARTUP_TIMEOUT_MS"),
+            "the ordinary path must keep the product default: {body}"
+        );
+        assert!(
+            body.contains(concat!("manager_for_profile_with_", "startup_timeout(")),
+            "and must delegate rather than duplicate the construction: {body}"
+        );
+    }
+
+    #[test]
+    fn the_two_profile_paths_share_one_construction() {
+        // Same resolution, same VerifiedModel, same system_manager_with_config,
+        // same lifecycle manager and watcher. Only the allowance differs.
+        //
+        // `manager()` builds a model-less runtime for the other end-to-end tests
+        // and is not a profile path, so it is not counted here.
+        let source = include_str!("runtime_e2e.rs");
+        assert_eq!(
+            source.matches("resolve_model_from_lock(profile_id)?").count(),
+            1,
+            "only one function resolves a profile's model"
+        );
+        let with_timeout = source
+            .find("pub(crate) fn manager_for_profile_with_startup_timeout(")
+            .expect("the explicit constructor exists");
+        assert!(
+            source[with_timeout..].contains("system_manager_with_config("),
+            "and it is the one that builds the manager"
+        );
     }
 
     // ---------------------------------------------------------------------

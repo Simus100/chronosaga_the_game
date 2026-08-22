@@ -147,6 +147,22 @@ describe('evidence written by the Rust runner', () => {
     expect(validateRun(run)).toEqual([]);
   });
 
+  it('P: every recorded raw format satisfies the complete runtime validator', () => {
+    // The fixture is what this contract is checked against; a self-contradictory
+    // observation in it would teach this side that contradictions are normal.
+    for (const generation of run.generations) {
+      const observed = generation.rawFormat as unknown as Record<string, unknown>;
+      for (const flag of ['bareJson', 'codeFencePresent', 'wrapperTextPresent']) {
+        expect(typeof observed[flag], `${generation.id}.${flag}`).toBe('boolean');
+      }
+      if (observed.bareJson === true) {
+        expect(observed.codeFencePresent, generation.id).toBe(false);
+        expect(observed.wrapperTextPresent, generation.id).toBe(false);
+      }
+    }
+    expect(validateRun(run)).toEqual([]);
+  });
+
   it('L: records acceptance as a real boolean, not a string', () => {
     // What the Rust serializer emits is what the type check expects; a fixture
     // carrying "false" would have taught this side that strings are normal.

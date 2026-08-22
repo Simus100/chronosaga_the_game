@@ -165,6 +165,16 @@ check against; the TypeScript SHA-256 is its own, so that this package keeps
 needing no Node type definitions, and it is verified against the published FIPS
 vectors as well.
 
+The raw-format observation is validated whole, not just its first flag. All three
+are required to be booleans, and a bare answer cannot also be fenced or wrapped —
+`observe_raw_format` sets `bareJson` only when no fence is present and the text is
+a lone object. Nothing stronger is inferred: an empty response legitimately
+records all three false and a fenced one records fence and wrapper together, so
+`bareJson === false` implies nothing about the others. Before this, evidence
+carrying `{ bareJson: true, codeFencePresent: true }` — bare *and* fenced — would
+have been read by the strict evaluator as compliance on a response that was
+fenced.
+
 Acceptance is checked for being a boolean before anything asks what it means.
 `accepted: boolean` is a compile-time annotation over a value parsed from a file,
 and in JavaScript a non-empty string is truthy — so `accepted: "false"` would
@@ -311,6 +321,20 @@ mem_secret_999* carried an invented id past every deterministic check while the
 typed fields stayed impeccable. Free text is where invention hides, so `topic`,
 `rationale` and `summary` join the same corpus, examined by the same detector.
 Nothing was widened and no check changed confidence.
+
+A benchmark run has one startup allowance. It used to have two: the runner polled
+for 180 seconds while the lifecycle manager underneath it was configured for the
+product's 30, so a model that became ready at second 40 had already been marked
+Failed and the watcher had stopped polling it. The advertised allowance was
+fiction, and the shorter clock always won. `BENCHMARK_STARTUP_TIMEOUT_MS` is now
+the single authority, given to both the manager and the wait, and
+`manager_for_profile_with_startup_timeout` shares every other part of the
+construction with `manager_for_profile` — same resolution, same `VerifiedModel`,
+same `system_manager_with_config`, same lifecycle manager and watcher. The
+product default stays at 30 seconds: a player should never wait three minutes,
+and a benchmark measuring a 3B model from a cold page cache should not record a
+startup failure that says more about the disk than the model. The lifecycle tests
+use an injected clock, so none of this costs three real minutes.
 
 An explicit benchmark request never skips quietly. `CHRONOSAGA_BENCHMARK=1` with
 no `CHRONOSAGA_WORKSPACE_ROOT` used to return false, so the test skipped and

@@ -196,6 +196,128 @@ describe('the hard-fail taxonomy', () => {
   });
 });
 
+describe('every raw-format flag is validated, coherently', () => {
+  const runWithFormat = (rawFormat: unknown) =>
+    run([
+      { ...generation(), rawFormat } as unknown as BenchmarkGeneration,
+    ]);
+
+  const formatProblems = (rawFormat: unknown) =>
+    validateRun(runWithFormat(rawFormat)).filter(problem =>
+      problem.field.startsWith('rawFormat'),
+    );
+
+  it('A: bare JSON, neither fenced nor wrapped, is valid', () => {
+    expect(
+      formatProblems({ bareJson: true, codeFencePresent: false, wrapperTextPresent: false }),
+    ).toEqual([]);
+  });
+
+  it('B: a fenced response is valid', () => {
+    expect(
+      formatProblems({ bareJson: false, codeFencePresent: true, wrapperTextPresent: false }),
+    ).toEqual([]);
+  });
+
+  it('C: a wrapped response is valid', () => {
+    expect(
+      formatProblems({ bareJson: false, codeFencePresent: false, wrapperTextPresent: true }),
+    ).toEqual([]);
+  });
+
+  it('D: the producer\'s other legitimate combinations stay valid', () => {
+    // `observe_raw_format` marks a fenced answer as both fenced and wrapped, and
+    // an empty response as none of the three. Neither may be refused, which is
+    // why `bareJson === false` implies nothing about the other two.
+    expect(
+      formatProblems({ bareJson: false, codeFencePresent: true, wrapperTextPresent: true }),
+    ).toEqual([]);
+    expect(
+      formatProblems({ bareJson: false, codeFencePresent: false, wrapperTextPresent: false }),
+    ).toEqual([]);
+  });
+
+  it('E, F and G: every flag must be present and a boolean', () => {
+    const valid = { bareJson: false, codeFencePresent: true, wrapperTextPresent: false };
+    for (const flag of ['bareJson', 'codeFencePresent', 'wrapperTextPresent'] as const) {
+      const missing = { ...valid } as Record<string, unknown>;
+      delete missing[flag];
+      const absent = formatProblems(missing);
+      expect(absent, flag).toHaveLength(1);
+      expect(absent[0]!.field, flag).toBe(`rawFormat.${flag}`);
+      expect(absent[0]!.message, flag).toContain('absent');
+
+      for (const value of ['false', 'true', 0, 1, null, {}]) {
+        const wrong = formatProblems({ ...valid, [flag]: value });
+        expect(wrong.map(problem => problem.field), `${flag}=${String(value)}`).toContain(
+          `rawFormat.${flag}`,
+        );
+      }
+    }
+  });
+
+  it('H: bare and fenced at once is refused', () => {
+    const problems = formatProblems({
+      bareJson: true,
+      codeFencePresent: true,
+      wrapperTextPresent: false,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.field).toBe('rawFormat.codeFencePresent');
+    expect(problems[0]!.message).toMatch(/cannot also be fenced/);
+  });
+
+  it('I: bare and wrapped at once is refused', () => {
+    const problems = formatProblems({
+      bareJson: true,
+      codeFencePresent: false,
+      wrapperTextPresent: true,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.field).toBe('rawFormat.wrapperTextPresent');
+    expect(problems[0]!.message).toMatch(/cannot also be wrapped/);
+  });
+
+  it('J: bare with both is refused, naming both', () => {
+    const problems = formatProblems({
+      bareJson: true,
+      codeFencePresent: true,
+      wrapperTextPresent: true,
+    });
+    expect(problems.map(problem => problem.field)).toEqual([
+      'rawFormat.codeFencePresent',
+      'rawFormat.wrapperTextPresent',
+    ]);
+  });
+
+  it('a rawFormat that is not an object at all is refused', () => {
+    for (const value of [null, undefined, 'bare', 42, [true, false, false]]) {
+      const problems = formatProblems(value);
+      expect(problems, String(value)).toHaveLength(1);
+      expect(problems[0]!.field, String(value)).toBe('rawFormat');
+    }
+  });
+
+  it('Q: validation does not mutate the recorded observation', () => {
+    const rawFormat = { bareJson: true, codeFencePresent: true, wrapperTextPresent: 'false' };
+    const before = structuredClone(rawFormat);
+    validateRun(runWithFormat(rawFormat));
+    expect(rawFormat).toEqual(before);
+    expect(rawFormat.wrapperTextPresent as unknown).toBe('false');
+  });
+
+  it('reports the malformed flag rather than guessing at coherence', () => {
+    // With a flag of unknown type there is nothing to be coherent about, so the
+    // contradiction check stays silent instead of inventing a second complaint.
+    const problems = formatProblems({
+      bareJson: true,
+      codeFencePresent: 'true',
+      wrapperTextPresent: false,
+    });
+    expect(problems.map(problem => problem.field)).toEqual(['rawFormat.codeFencePresent']);
+  });
+});
+
 describe('acceptance must actually be a boolean', () => {
   /** A run whose single row carries `accepted` exactly as external JSON would. */
   const runWithAccepted = (accepted: unknown) =>

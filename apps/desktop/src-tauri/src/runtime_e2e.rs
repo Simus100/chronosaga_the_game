@@ -15,7 +15,7 @@
 
 use crate::local_ai_runtime::{
     system_manager_with_config, LocalAiRuntimeManager, RuntimeConfig, RuntimePhase,
-    DEFAULT_PORT, LOOPBACK_HOST,
+    DEFAULT_PORT, DEFAULT_STARTUP_TIMEOUT_MS, LOOPBACK_HOST,
 };
 use crate::runtime_watcher::RuntimeWatcher;
 use std::{
@@ -145,11 +145,35 @@ fn manager_with_model() -> Option<Arc<LocalAiRuntimeManager>> {
 /// Shared with [`crate::benchmark`]: both drive the same real runtime, and a
 /// second way of starting it would be a second thing to keep correct.
 pub(crate) fn manager_for_profile(profile_id: &str) -> Option<Arc<LocalAiRuntimeManager>> {
+    manager_for_profile_with_startup_timeout(profile_id, DEFAULT_STARTUP_TIMEOUT_MS)
+}
+
+/// The same manager, with a caller-chosen startup allowance.
+///
+/// The benchmark needs a longer one than the product: a 3B model loading from a
+/// cold page cache on a laptop can take well past the 30 seconds a player should
+/// ever wait. Before this existed the benchmark asked for 180 seconds in its own
+/// polling loop while the lifecycle underneath it was still configured for 30,
+/// so a model that became ready at second 40 had already been marked Failed and
+/// the watcher had stopped polling it. Two clocks, and the shorter one won.
+///
+/// Everything but the number is shared with [`manager_for_profile`]: the same
+/// runtime resolution, the same `VerifiedModel`, the same
+/// `system_manager_with_config`, the same lifecycle manager and watcher, the
+/// same launch contract. Only the allowance differs, and the product default is
+/// untouched.
+pub(crate) fn manager_for_profile_with_startup_timeout(
+    profile_id: &str,
+    startup_timeout_ms: u64,
+) -> Option<Arc<LocalAiRuntimeManager>> {
     let (directory, executable) = resolve_from_lock()?;
     let model = resolve_model_from_lock(profile_id)?;
     let log_path = env::temp_dir().join(format!("chronosaga-e2e-{profile_id}.log"));
+    let config = RuntimeConfig::new(LOOPBACK_HOST, DEFAULT_PORT, startup_timeout_ms)
+        .expect("the loopback defaults must always be valid")
+        .with_model(&model);
     Some(Arc::new(system_manager_with_config(
-        RuntimeConfig::loopback().with_model(&model),
+        config,
         directory,
         executable,
         log_path,

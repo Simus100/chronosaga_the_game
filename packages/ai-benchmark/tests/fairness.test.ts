@@ -757,6 +757,39 @@ describe('a rejected first attempt is owed its retry', () => {
   });
 });
 
+describe('contradictory raw evidence cannot become compliance', () => {
+  const first = caseIds[0]!;
+
+  it('K and L: it never reaches the evaluator, so it never scores as bare', () => {
+    // Read at face value, `bareJson: true` beside `codeFencePresent: true` would
+    // pass the strict check on a response that was fenced. The run is refused
+    // before evaluateObjectively is ever called.
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === first,
+    )!;
+    row.rawFormat = { bareJson: true, codeFencePresent: true, wrapperTextPresent: false };
+
+    const problems = validateRun(run);
+    expect(problems.map(problem => problem.field)).toContain('rawFormat.codeFencePresent');
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+  });
+
+  it('a malformed flag type is refused before any aggregate too', () => {
+    for (const rawFormat of [
+      { bareJson: 'true', codeFencePresent: false, wrapperTextPresent: false },
+      { bareJson: true, codeFencePresent: false },
+      'bare',
+    ]) {
+      const run = fairRun();
+      run.generations[0]!.rawFormat = rawFormat as never;
+      expect(() => buildComparison(suite, run), JSON.stringify(rawFormat)).toThrow(
+        /structurally invalid run/,
+      );
+    }
+  });
+});
+
 describe('a truthy acceptance flag cannot become a successful result', () => {
   const both: BenchmarkProfile[] = ['lite', 'standard'];
   const first = caseIds[0]!;

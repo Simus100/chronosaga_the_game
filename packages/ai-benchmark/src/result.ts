@@ -424,8 +424,50 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     }
 
     if (!generation.rawOutputPath) at('rawOutputPath', 'raw evidence must be referenced');
-    if (typeof generation.rawFormat?.bareJson !== 'boolean') {
-      at('rawFormat', 'the shape of the raw response must be recorded');
+    // All three flags, and their one real relationship.
+    //
+    // Only `bareJson` was checked, so evidence could carry
+    // `{ bareJson: true, codeFencePresent: true }` — a response recorded as both
+    // bare and fenced — and the strict evaluator would read the first flag as
+    // compliance. The observation contradicts itself, and a contradiction is not
+    // a measurement.
+    //
+    // The invariant is exactly the producer's: `observe_raw_format` sets
+    // `bareJson` only when no fence is present and the text is a lone object, so
+    // a bare answer is neither fenced nor wrapped. Nothing stronger is implied —
+    // an empty response legitimately records all three false, and a fenced one
+    // records fence and wrapper together — so `bareJson === false` is not taken
+    // to mean one of the others must be true.
+    //
+    // Refused, never repaired: no missing flag defaults to false, no "false"
+    // becomes false, and the recorded observation is left as it was found.
+    const rawFormat = generation.rawFormat as unknown;
+    if (typeof rawFormat !== 'object' || rawFormat === null || Array.isArray(rawFormat)) {
+      at('rawFormat', 'the shape of the raw response must be recorded as an object');
+    } else {
+      const observed = rawFormat as Record<string, unknown>;
+      const flags = ['bareJson', 'codeFencePresent', 'wrapperTextPresent'] as const;
+      const malformed = flags.filter(flag => typeof observed[flag] !== 'boolean');
+      for (const flag of malformed) {
+        at(
+          `rawFormat.${flag}`,
+          observed[flag] === undefined
+            ? 'is absent; every raw-format flag must be recorded as a boolean'
+            : `is ${JSON.stringify(observed[flag])}, a ${typeof observed[flag]}; it must be a boolean`,
+        );
+      }
+      if (malformed.length === 0 && observed.bareJson === true) {
+        for (const flag of ['codeFencePresent', 'wrapperTextPresent'] as const) {
+          if (observed[flag] === true) {
+            at(
+              `rawFormat.${flag}`,
+              `is true while bareJson is true; a bare JSON object cannot also be ${
+                flag === 'codeFencePresent' ? 'fenced' : 'wrapped in text'
+              }`,
+            );
+          }
+        }
+      }
     }
     if (!SHA256.test(generation.inputFingerprint)) {
       at('inputFingerprint', 'a generation must record what it was asked');
