@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
 import rustRequirements from './fixtures/official-evidence-requirements.json' with { type: 'json' };
 import { OFFICIAL_EVIDENCE_REQUIREMENTS } from '../src/report.js';
-import { validateRun, type BenchmarkRun } from '../src/result.js';
+import {
+  normalizedOutputProblems,
+  validateRun,
+  type BenchmarkRun,
+} from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 
 /**
@@ -35,6 +39,27 @@ describe('the shared definition of official evidence', () => {
 describe('evidence written by the Rust runner', () => {
   it('satisfies the declared TypeScript result contract', () => {
     expect(validateRun(run)).toEqual([]);
+  });
+
+  it('N: every accepted row satisfies the complete output shape', () => {
+    // The fixture is what this contract is checked against, so a row the shape
+    // validator would refuse would mean the two sides disagree about what the
+    // Rust serializer emits.
+    const accepted = run.generations.filter(generation => generation.accepted);
+    expect(accepted.length).toBeGreaterThan(0);
+    for (const generation of accepted) {
+      expect(normalizedOutputProblems(generation.normalizedOutput), generation.id).toEqual([]);
+    }
+    for (const generation of run.generations.filter(entry => !entry.accepted)) {
+      expect(generation.normalizedOutput, generation.id).toBeNull();
+    }
+  });
+
+  it('records no fallback, because an official run never falls back', () => {
+    for (const generation of run.generations) {
+      expect(generation.fallbackUsed, generation.id).toBe(false);
+      expect(generation.fallbackProfile, generation.id).toBeNull();
+    }
   });
 
   it('carries the artifact identity, not a filename guess', () => {

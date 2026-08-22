@@ -204,6 +204,108 @@ export interface NormalizedOutput {
   memorySuggestions: MemorySuggestionItem[];
 }
 
+/**
+ * Every structural problem in a value claiming to be a {@link NormalizedOutput}.
+ *
+ * The TypeScript annotation on `normalizedOutput` is a compile-time claim about
+ * a value parsed from a file at runtime, which is no protection at all. A run
+ * carrying `normalizedOutput: {}` satisfied every rule `validateRun` had — it was
+ * not null, and the row said `accepted` — and then `evaluateObjectively` reached
+ * for `.dialogue.map(...)` on `undefined`. A malformed nested item is worse,
+ * because it does not crash: `dialogue: [{ text: 'ok' }]` evaluates a speaker of
+ * `undefined` against the scene and produces a score.
+ *
+ * Shape only: fields, primitive types, array item shapes. Whether a speaker
+ * belongs to the scene, whether a tone tag is in the vocabulary and whether a
+ * proposal is grounded are semantic questions that stay with their owners — the
+ * application validator and the objective evaluator.
+ *
+ * Unknown keys are refused, because the authoritative cross-language contract
+ * refuses them: `StructuredNarration`, `DialogueLine`, `EventProposal` and
+ * `MemorySuggestion` are all `deny_unknown_fields` on the Rust side, and a
+ * boundary that accepted what the producer would not emit would be describing a
+ * different contract.
+ *
+ * Fails closed and never repairs. Creating a missing array, coercing a value or
+ * dropping a malformed item would each turn evidence of a broken run into a
+ * plausible-looking number.
+ */
+export function normalizedOutputProblems(value: unknown): string[] {
+  const problems: string[] = [];
+  const object = plainObject(value);
+  if (object === null) {
+    return ['is not an object'];
+  }
+
+  if (typeof object.narration !== 'string') {
+    problems.push('narration is not a string');
+  }
+
+  problems.push(
+    ...arrayProblems(object.dialogue, 'dialogue', (line, at) =>
+      fieldProblems(line, at, { speakerId: 'string', text: 'string' }),
+    ),
+  );
+
+  if (!Array.isArray(object.toneTags)) {
+    problems.push('toneTags is not an array');
+  } else {
+    object.toneTags.forEach((tag, index) => {
+      if (typeof tag !== 'string') problems.push(`toneTags[${index}] is not a string`);
+    });
+  }
+
+  problems.push(
+    ...arrayProblems(object.eventProposals, 'eventProposals', (proposal, at) =>
+      fieldProblems(proposal, at, { subjectId: 'string', topic: 'string', rationale: 'string' }),
+    ),
+  );
+
+  problems.push(
+    ...arrayProblems(object.memorySuggestions, 'memorySuggestions', (suggestion, at) =>
+      fieldProblems(suggestion, at, { characterId: 'string', summary: 'string' }),
+    ),
+  );
+
+  const expected = ['narration', 'dialogue', 'toneTags', 'eventProposals', 'memorySuggestions'];
+  for (const key of Object.keys(object)) {
+    if (!expected.includes(key)) problems.push(`unexpected field '${key}'`);
+  }
+
+  return problems;
+}
+
+/** A value that is an object and not an array or null, or `null` if it is not. */
+function plainObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/** Problems in an array field and in each of its items. */
+function arrayProblems(
+  value: unknown,
+  field: string,
+  item: (value: unknown, at: string) => string[],
+): string[] {
+  if (!Array.isArray(value)) return [`${field} is not an array`];
+  return value.flatMap((entry, index) => item(entry, `${field}[${index}]`));
+}
+
+/** Problems in one object with a fixed set of required string fields. */
+function fieldProblems(value: unknown, at: string, shape: Record<string, 'string'>): string[] {
+  const object = plainObject(value);
+  if (object === null) return [`${at} is not an object`];
+
+  const problems: string[] = [];
+  for (const [field, kind] of Object.entries(shape)) {
+    if (typeof object[field] !== kind) problems.push(`${at}.${field} is not a ${kind}`);
+  }
+  for (const key of Object.keys(object)) {
+    if (!(key in shape)) problems.push(`${at} has an unexpected field '${key}'`);
+  }
+  return problems;
+}
+
 export interface BenchmarkRun {
   metadata: RunMetadata;
   generations: BenchmarkGeneration[];
@@ -281,6 +383,12 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     if (generation.accepted) {
       if (generation.normalizedOutput === null) {
         at('normalizedOutput', 'an accepted generation must carry its validated output');
+      } else {
+        // Not-null was the whole test before, and the annotation did the rest of
+        // the work in the type checker, where the file being read is not.
+        for (const problem of normalizedOutputProblems(generation.normalizedOutput)) {
+          at('normalizedOutput', problem);
+        }
       }
       if (generation.validatorErrors.length > 0) {
         at('validatorErrors', 'an accepted generation cannot also carry validator errors');

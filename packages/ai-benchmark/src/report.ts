@@ -374,6 +374,7 @@ export const OFFICIAL_EVIDENCE_REQUIREMENTS = [
   'host_facts',
   'suite_identity',
   'full_profile_case_coverage',
+  'no_fallback_evidence',
 ] as const;
 
 export type OfficialEvidenceRequirement = (typeof OFFICIAL_EVIDENCE_REQUIREMENTS)[number];
@@ -459,8 +460,14 @@ export function officialEvidenceProblems(
   //
   // Attempts collapse into pairs, so a retry adds a row and no coverage. A run
   // that answered ten cases twice each has still answered ten cases.
+  //
+  // A fallback row establishes nothing: if Standard fell back on a case, Standard
+  // has no answer for that case, and letting the row count would let a profile
+  // show full coverage built from another model's work.
   const answered = new Set(
-    run.generations.map(generation => `${generation.profile} ${generation.caseId}`),
+    run.generations
+      .filter(generation => !generation.fallbackUsed && generation.fallbackProfile === null)
+      .map(generation => `${generation.profile} ${generation.caseId}`),
   );
   for (const profile of profiles) {
     const absent = suite.cases
@@ -479,6 +486,25 @@ export function officialEvidenceProblems(
       'full_profile_case_coverage',
       `${profile} is missing ${absent.length} of ${suite.cases.length} suite cases ` +
         `(${shown.join(', ')}${absent.length > shown.length ? ', ...' : ''})`,
+    );
+  }
+
+  // Fallback is a product virtue and a measurement defect. A row where Standard
+  // asked and Lite answered is still grouped under `profile: 'standard'`, so its
+  // output, acceptance, latency, retries and scores would all be reported as
+  // Standard evidence for work Lite did — which is not a worse Standard result,
+  // it is a result about another model wearing Standard's name.
+  //
+  // Refused rather than reattributed: moving the row to Lite would mean rewriting
+  // its artifact identity, its coverage pair and its provenance, and inventing a
+  // Lite generation that was never requested.
+  for (const generation of run.generations) {
+    if (!generation.fallbackUsed && generation.fallbackProfile === null) continue;
+    at(
+      'no_fallback_evidence',
+      `${generation.id} fell back from ${generation.profile} to ` +
+        `${generation.fallbackProfile ?? 'an unnamed profile'}, so it is evidence about ` +
+        `${generation.fallbackProfile ?? 'another model'} recorded under ${generation.profile}`,
     );
   }
 

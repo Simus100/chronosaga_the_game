@@ -147,6 +147,35 @@ against the five locked categories and the generations the run actually
 contains; the comparison reports machine and human disqualifications separately
 and never merges either into a score.
 
+An official run never falls back. `STANDARD → LITE` is right for the product,
+where the player wants the game to keep going, and wrong for a measurement: a row
+where Standard asked and Lite answered stays grouped under `profile: 'standard'`,
+so its output, acceptance, latency, retries and scores would all be reported as
+Standard evidence for work Lite did — not a worse Standard result, a result about
+another model wearing Standard's name. Such a row is refused rather than
+reattributed, since moving it to Lite would mean rewriting its artifact identity,
+its coverage pair and its provenance, and inventing a Lite generation nobody
+asked for. It establishes no coverage either, so the profile is also short a
+case, which is the truth: Standard did not answer it.
+
+`validateRun` keeps understanding fallback rows structurally — smoke passes and
+telemetry may legitimately represent one — and only the official boundary refuses
+them. Product AUTO behaviour is untouched.
+
+The output object is checked at runtime, not only in the type checker. `accepted`
+implying a non-null `normalizedOutput` was the whole test, and the annotation on
+that field is a compile-time claim about a value parsed from a file. A run
+carrying `normalizedOutput: {}` satisfied every rule there was, and
+`evaluateObjectively` then reached for `.dialogue.map(...)` on `undefined`. A
+malformed nested item is worse, because it does not crash: `dialogue: [{ text:
+'ok' }]` scores a speaker of `undefined` against the scene and produces a number.
+`normalizedOutputProblems` checks fields, primitive types and array item shapes —
+shape only; whether a speaker belongs to the scene stays with the application
+validator and the evaluator. Unknown keys are refused because the producing Rust
+types are `deny_unknown_fields`, and nothing is repaired: creating a missing
+array, coercing a value or dropping a malformed item would each turn evidence of
+a broken run into a plausible number.
+
 Grounding reads all the prose, not only the narration and dialogue. Proposals and
 memory suggestions are typed, and the application validator grounds their typed
 parts — `subjectId` must be an entity the case put on the table, `characterId` a

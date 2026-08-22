@@ -262,6 +262,112 @@ describe('every row is attributed to the model that answered it', () => {
   });
 });
 
+describe('official evidence is never produced by a fallback', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+
+  /** A run where `profile` asked and the other model answered. */
+  function fellBack(profile: BenchmarkProfile, to: BenchmarkProfile) {
+    const run = fairRun();
+    const row = run.generations.find(generation => generation.profile === profile)!;
+    row.fallbackUsed = true;
+    row.fallbackProfile = to;
+    row.servedModel = to;
+    return { run, row };
+  }
+
+  it('A and B: rows each model answered itself are evidence', () => {
+    const run = fairRun();
+    for (const generation of run.generations) {
+      expect(generation.fallbackUsed).toBe(false);
+      expect(generation.fallbackProfile).toBeNull();
+      expect(generation.servedModel).toBe(generation.profile);
+      expect(generation.artifact.profileId).toBe(generation.profile);
+    }
+    expect(officialEvidenceProblems(suite, run, both)).toEqual([]);
+  });
+
+  it('C: a Standard row Lite answered is refused', () => {
+    const { run } = fellBack('standard', 'lite');
+    // Structurally coherent: the row is a valid fallback record, and validateRun
+    // keeps understanding it. It is simply not evidence about Standard.
+    expect(validateRun(run)).toEqual([]);
+    const problems = officialEvidenceProblems(suite, run, both);
+    expect(problems.map(problem => problem.requirement)).toContain('no_fallback_evidence');
+    expect(() => buildComparison(suite, run)).toThrow(/no_fallback_evidence/);
+  });
+
+  it('D: a Lite row Standard answered is refused', () => {
+    const { run } = fellBack('lite', 'standard');
+    expect(officialEvidenceProblems(suite, run, both).map(p => p.requirement)).toContain(
+      'no_fallback_evidence',
+    );
+  });
+
+  it('H: the refusal names the generation and both profiles', () => {
+    const { run, row } = fellBack('standard', 'lite');
+    const problem = officialEvidenceProblems(suite, run, both).find(
+      entry => entry.requirement === 'no_fallback_evidence',
+    )!;
+    expect(problem.message).toContain(row.id);
+    expect(problem.message).toContain('from standard to lite');
+    expect(problem.message).toMatch(/evidence about lite recorded under standard/);
+  });
+
+  it('E: one fallback row among 130 clean ones refuses the whole run', () => {
+    const { run } = fellBack('standard', 'lite');
+    expect(run.generations.length).toBe(suite.cases.length * 2);
+    expect(run.generations.filter(generation => generation.fallbackUsed)).toHaveLength(1);
+    expect(() => buildComparison(suite, run)).toThrow(/refusing to publish/);
+  });
+
+  it('F and G: a fallback row reaches no latency, acceptance or retry aggregate', () => {
+    // It cannot, because the report never gets built. Proven by the absence of a
+    // report rather than by inspecting one that should not exist.
+    const { run } = fellBack('standard', 'lite');
+    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => buildComparison(suite, run, ['lite', 'standard'], null, null)).toThrow();
+  });
+
+  it('a fallback row covers nothing, so the profile is also short a case', () => {
+    // Two different statements about the same row, and both are true: Standard
+    // did not answer that case, and the row that stands where its answer would
+    // be belongs to another model.
+    const { run, row } = fellBack('standard', 'lite');
+    const problems = officialEvidenceProblems(suite, run, both);
+    expect(problems.map(problem => problem.requirement)).toEqual([
+      'full_profile_case_coverage',
+      'no_fallback_evidence',
+    ]);
+    expect(problems[0]!.message).toMatch(
+      new RegExp(`standard is missing 1 of ${suite.cases.length} suite cases \\(${row.caseId}\\)`),
+    );
+  });
+
+  it('J and K: a malformed accepted output never reaches evaluation or an aggregate', () => {
+    // evaluateObjectively would reach for .dialogue.map on undefined; worse, a
+    // malformed *item* does not crash — it scores a speaker of undefined against
+    // the scene. Neither happens, because the run is refused first.
+    for (const broken of [{}, { ...fairRun().generations[0]!.normalizedOutput, dialogue: [{}] }]) {
+      const run = fairRun();
+      run.generations[0]!.normalizedOutput = broken as never;
+      expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    }
+  });
+
+  it('I: validateRun still understands a fallback row structurally', () => {
+    // The separation the fix depends on: smoke and telemetry may represent
+    // fallback, and only the official boundary refuses it.
+    const { run } = fellBack('standard', 'lite');
+    expect(validateRun(run)).toEqual([]);
+
+    const incoherent = fairRun();
+    const row = incoherent.generations[0]!;
+    row.fallbackUsed = true;
+    row.fallbackProfile = null;
+    expect(validateRun(incoherent).map(problem => problem.field)).toContain('fallbackProfile');
+  });
+});
+
 describe('official comparison evidence', () => {
   const both: BenchmarkProfile[] = ['lite', 'standard'];
 
@@ -424,6 +530,12 @@ describe('official comparison evidence', () => {
     trip(run => void (run.metadata.host.totalRamMb = 0));
     trip(run => void (run.metadata.suiteVersion = ''));
     trip(run => void (run.generations = run.generations.slice(0, 2)));
+    trip(run => {
+      const row = run.generations.find(generation => generation.profile === 'standard')!;
+      row.fallbackUsed = true;
+      row.fallbackProfile = 'lite';
+      row.servedModel = 'lite';
+    });
 
     expect([...reached].sort()).toEqual([...OFFICIAL_EVIDENCE_REQUIREMENTS].sort());
   });

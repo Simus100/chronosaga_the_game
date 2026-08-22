@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateRun, type BenchmarkGeneration, type BenchmarkRun } from '../src/result.js';
+import { normalizedOutputProblems, validateRun, type BenchmarkGeneration, type BenchmarkRun } from '../src/result.js';
 import { SCORE_AXES, validateScoreSheet, type ScoreSheet } from '../src/scoring.js';
 import { HARD_FAIL_CATEGORIES, tallyHardFails } from '../src/hard-fail.js';
 
@@ -188,5 +188,143 @@ describe('the hard-fail taxonomy', () => {
     ]);
     expect(tally.contradicts_state_delta).toBe(2);
     expect(tally.systematically_unusable).toBe(0);
+  });
+});
+
+describe('the normalized output shape is checked at runtime', () => {
+  const valid = () => ({
+    narration: 'La riserva scende.',
+    dialogue: [{ speakerId: 'mara_001', text: 'Dobbiamo razionare.' }],
+    toneTags: ['tense'],
+    eventProposals: [{ subjectId: 'settlement_helios', topic: 'acqua', rationale: 'Scende.' }],
+    memorySuggestions: [{ characterId: 'mara_001', summary: 'Ha firmato.' }],
+  });
+
+  /** A run whose one accepted row carries `output`. */
+  const runWith = (output: unknown) =>
+    run([generation({ accepted: true, normalizedOutput: output as never })]);
+
+  it('A: a complete output passes', () => {
+    expect(normalizedOutputProblems(valid())).toEqual([]);
+    expect(validateRun(runWith(valid()))).toEqual([]);
+  });
+
+  it('B: an empty object is refused', () => {
+    // The exact shape that passed before: not null, and nothing else true.
+    const problems = normalizedOutputProblems({});
+    expect(problems).toContain('narration is not a string');
+    expect(problems).toContain('dialogue is not an array');
+    expect(validateRun(runWith({})).map(problem => problem.field)).toContain('normalizedOutput');
+  });
+
+  it('B: a non-object is refused', () => {
+    for (const value of [null, 42, 'text', [], true]) {
+      expect(normalizedOutputProblems(value), String(value)).toContain('is not an object');
+    }
+  });
+
+  it('C: a missing field is refused', () => {
+    const output = valid() as Record<string, unknown>;
+    delete output.dialogue;
+    expect(normalizedOutputProblems(output)).toEqual(['dialogue is not an array']);
+  });
+
+  it('D: a dialogue that is not an array is refused', () => {
+    expect(normalizedOutputProblems({ ...valid(), dialogue: {} })).toEqual([
+      'dialogue is not an array',
+    ]);
+  });
+
+  it('E: a dialogue item missing speakerId is refused', () => {
+    expect(normalizedOutputProblems({ ...valid(), dialogue: [{ text: 'ok' }] })).toEqual([
+      'dialogue[0].speakerId is not a string',
+    ]);
+  });
+
+  it('F: a dialogue item whose text is not a string is refused', () => {
+    expect(
+      normalizedOutputProblems({ ...valid(), dialogue: [{ speakerId: 'mara_001', text: 42 }] }),
+    ).toEqual(['dialogue[0].text is not a string']);
+  });
+
+  it('E: a dialogue item that is not an object at all is refused', () => {
+    expect(normalizedOutputProblems({ ...valid(), dialogue: [null] })).toEqual([
+      'dialogue[0] is not an object',
+    ]);
+  });
+
+  it('G: a non-string tone tag is refused', () => {
+    expect(normalizedOutputProblems({ ...valid(), toneTags: ['tense', 7] })).toEqual([
+      'toneTags[1] is not a string',
+    ]);
+  });
+
+  it('H: a malformed event proposal is refused', () => {
+    expect(
+      normalizedOutputProblems({
+        ...valid(),
+        eventProposals: [{ subjectId: 'settlement_helios', topic: 'acqua' }],
+      }),
+    ).toEqual(['eventProposals[0].rationale is not a string']);
+  });
+
+  it('I: a malformed memory suggestion is refused', () => {
+    expect(
+      normalizedOutputProblems({ ...valid(), memorySuggestions: [{ summary: 'Ha firmato.' }] }),
+    ).toEqual(['memorySuggestions[0].characterId is not a string']);
+  });
+
+  it('refuses unknown fields, because the producing contract refuses them', () => {
+    expect(normalizedOutputProblems({ ...valid(), mood: 'epic' })).toEqual([
+      "unexpected field 'mood'",
+    ]);
+    expect(
+      normalizedOutputProblems({
+        ...valid(),
+        dialogue: [{ speakerId: 'mara_001', text: 'ok', volume: 3 }],
+      }),
+    ).toEqual(["dialogue[0] has an unexpected field 'volume'"]);
+  });
+
+  it('repairs nothing', () => {
+    // No missing array is created, no value coerced, no malformed item dropped.
+    const broken = { ...valid(), toneTags: ['tense', 7] } as Record<string, unknown>;
+    const before = structuredClone(broken);
+    normalizedOutputProblems(broken);
+    expect(broken).toEqual(before);
+
+    const missing = { ...valid() } as Record<string, unknown>;
+    delete missing.memorySuggestions;
+    normalizedOutputProblems(missing);
+    expect('memorySuggestions' in missing).toBe(false);
+  });
+
+  it('reports every problem rather than stopping at the first', () => {
+    const problems = normalizedOutputProblems({
+      narration: 1,
+      dialogue: [{ speakerId: 2 }],
+      toneTags: 'tense',
+      eventProposals: [{}],
+      memorySuggestions: [7],
+    });
+    expect(problems.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('L: a rejected generation with a null output stays valid', () => {
+    const rejected = run([
+      generation({ accepted: false, normalizedOutput: null, validatorErrors: ['unknown tone tag'] }),
+    ]);
+    expect(validateRun(rejected)).toEqual([]);
+  });
+
+  it('M: a rejected generation carrying an output is still invalid', () => {
+    const rejected = run([
+      generation({
+        accepted: false,
+        normalizedOutput: valid() as never,
+        validatorErrors: ['unknown tone tag'],
+      }),
+    ]);
+    expect(validateRun(rejected).map(problem => problem.field)).toContain('normalizedOutput');
   });
 });

@@ -576,6 +576,12 @@ pub struct CoverageRequirement {
 #[derive(Debug, Clone, Default)]
 pub struct RunCoverage {
     pairs: std::collections::HashSet<(String, String)>,
+    /// Rows that were answered by a profile other than the one that asked.
+    ///
+    /// Kept beside the pairs because it is a fact about the same rows, read at
+    /// the same moment: a fallback row establishes no pair, and an official run
+    /// that contains one is not evidence about either model.
+    fell_back: Vec<String>,
 }
 
 impl RunCoverage {
@@ -585,6 +591,11 @@ impl RunCoverage {
     pub fn from_records(records: &[GenerationRecord]) -> Self {
         let mut coverage = Self::default();
         for record in records {
+            if record.fallback_used || record.fallback_profile.is_some() {
+                // Answered by another model, so it covers nothing and is named.
+                coverage.fell_back.push(record.id.clone());
+                continue;
+            }
             coverage
                 .pairs
                 .insert((record.profile.clone(), record.case_id.clone()));
@@ -604,6 +615,9 @@ impl RunCoverage {
                 .into_iter()
                 .map(|(profile, case)| (profile.into(), case.into()))
                 .collect(),
+            // Pairs stated directly are pairs somebody vouched for; a fallback
+            // row cannot be expressed this way, which is the point.
+            fell_back: Vec::new(),
         }
     }
 
@@ -615,6 +629,11 @@ impl RunCoverage {
     /// How many distinct `(profile, case)` pairs the run established.
     pub fn pair_count(&self) -> usize {
         self.pairs.len()
+    }
+
+    /// The generations produced by a profile other than the one that asked.
+    pub fn fallback_rows(&self) -> &[String] {
+        &self.fell_back
     }
 
     /// The cases one profile is missing, in the requirement's own order.
@@ -925,6 +944,7 @@ pub const OFFICIAL_EVIDENCE_REQUIREMENTS: &[&str] = &[
     "host_facts",
     "suite_identity",
     "full_profile_case_coverage",
+    "no_fallback_evidence",
 ];
 
 /// Whether a run may be published as comparable evidence.
@@ -1065,6 +1085,17 @@ pub fn official_evidence_failures(
                 shown.join(", "),
                 if absent.len() > shown.len() { ", ..." } else { "" }
             ),
+        ));
+    }
+
+    // Fallback is a product virtue and a measurement defect. A row where Standard
+    // asked and Lite answered stays grouped under Standard, so its output,
+    // acceptance, latency, retries and scores would be reported as Standard
+    // evidence for work Lite did.
+    for id in coverage.fallback_rows() {
+        missing.push((
+            "no_fallback_evidence",
+            format!("{id} was answered by a fallback profile, not by the one it is recorded under"),
         ));
     }
 
@@ -1261,6 +1292,11 @@ pub fn serving_identity_verdict(expected_alias: &str, served: &[String]) -> Resu
 /// cannot be attributed, and attributing it anyway is exactly the assumption the
 /// preflight exists to stop making.
 pub fn response_identity_verdict(expected_alias: &str, reported: Option<&str>) -> Result<(), String> {
+    // Stated here because this is where the alias is compared: an official run
+    // never falls back. `STANDARD -> LITE` is right for the product, where the
+    // player wants the game to keep going; it is wrong for a measurement, where
+    // an answer produced by Lite recorded under Standard is not a worse result,
+    // it is a result about a different model.
     match reported {
         Some(alias) if alias == expected_alias => Ok(()),
         Some(alias) => Err(format!(
@@ -1592,6 +1628,37 @@ mod tests {
         ])
     }
 
+    /// Full coverage on paper, with one case Standard did not answer itself.
+    fn fallback_coverage() -> RunCoverage {
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let accepted = crate::inference::InferenceOutcome {
+            accepted: true,
+            duration_ms: 1,
+            raw: "{}".to_string(),
+            narration: Some("ok".to_string()),
+            dialogue: Vec::new(),
+            tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
+            validation_error: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            tokens_per_second: None,
+            model: Some("lite".to_string()),
+        };
+        let mut records = vec![
+            record_generation("r", case, "lite", 1, test_artifact("lite"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &accepted),
+            record_generation("r", case, "standard", 1, test_artifact("standard"),
+                benchmark_context(4096), first_attempt_fingerprint(case), &accepted),
+        ];
+        // Standard asked; Lite answered.
+        records[1].fallback_used = true;
+        records[1].fallback_profile = Some("lite".to_string());
+        RunCoverage::from_records(&records)
+    }
+
     /// What a default smoke actually covers: a few cases, one model.
     fn smoke_coverage() -> RunCoverage {
         RunCoverage::from_pairs([("lite", "ai_case_001")])
@@ -1646,6 +1713,7 @@ mod tests {
         reached.extend(failed_requirements(&suiteless, &full_coverage()));
 
         reached.extend(failed_requirements(&impeccable_metadata(), &smoke_coverage()));
+        reached.extend(failed_requirements(&impeccable_metadata(), &fallback_coverage()));
 
         for requirement in OFFICIAL_EVIDENCE_REQUIREMENTS {
             assert!(
@@ -1661,6 +1729,38 @@ mod tests {
                  the TypeScript boundary was never told about it"
             );
         }
+    }
+
+    #[test]
+    fn a_fallback_row_covers_nothing_and_is_named() {
+        // Both halves of the rule. The row is refused as evidence, and it does
+        // not quietly stand in for the answer the profile never gave.
+        let coverage = fallback_coverage();
+        let suite = load_suite().unwrap();
+        let first = suite.cases[0].id.as_str();
+        assert!(coverage.covers("lite", first), "lite answered it itself");
+        assert!(
+            !coverage.covers("standard", first),
+            "standard did not answer this case; lite did"
+        );
+        assert_eq!(coverage.fallback_rows().len(), 1);
+
+        let failures = official_evidence_failures(
+            &impeccable_metadata(),
+            &coverage,
+            &CoverageRequirement {
+                required_case_ids: vec![first.to_string()],
+                required_profiles: vec!["lite".to_string(), "standard".to_string()],
+            },
+        );
+        let tags: Vec<&str> = failures.iter().map(|(tag, _)| *tag).collect();
+        assert!(tags.contains(&"no_fallback_evidence"), "{tags:?}");
+        assert!(
+            failures
+                .iter()
+                .any(|(_, detail)| detail.contains("answered by a fallback profile")),
+            "{failures:?}"
+        );
     }
 
     #[test]
