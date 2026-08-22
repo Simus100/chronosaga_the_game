@@ -757,6 +757,61 @@ describe('a rejected first attempt is owed its retry', () => {
   });
 });
 
+describe('a truthy acceptance flag cannot become a successful result', () => {
+  const both: BenchmarkProfile[] = ['lite', 'standard'];
+  const first = caseIds[0]!;
+
+  /** `fairRun` with one Lite row's `accepted` replaced by external-shaped JSON. */
+  function withFlag(accepted: unknown) {
+    const run = fairRun();
+    const row = run.generations.find(
+      generation => generation.profile === 'lite' && generation.caseId === first,
+    )!;
+    (row as unknown as Record<string, unknown>).accepted = accepted;
+    return run;
+  }
+
+  it('H: it cannot establish a terminal successful generation', () => {
+    // A rejected first attempt owes a retry. Read as truthy, this row would have
+    // ended the history as a success and the missing retry would go unnoticed.
+    const run = withFlag('false');
+    expect(validateRun(run).some(problem => problem.field === 'accepted')).toBe(true);
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+  });
+
+  it('I: it cannot contribute to official profile-case coverage', () => {
+    const run = withFlag('false');
+
+    // The hazard, made visible: read as truthy, the row *does* look like a
+    // finished successful history to the coverage helper, which is exactly why
+    // the type has to be checked before anything reaches it.
+    expect(
+      terminalGenerations(run, both).some(
+        generation => generation.id === `run:${first}:lite:1`,
+      ),
+    ).toBe(true);
+
+    // And it never gets there: validateRun is the first gate in buildComparison,
+    // so the refusal is the structural one, not a coverage complaint.
+    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => buildComparison(suite, run)).not.toThrow(/coverage/);
+  });
+
+  it('J: it cannot increment casesAccepted or reach any aggregate', () => {
+    for (const value of ['false', 'true', 1, 0, null, {}]) {
+      const run = withFlag(value);
+      expect(() => buildComparison(suite, run), JSON.stringify(value)).toThrow(
+        /structurally invalid run/,
+      );
+    }
+  });
+
+  it('L: every legitimate run in this suite still validates', () => {
+    expect(validateRun(fairRun())).toEqual([]);
+    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+  });
+});
+
 describe('an unreviewed case is not a case with no findings', () => {
   const both: BenchmarkProfile[] = ['lite', 'standard'];
   const first = caseIds[0]!;

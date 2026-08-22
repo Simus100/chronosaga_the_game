@@ -147,6 +147,16 @@ describe('evidence written by the Rust runner', () => {
     expect(validateRun(run)).toEqual([]);
   });
 
+  it('L: records acceptance as a real boolean, not a string', () => {
+    // What the Rust serializer emits is what the type check expects; a fixture
+    // carrying "false" would have taught this side that strings are normal.
+    for (const generation of run.generations) {
+      expect(typeof generation.accepted, generation.id).toBe('boolean');
+    }
+    expect(run.generations.some(generation => generation.accepted)).toBe(true);
+    expect(run.generations.some(generation => !generation.accepted)).toBe(true);
+  });
+
   it('N: every accepted row satisfies the complete output shape', () => {
     // The fixture is what this contract is checked against, so a row the shape
     // validator would refuse would mean the two sides disagree about what the

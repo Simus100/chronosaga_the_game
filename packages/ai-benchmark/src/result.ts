@@ -434,7 +434,28 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     if (generation.context.maxOutputTokens <= 0) at('context.maxOutputTokens', 'must be positive');
     if (!generation.context.reasoning) at('context.reasoning', 'the reasoning mode must be recorded');
 
-    if (generation.accepted) {
+    // Before any branch on what acceptance *means*, whether it is an acceptance
+    // at all. The field is declared `boolean`, and that annotation says nothing
+    // about a value parsed from a file: `accepted: "false"` is a string, and in
+    // JavaScript a non-empty string is truthy. It would have taken the accepted
+    // branch here, then been read as a successful terminal attempt, counted
+    // toward official coverage, and incremented `casesAccepted` — a rejection
+    // reported as a success by the word "false".
+    //
+    // Refused, never coerced. `Boolean(value)` or `!!value` would decide what the
+    // row meant on the row's behalf, and a benchmark that guesses at its own
+    // evidence is not measuring anything. The stored value is left exactly as it
+    // was found, and neither acceptance branch runs — asking whether a rejection
+    // said why, when the row does not say whether it is one, would be inventing
+    // an answer to report a problem about.
+    if (typeof generation.accepted !== 'boolean') {
+      at(
+        'accepted',
+        `acceptance is ${JSON.stringify(generation.accepted) ?? 'undefined'}, which is ` +
+          `${generation.accepted === undefined ? 'absent' : `a ${typeof generation.accepted}`}; ` +
+          'it must be a boolean, because everything downstream branches on it',
+      );
+    } else if (generation.accepted) {
       if (generation.normalizedOutput === null) {
         at('normalizedOutput', 'an accepted generation must carry its validated output');
       } else {

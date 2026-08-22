@@ -196,6 +196,95 @@ describe('the hard-fail taxonomy', () => {
   });
 });
 
+describe('acceptance must actually be a boolean', () => {
+  /** A run whose single row carries `accepted` exactly as external JSON would. */
+  const runWithAccepted = (accepted: unknown) =>
+    run([
+      {
+        ...generation({ accepted: true }),
+        accepted,
+      } as unknown as BenchmarkGeneration,
+    ]);
+
+  const acceptedProblems = (accepted: unknown) =>
+    validateRun(runWithAccepted(accepted)).filter(problem => problem.field === 'accepted');
+
+  it('A: a genuine acceptance passes', () => {
+    expect(validateRun(runWithAccepted(true))).toEqual([]);
+  });
+
+  it('B: a genuine rejection passes', () => {
+    const rejected = run([
+      generation({ accepted: false, normalizedOutput: null, validatorErrors: ['unknown tone tag'] }),
+    ]);
+    expect(validateRun(rejected)).toEqual([]);
+  });
+
+  it('C: the string "false" is refused, not read as truthy', () => {
+    // The exact scenario: a non-empty string is truthy, so this row would have
+    // taken the accepted branch and been counted as a success by the word
+    // "false".
+    const problems = acceptedProblems('false');
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.message).toMatch(/must be a boolean/);
+  });
+
+  it('D: the string "true" is refused too', () => {
+    expect(acceptedProblems('true')).toHaveLength(1);
+  });
+
+  it('E: 1 and 0 are refused', () => {
+    for (const value of [1, 0, -1, NaN]) {
+      expect(acceptedProblems(value), String(value)).toHaveLength(1);
+    }
+  });
+
+  it('F: null, objects and arrays are refused', () => {
+    for (const value of [null, {}, [], [true], { accepted: true }]) {
+      expect(acceptedProblems(value), JSON.stringify(value)).toHaveLength(1);
+    }
+  });
+
+  it('G: an absent acceptance is refused', () => {
+    const row = { ...generation({ accepted: true }) } as Record<string, unknown>;
+    delete row.accepted;
+    const problems = validateRun(run([row as unknown as BenchmarkGeneration])).filter(
+      problem => problem.field === 'accepted',
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.message).toContain('absent');
+  });
+
+  it('K: the problem names the generation, the field and the requirement', () => {
+    const problems = acceptedProblems('false');
+    expect(problems[0]!.generationId).toBe('run:c1:lite:1');
+    expect(problems[0]!.field).toBe('accepted');
+    expect(problems[0]!.message).toContain('"false"');
+    expect(problems[0]!.message).toContain('a string');
+    expect(problems[0]!.message).toMatch(/must be a boolean/);
+  });
+
+  it('coerces nothing and leaves the evidence untouched', () => {
+    const row = { ...generation({ accepted: true }), accepted: 'false' } as unknown as
+      BenchmarkGeneration;
+    const before = structuredClone(row);
+    validateRun(run([row]));
+    expect(row).toEqual(before);
+    expect(row.accepted as unknown).toBe('false');
+  });
+
+  it('neither acceptance branch runs on a malformed flag', () => {
+    // Reporting "a rejection must say why" about a row that does not say whether
+    // it is one would be inventing the answer in order to complain about it.
+    const problems = validateRun(runWithAccepted('false'));
+    expect(problems.map(problem => problem.field)).toEqual(['accepted']);
+  });
+
+  it('L: the run this suite calls valid still validates', () => {
+    expect(validateRun(run([generation()]))).toEqual([]);
+  });
+});
+
 describe('the normalized output shape is checked at runtime', () => {
   const valid = () => ({
     narration: 'La riserva scende.',

@@ -165,6 +165,16 @@ check against; the TypeScript SHA-256 is its own, so that this package keeps
 needing no Node type definitions, and it is verified against the published FIPS
 vectors as well.
 
+Acceptance is checked for being a boolean before anything asks what it means.
+`accepted: boolean` is a compile-time annotation over a value parsed from a file,
+and in JavaScript a non-empty string is truthy — so `accepted: "false"` would
+have taken the accepted branch, been read as a finished successful history,
+counted toward official coverage and incremented `casesAccepted`: a rejection
+reported as a success by the word "false". Refused, never coerced; `Boolean(x)`
+or `!!x` would decide what the row meant on the row's behalf. `validateRun`
+remains the single authority, so the consumers downstream — terminal histories,
+coverage, scoring, the evaluator — need no checks of their own.
+
 The evidence boundary also asks whether a row could have come from the validator
 at all. `normalizedOutputProblems` checked types; a blank narration or a dialogue
 line whose text is `'   '` typechecks perfectly and the application validator
