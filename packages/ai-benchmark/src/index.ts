@@ -11,6 +11,7 @@
  */
 export * from './case.js';
 export * from './result.js';
+export * from './structure.js';
 export * from './objective.js';
 export * from './scoring.js';
 export * from './hard-fail.js';

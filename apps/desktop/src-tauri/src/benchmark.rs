@@ -1614,14 +1614,60 @@ impl Drop for BenchmarkRuntimeGuard {
     }
 }
 
+/// Whether anything is already listening on the benchmark's port.
+///
+/// Measured against the real b10343 on Windows, and the result is why this
+/// exists. Two `llama-server` processes can hold 127.0.0.1:8081 at once: the
+/// second bind **succeeds**, the OS reports the newer socket as the listener,
+/// and the incumbent keeps answering every request. In that state `/health`
+/// returns 200 from a process the benchmark does not own, the manager reaches
+/// Ready, and `/v1/models` — which b10343 serves without checking the API key —
+/// reports the incumbent's alias. Generation then fails 401, because inference
+/// *is* authenticated and the incumbent holds a different session key.
+///
+/// So no foreign evidence can be recorded. What can happen is a confusing
+/// three-minute startup followed by an unexplained 401, over a port the run
+/// never owned. This turns that into an immediate, legible refusal.
+///
+/// Benchmark only: the product's runtime lifecycle is untouched, and nothing
+/// here kills a process it did not start.
+fn port_is_occupied(host: &str, port: u16) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let Ok(mut addresses) = format!("{host}:{port}").to_socket_addrs() else {
+        return false;
+    };
+    addresses.any(|address| {
+        TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_ok()
+    })
+}
+
+/// The refusal an occupied benchmark port earns.
+pub fn occupied_port_verdict(host: &str, port: u16, occupied: bool) -> Result<(), String> {
+    if !occupied {
+        return Ok(());
+    }
+    Err(format!(
+        "{host}:{port} is already in use, so this run cannot own the runtime it is measuring. \
+         A previous Chronosaga session or another local-AI process is still listening; stop it \
+         and run again. Nothing was run, and nothing was stopped for you."
+    ))
+}
+
 /// Whether the endpoint that answered is serving the model we selected.
 ///
 /// Readiness proves a server is listening on the port; it does not prove *which*
-/// server. If a `llama-server` from an earlier session is still holding 8081,
-/// `/health` answers, the manager reaches Ready, and the benchmark would record
-/// its own selected artifact identity over generations another model produced —
-/// the one failure mode that makes every number in the run a lie about a
-/// specific file.
+/// server. This asks the endpoint which alias it is serving, and refuses a
+/// mismatch before any row exists.
+///
+/// What it does **not** prove, measured rather than assumed: b10343 answers
+/// `/v1/models` without checking the API key, so an incumbent process serving
+/// the same alias satisfies this check. Alias agreement is therefore evidence
+/// about the endpoint, not proof of process ownership. Ownership comes from
+/// elsewhere — the port preflight above, and the fact that inference *is*
+/// authenticated with a fresh per-session key, so a foreign process cannot
+/// produce a generation at all.
 ///
 /// The alias comes from the launch contract, which comes from the verified
 /// model, so agreement here closes the chain:
@@ -5117,6 +5163,19 @@ mod tests {
             .map(|case| case.id.clone())
             .collect();
         assert!(!selected_ids.is_empty(), "nothing to run");
+        // Before anything is built or started: nothing else may hold the port
+        // this run needs to own. Measured behaviour, not theory — two servers
+        // can share it on Windows, and the incumbent wins.
+        occupied_port_verdict(
+            crate::local_ai_runtime::LOOPBACK_HOST,
+            crate::local_ai_runtime::DEFAULT_PORT,
+            port_is_occupied(
+                crate::local_ai_runtime::LOOPBACK_HOST,
+                crate::local_ai_runtime::DEFAULT_PORT,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+
         // A benchmark was explicitly requested, so an unresolvable payload is the
         // reason it cannot happen — not a reason to report success. Only a
         // caller who never opted in gets a skip, and that decision was already
@@ -5318,6 +5377,93 @@ mod tests {
                 .filter(|c| c.is_ascii_digit())
                 .count()
                 == 14
+    }
+
+    // ---------------------------------------------------------------------
+    // Port ownership
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn e_an_occupied_benchmark_port_is_refused() {
+        // Behavioural, not a source scan: a real listener is bound on an
+        // ephemeral port and the probe must see it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let port = listener.local_addr().unwrap().port();
+
+        assert!(port_is_occupied("127.0.0.1", port), "a bound port must read as occupied");
+        let error = occupied_port_verdict("127.0.0.1", port, true).expect_err("it is occupied");
+        assert!(error.contains("127.0.0.1"), "{error}");
+        assert!(error.contains(&port.to_string()), "{error}");
+        assert!(error.contains("cannot own the runtime it is measuring"), "{error}");
+
+        drop(listener);
+    }
+
+    #[test]
+    fn f_a_free_port_passes_and_nothing_is_stopped_for_the_operator() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        assert!(!port_is_occupied("127.0.0.1", port), "a released port must read as free");
+        occupied_port_verdict("127.0.0.1", port, false).expect("a free port is not a problem");
+
+        // The refusal is explicit that no foreign process is killed: a benchmark
+        // that reaps something it did not start is worse than one that refuses.
+        let error = occupied_port_verdict("127.0.0.1", 8081, true).unwrap_err();
+        assert!(error.contains("nothing was stopped for you"), "{error}");
+        assert!(error.contains("stop it"), "{error}");
+    }
+
+    #[test]
+    fn the_port_check_precedes_construction_and_startup() {
+        // Ordering, from the runner's own body: the port must be claimed before
+        // a manager exists, before the guard starts anything, and before any
+        // evidence. Needles carry no line endings, for the CRLF checkout.
+        let runner = runner_body();
+        let preflight = runner
+            .find(concat!("occupied_port_", "verdict("))
+            .expect("the runner claims its port");
+        for later in [
+            concat!("build_manager_", "for_profile("),
+            concat!("persist_", "metadata("),
+            concat!("BenchmarkRuntimeGuard::", "start("),
+            concat!("block_on(provider.", "generate("),
+        ] {
+            let at = runner.find(later).unwrap_or_else(|| panic!("the runner does {later}"));
+            assert!(preflight < at, "the port check must precede {later}");
+        }
+    }
+
+    #[test]
+    fn j_the_product_runtime_is_untouched_by_the_preflight() {
+        // Benchmark only. The lifecycle the game uses knows nothing about this.
+        let lifecycle = include_str!("local_ai_runtime.rs");
+        assert!(!lifecycle.contains(concat!("occupied_port_", "verdict")));
+        assert!(!lifecycle.contains(concat!("port_is_", "occupied")));
+        let e2e = include_str!("runtime_e2e.rs");
+        assert!(!e2e.contains(concat!("occupied_port_", "verdict")));
+    }
+
+    #[test]
+    fn d_alias_agreement_is_not_proof_of_ownership() {
+        // Measured against b10343: `/v1/models` answers without checking the API
+        // key, so an incumbent serving the same alias satisfies the identity
+        // verdict. The verdict is still worth having — it catches a *different*
+        // alias — but it is not what stops a foreign process, and the doc comment
+        // must not claim it is.
+        serving_identity_verdict("lite", &["lite".to_string()])
+            .expect("alias agreement passes, whoever is answering");
+
+        let source = include_str!("benchmark.rs");
+        let at = source
+            .find("pub fn serving_identity_verdict(")
+            .expect("the verdict exists");
+        let doc = &source[at.saturating_sub(1800)..at];
+        assert!(
+            doc.contains("not proof of process ownership") || doc.contains("not proof of process"),
+            "the doc comment must not overclaim: {doc}"
+        );
     }
 
     // ---------------------------------------------------------------------

@@ -175,6 +175,33 @@ carrying `{ bareJson: true, codeFencePresent: true }` — bare *and* fenced — 
 have been read by the strict evaluator as compliance on a response that was
 fenced.
 
+## One boundary, not one field at a time
+
+Runs arrive as JSON nobody type-checked, and this package learned that the hard
+way: `accepted: "false"` read as truthy, `latencyMs: "100"` reaching a median,
+`rawFormat` half-checked, `attempt` as a string quietly costing a pair its
+coverage. Each was fixed where it was found. The pattern was the bug.
+
+`structuralBenchmarkRunProblems` proves the whole shape once, and `validateRun`
+runs it before any rule reads a field. Every value is the runtime type the Rust
+producer serialises; every object a consumer dereferences is an object; every
+array is an array — root, metadata, host, generations, artifact, context,
+rawFormat, validatorErrors, the numerics, the strings, the unions. It answers no
+semantic question: whether an accepted row carries output, whether a retry
+followed a rejection, whether a digest matches a lock all stay above it. Nothing
+is coerced, defaulted, wrapped or repaired, and nothing throws — a boundary that
+crashes on bad input has not validated it.
+
+Consumers therefore carry no defensive type checks of their own. Terminal
+histories, coverage, the official gates, the case-contract revalidation, the
+evaluator, both human populations, the aggregates and the renderer all sit below
+`validateRun`, which is the first thing `buildComparison` does.
+
+`validatorErrors` is part of that: an actual array whose every item is a string.
+`{ length: 0 }` satisfies a length test and breaks every other use, and a bare
+string would iterate as characters. The accepted/rejected policy is unchanged —
+an accepted row carries none, a rejection must say why.
+
 Acceptance is checked for being a boolean before anything asks what it means.
 `accepted: boolean` is a compile-time annotation over a value parsed from a file,
 and in JavaScript a non-empty string is truthy — so `accepted: "false"` would
@@ -350,6 +377,32 @@ validated here too — it selects the terminal generation, and therefore decides
 coverage, the human populations and the retry verdict. As a string it used to
 fail closed much further downstream, complaining about coverage rather than about
 the row that was malformed.
+
+The benchmark claims its port before it builds anything. Measured against the
+real b10343 on Windows rather than assumed: two `llama-server` processes can hold
+127.0.0.1:8081 at once — the second bind *succeeds*, the OS reports the newer
+socket as the listener, and the incumbent keeps answering. In that state
+`/health` returns 200 from a process the run does not own and the manager reaches
+Ready.
+
+That matters for what the identity gate can claim. b10343 answers `/v1/models`
+**without checking the API key** — verified with a deliberately wrong key — so an
+incumbent serving the same alias satisfies `serving_identity_verdict`. Alias
+agreement is evidence about the endpoint, not proof of process ownership, and the
+comment there now says so.
+
+What does hold: inference *is* authenticated, with a fresh 32-byte session key
+per run, so a foreign process answers generation with 401 and no evidence
+attributed to it can ever be written. The chain that actually protects
+attribution is
+
+```
+fresh session key -> launched sidecar -> authenticated inference -> per-response servedModel
+```
+
+The port preflight is defence in depth on top of that: it turns a confusing
+three-minute startup followed by an unexplained 401 into an immediate refusal
+naming the address, and it stops nothing it did not start.
 
 A benchmark run has one startup allowance. It used to have two: the runner polled
 for 180 seconds while the lifecycle manager underneath it was configured for the

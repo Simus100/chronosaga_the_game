@@ -347,47 +347,9 @@ export interface ResultProblem {
   message: string;
 }
 
+import { structuralBenchmarkRunProblems } from './structure.js';
+
 const SHA256 = /^[0-9a-f]{64}$/;
-
-/**
- * Why a value is not the whole number Rust would have serialised, if it is not.
- *
- * `latencyMs: "100"` typechecks in the annotation and is a string at runtime, and
- * `"100" < 0` is false, so it passed and then reached the median. Two such rows
- * make `"100" + "200"` into `"100200"`, which is not a latency anybody measured.
- *
- * Mirrors Rust `u64`: a real number, finite, integral, non-negative, and inside
- * the range JavaScript can hold exactly — beyond `Number.MAX_SAFE_INTEGER` the
- * value read is not the value written. Nothing is parsed, coerced or defaulted.
- */
-function wholeNumberProblem(value: unknown): string | null {
-  if (typeof value !== 'number') {
-    return value === undefined
-      ? 'is absent; it must be a number'
-      : `is ${JSON.stringify(value)}, a ${typeof value}; it must be a number`;
-  }
-  if (!Number.isFinite(value)) return `is ${String(value)}, which is not a finite number`;
-  if (!Number.isInteger(value)) return `is ${value}, which is not a whole number`;
-  if (value < 0) return `is ${value}, which is negative`;
-  if (!Number.isSafeInteger(value)) {
-    return `is ${value}, beyond the range JavaScript represents exactly`;
-  }
-  return null;
-}
-
-/**
- * The same, for Rust `f64`: finite and non-negative, fractions allowed.
- */
-function realNumberProblem(value: unknown): string | null {
-  if (typeof value !== 'number') {
-    return value === undefined
-      ? 'is absent; it must be a number'
-      : `is ${JSON.stringify(value)}, a ${typeof value}; it must be a number`;
-  }
-  if (!Number.isFinite(value)) return `is ${String(value)}, which is not a finite number`;
-  if (value < 0) return `is ${value}, which is negative`;
-  return null;
-}
 
 /**
  * Serialise a value with object keys sorted, recursively.
@@ -412,11 +374,20 @@ export function canonicalJson(value: unknown): string {
  * attributed to an exact artifact and commit is not evidence of anything.
  */
 export function validateRun(run: BenchmarkRun): ResultProblem[] {
+  // The parameter's type is a claim the caller makes about a value parsed from a
+  // file; this function does not take it on trust. Every field is proven to be
+  // the runtime type the Rust producer serialises before a single rule reads
+  // one, and a structurally broken run stops here — asking whether a rejection
+  // said why, of an object that is not a generation, invents the answer in order
+  // to complain about it.
+  const structural = structuralBenchmarkRunProblems(run);
+  if (structural.length > 0) return structural;
+
   const problems: ResultProblem[] = [];
   const metadata = run.metadata;
 
   if (!metadata.runId) problems.push({ field: 'metadata.runId', message: 'a run id is required' });
-  if (!SHA256.test(metadata.suiteContentSha256 ?? '')) {
+  if (!SHA256.test(metadata.suiteContentSha256)) {
     problems.push({
       field: 'metadata.suiteContentSha256',
       message:
@@ -453,36 +424,16 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     seen.add(generation.id);
 
     if (generation.runId !== metadata.runId) at('runId', 'generation belongs to another run');
-    // Numbers, before anything compares or sums them. These arrive from external
-    // JSON, where the annotations say nothing, and a numeric string is happily
-    // ordered against a number and then concatenated by `+`.
-    //
-    // `attempt` is in this list because it is the same defect on a field that
-    // decides more than a metric: it selects the terminal generation, and so
-    // decides coverage, the human scoring population and the retry verdict. As a
-    // string it currently fails closed further downstream, but for the wrong
-    // reason and with a message about coverage rather than about the row.
-    const attemptProblem = wholeNumberProblem(generation.attempt);
-    if (attemptProblem !== null) {
-      at('attempt', `the attempt number ${attemptProblem}`);
-    } else if (generation.attempt < 1) {
-      at('attempt', 'attempts are numbered from 1');
+    if (!SHA256.test(generation.inputFingerprint)) {
+      at('inputFingerprint', 'a generation must record what it was asked');
     }
 
-    const latencyProblem = wholeNumberProblem(generation.latencyMs);
-    if (latencyProblem !== null) at('latencyMs', `the latency ${latencyProblem}`);
-
-    // `Option<u64>` and `Option<f64>`: null is a real answer — the runtime does
-    // not always report token counts — and anything else must be the number it
-    // claims to be.
-    if (generation.tokensGenerated !== null) {
-      const problem = wholeNumberProblem(generation.tokensGenerated);
-      if (problem !== null) at('tokensGenerated', `the token count ${problem}`);
-    }
-    if (generation.tokensPerSecond !== null) {
-      const problem = realNumberProblem(generation.tokensPerSecond);
-      if (problem !== null) at('tokensPerSecond', `the throughput ${problem}`);
-    }
+    // Types are established; what remains is policy. A context size of zero is a
+    // whole number and not a context, and `attempt >= 1` is structural and
+    // already proven, so nothing restates that here.
+    if (generation.context.contextSize <= 0) at('context.contextSize', 'must be positive');
+    if (generation.context.maxOutputTokens <= 0) at('context.maxOutputTokens', 'must be positive');
+    if (!generation.context.reasoning) at('context.reasoning', 'the reasoning mode must be recorded');
 
     if (!SHA256.test(generation.artifact.sha256)) {
       at('artifact.sha256', 'an artifact must be identified by a full SHA-256');
@@ -492,80 +443,9 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
     }
 
     if (!generation.rawOutputPath) at('rawOutputPath', 'raw evidence must be referenced');
-    // All three flags, and their one real relationship.
-    //
-    // Only `bareJson` was checked, so evidence could carry
-    // `{ bareJson: true, codeFencePresent: true }` — a response recorded as both
-    // bare and fenced — and the strict evaluator would read the first flag as
-    // compliance. The observation contradicts itself, and a contradiction is not
-    // a measurement.
-    //
-    // The invariant is exactly the producer's: `observe_raw_format` sets
-    // `bareJson` only when no fence is present and the text is a lone object, so
-    // a bare answer is neither fenced nor wrapped. Nothing stronger is implied —
-    // an empty response legitimately records all three false, and a fenced one
-    // records fence and wrapper together — so `bareJson === false` is not taken
-    // to mean one of the others must be true.
-    //
-    // Refused, never repaired: no missing flag defaults to false, no "false"
-    // becomes false, and the recorded observation is left as it was found.
-    const rawFormat = generation.rawFormat as unknown;
-    if (typeof rawFormat !== 'object' || rawFormat === null || Array.isArray(rawFormat)) {
-      at('rawFormat', 'the shape of the raw response must be recorded as an object');
-    } else {
-      const observed = rawFormat as Record<string, unknown>;
-      const flags = ['bareJson', 'codeFencePresent', 'wrapperTextPresent'] as const;
-      const malformed = flags.filter(flag => typeof observed[flag] !== 'boolean');
-      for (const flag of malformed) {
-        at(
-          `rawFormat.${flag}`,
-          observed[flag] === undefined
-            ? 'is absent; every raw-format flag must be recorded as a boolean'
-            : `is ${JSON.stringify(observed[flag])}, a ${typeof observed[flag]}; it must be a boolean`,
-        );
-      }
-      if (malformed.length === 0 && observed.bareJson === true) {
-        for (const flag of ['codeFencePresent', 'wrapperTextPresent'] as const) {
-          if (observed[flag] === true) {
-            at(
-              `rawFormat.${flag}`,
-              `is true while bareJson is true; a bare JSON object cannot also be ${
-                flag === 'codeFencePresent' ? 'fenced' : 'wrapped in text'
-              }`,
-            );
-          }
-        }
-      }
-    }
-    if (!SHA256.test(generation.inputFingerprint)) {
-      at('inputFingerprint', 'a generation must record what it was asked');
-    }
-    if (generation.context.contextSize <= 0) at('context.contextSize', 'must be positive');
-    if (generation.context.maxOutputTokens <= 0) at('context.maxOutputTokens', 'must be positive');
-    if (!generation.context.reasoning) at('context.reasoning', 'the reasoning mode must be recorded');
-
-    // Before any branch on what acceptance *means*, whether it is an acceptance
-    // at all. The field is declared `boolean`, and that annotation says nothing
-    // about a value parsed from a file: `accepted: "false"` is a string, and in
-    // JavaScript a non-empty string is truthy. It would have taken the accepted
-    // branch here, then been read as a successful terminal attempt, counted
-    // toward official coverage, and incremented `casesAccepted` — a rejection
-    // reported as a success by the word "false".
-    //
-    // Refused, never coerced. `Boolean(value)` or `!!value` would decide what the
-    // row meant on the row's behalf, and a benchmark that guesses at its own
-    // evidence is not measuring anything. The stored value is left exactly as it
-    // was found, and neither acceptance branch runs — asking whether a rejection
-    // said why, when the row does not say whether it is one, would be inventing
-    // an answer to report a problem about.
-    if (typeof generation.accepted !== 'boolean') {
-      at(
-        'accepted',
-        `acceptance is ${JSON.stringify(generation.accepted) ?? 'undefined'}, which is ` +
-          `${generation.accepted === undefined ? 'absent' : `a ${typeof generation.accepted}`}; ` +
-          'it must be a boolean, because everything downstream branches on it',
-      );
-    } else if (generation.accepted) {
+    // Acceptance is a proven boolean by now, so this reads what it means rather
+    // than what it is.
+    if (generation.accepted) {
       if (generation.normalizedOutput === null) {
         at('normalizedOutput', 'an accepted generation must carry its validated output');
       } else {
