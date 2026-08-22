@@ -12,6 +12,7 @@ import { lockedRuntime } from '../src/runtime-lock.js';
 import { caseSubjectIds } from '../src/contract.js';
 import type { BenchmarkGeneration, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
+import * as packageRoot from '../src/index.js';
 
 /**
  * The trusted publication path.
@@ -291,6 +292,37 @@ describe('the shape of the public surface', () => {
     ) as { exports: Record<string, string> };
     expect(manifest.exports['.']).toBe('./src/index.ts');
     expect(manifest.exports['./local-report']).toBe('./src/adapters/local-report.ts');
+
+    // No wildcard: with an explicit exports map, a consumer cannot deep-import
+    // '@paa/ai-benchmark/src/report.js' and reach the forgeable primitive that
+    // way. Two doors, and only one of them publishes.
+    expect(Object.keys(manifest.exports).sort()).toEqual(['.', './local-report']);
+    expect(JSON.stringify(manifest.exports)).not.toContain('*');
+  });
+
+  it('nothing on the package root can produce a ComparisonReport', () => {
+    // Attacked rather than assumed: every exported function called with a forged
+    // identity in each argument position, looking for anything report-shaped.
+    const forged = { gitCommit: 'a'.repeat(40), gitDirty: false };
+    const produced: string[] = [];
+    for (const [name, value] of Object.entries(packageRoot)) {
+      if (typeof value !== 'function') continue;
+      for (let position = 0; position < 7; position += 1) {
+        const args = Array.from({ length: 7 }, (_, index) =>
+          index === position ? forged : undefined,
+        );
+        try {
+          const result = (value as (...rest: unknown[]) => unknown)(...args);
+          if (result !== null && typeof result === 'object' && 'profiles' in result) {
+            produced.push(`${name}(arg${position})`);
+          }
+        } catch {
+          // Refusing is the expected outcome.
+        }
+      }
+    }
+    expect(produced).toEqual([]);
+    expect(Object.keys(packageRoot).filter(name => /^build/i.test(name))).toEqual([]);
   });
 
   it('L: no network is involved', () => {
