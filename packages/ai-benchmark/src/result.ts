@@ -271,13 +271,19 @@ export function normalizedOutputProblems(value: unknown): string[] {
   if (!Array.isArray(object.toneTags)) {
     problems.push('toneTags is not an array');
   } else {
-    object.toneTags.forEach((tag, index) => {
+    // Indexed rather than `forEach`, which skips holes. `JSON.parse` cannot
+    // produce a sparse array — a missing element arrives as `null`, which is
+    // refused below — so this is not a reachable defect, but a validator that
+    // silently passes over an element it was asked to check is the wrong shape
+    // for the job whatever the input format allows.
+    for (let index = 0; index < object.toneTags.length; index += 1) {
+      const tag = object.toneTags[index];
       if (typeof tag !== 'string') {
         problems.push(`toneTags[${index}] is not a string`);
       } else if (tag.trim() === '') {
         problems.push(`toneTags[${index}] is blank`);
       }
-    });
+    }
   }
 
   problems.push(

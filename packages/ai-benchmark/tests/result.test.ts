@@ -655,6 +655,22 @@ describe('the normalized output shape is checked at runtime', () => {
     }
   });
 
+  it('an element the array skips is still checked', () => {
+    // Found by fuzzing the boundary: `forEach` passes over a hole, so a sparse
+    // array reported no problem at all. `JSON.parse` cannot build one — a gap
+    // arrives as null — but a validator should not depend on that.
+    const sparse = { ...valid(), toneTags: ['tense', 'grim'] };
+    delete (sparse.toneTags as unknown as Record<number, unknown>)[0];
+    expect(sparse.toneTags.length).toBe(2);
+    expect(0 in sparse.toneTags).toBe(false);
+    expect(normalizedOutputProblems(sparse)).toEqual(['toneTags[0] is not a string']);
+
+    // And what JSON actually produces is refused as it already was.
+    expect(normalizedOutputProblems({ ...valid(), toneTags: [null, 'grim'] })).toEqual([
+      'toneTags[0] is not a string',
+    ]);
+  });
+
   it('a blank tone tag is refused', () => {
     expect(normalizedOutputProblems({ ...valid(), toneTags: ['tense', ' '] })).toEqual([
       'toneTags[1] is blank',
