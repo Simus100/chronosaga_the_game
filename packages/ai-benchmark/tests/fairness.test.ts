@@ -33,6 +33,29 @@ import {
   validateRun,
 } from '../src/result.js';
 
+/**
+ * `buildComparison` with a checkout that matches the run being reported.
+ *
+ * Every existing test describes a report produced from the run's own commit,
+ * which is the ordinary case. Deriving it from the run here simulates that
+ * situation; it is not the production path, where the commit is read from the
+ * repository. The tests that matter for this boundary build mismatches
+ * explicitly.
+ */
+function reportedFromItsOwnCheckout(
+  suiteUnderTest: Parameters<typeof buildComparison>[0],
+  run: Parameters<typeof buildComparison>[1],
+  profiles?: Parameters<typeof buildComparison>[2],
+  sheet?: Parameters<typeof buildComparison>[3],
+  review?: Parameters<typeof buildComparison>[4],
+) {
+  return buildComparison(suiteUnderTest, run, profiles, sheet, review, {
+    gitCommit: run.metadata.gitCommit,
+    gitDirty: false,
+  });
+}
+
+
 const suite = loadSuite();
 const SHA = {
   lite: 'd2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5',
@@ -169,7 +192,7 @@ describe('accepted evidence must satisfy its own case contract', () => {
 
   it('A: a fully case-compliant accepted row passes', () => {
     expect(acceptedOutputContractProblems(suite, fairRun())).toEqual([]);
-    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun())).not.toThrow();
   });
 
   it('B: an unknown speaker marked accepted is impossible evidence', () => {
@@ -180,7 +203,7 @@ describe('accepted evidence must satisfy its own case contract', () => {
       output.dialogue = [{ speakerId: 'ghost_999', text: 'Non esisto.' }];
     });
     expect(acceptedOutputContractProblems(suite, run)[0]).toMatch(/unknown speaker: ghost_999/);
-    expect(() => buildComparison(suite, run)).toThrow(/could not have accepted/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/could not have accepted/);
   });
 
   it('C: a missing required speaker marked accepted is refused', () => {
@@ -279,7 +302,7 @@ describe('accepted evidence must satisfy its own case contract', () => {
   it('N and O: one impossible row refuses the whole report', () => {
     const run = withOutput(output => void (output.toneTags = ['epico']));
     expect(run.generations.length).toBe(suite.cases.length * 2);
-    expect(() => buildComparison(suite, run)).toThrow(/could not have accepted/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/could not have accepted/);
   });
 
   it('leaves genuine quality failures to the evaluator', () => {
@@ -288,7 +311,7 @@ describe('accepted evidence must satisfy its own case contract', () => {
     // failures the benchmark exists to measure.
     const run = withOutput(output => void (output.narration = 'Non succede nulla di utile.'));
     expect(acceptedOutputContractProblems(suite, run)).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 });
 
@@ -322,7 +345,7 @@ describe('each profile carries the artifact the project locked', () => {
     ] as const) {
       const run = withArtifact(profile, { sha256: lockedArtifact(other)!.sha256 });
       expect(lockedArtifactProblems(run, both)[0], profile).toMatch(/sha256 is/);
-      expect(() => buildComparison(suite, run)).toThrow(/unlocked artifacts/);
+      expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/unlocked artifacts/);
     }
   });
 
@@ -409,7 +432,7 @@ describe('each profile carries the artifact the project locked', () => {
       ...run.generations.at(-1)!.artifact,
       sha256: 'a'.repeat(64),
     };
-    expect(() => buildComparison(suite, run)).toThrow(/unlocked artifacts/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/unlocked artifacts/);
   });
 });
 
@@ -436,13 +459,13 @@ describe('official evidence names the runtime this checkout locks', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("'b99999'");
     expect(problems[0]).toContain(lockedRuntime().releaseTag);
-    expect(() => buildComparison(suite, run)).toThrow(/runtime_provenance/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/runtime_provenance/);
   });
 
   it('C: an arbitrary well-formed digest is refused', () => {
     const run = withRuntime({ digest: 'a'.repeat(64) });
     expect(runtimeProvenanceMismatches(run.metadata)).toHaveLength(1);
-    expect(() => buildComparison(suite, run)).toThrow(/runtime_provenance/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/runtime_provenance/);
   });
 
   it('D and E: either half alone is enough to refuse', () => {
@@ -477,8 +500,8 @@ describe('official evidence names the runtime this checkout locks', () => {
 
   it('H: one mismatch prevents every official aggregate', () => {
     const run = withRuntime({ tag: 'b99999' });
-    expect(() => buildComparison(suite, run)).toThrow(/refusing to publish/);
-    expect(() => buildComparison(suite, run, both, fullSheet(run))).toThrow(/refusing to publish/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/refusing to publish/);
+    expect(() => reportedFromItsOwnCheckout(suite, run, both, fullSheet(run))).toThrow(/refusing to publish/);
   });
 
   it('J: nothing is mutated or repaired', () => {
@@ -493,7 +516,7 @@ describe('official evidence names the runtime this checkout locks', () => {
 describe('a report is bound to the exact contents of its suite', () => {
   it('A: the unchanged suite passes', () => {
     expect(suiteBindingProblems(suite, fairRun())).toEqual([]);
-    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun())).not.toThrow();
   });
 
   const mutated = (edit: (copy: typeof suite) => void) => {
@@ -506,7 +529,7 @@ describe('a report is bound to the exact contents of its suite', () => {
   it('B: a changed expected fact is refused, version untouched', () => {
     const copy = mutated(entry => void (entry.cases[0]!.expectedFacts[0] = 'something else'));
     expect(suiteBindingProblems(copy, fairRun())[0]).toMatch(/same version, different contents/);
-    expect(() => buildComparison(copy, fairRun())).toThrow(/different suite/);
+    expect(() => reportedFromItsOwnCheckout(copy, fairRun())).toThrow(/different suite/);
   });
 
   it('C: a changed constraint is refused', () => {
@@ -565,14 +588,14 @@ describe('a report is bound to the exact contents of its suite', () => {
       expect(problems.map(problem => problem.field), value).toContain(
         'metadata.suiteContentSha256',
       );
-      expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+      expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
     }
   });
 
   it('refuses before any evaluation happens', () => {
     const copy = mutated(entry => void (entry.cases[0]!.expectedFacts[0] = 'edited'));
     try {
-      buildComparison(copy, fairRun());
+      reportedFromItsOwnCheckout(copy, fairRun());
       throw new Error('should have refused');
     } catch (error) {
       expect((error as Error).message).toMatch(/refusing to evaluate a run against a different suite/);
@@ -583,26 +606,26 @@ describe('a report is bound to the exact contents of its suite', () => {
 describe('an official comparison is exactly Lite versus Standard', () => {
   it('A: lite and standard is the comparison', () => {
     expect(officialProfileSetProblem(['lite', 'standard'])).toBeNull();
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'])).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'])).not.toThrow();
   });
 
   it('B: the order the caller passes does not matter', () => {
     expect(officialProfileSetProblem(['standard', 'lite'])).toBeNull();
-    expect(() => buildComparison(suite, fairRun(), ['standard', 'lite'])).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['standard', 'lite'])).not.toThrow();
   });
 
   it('J: and the report is always Lite then Standard', () => {
     // Same evidence, two call orders, one reading.
-    const asked = buildComparison(suite, fairRun(), ['standard', 'lite']);
+    const asked = reportedFromItsOwnCheckout(suite, fairRun(), ['standard', 'lite']);
     expect(asked.profiles.map(entry => entry.profile)).toEqual(['lite', 'standard']);
-    expect(asked).toEqual(buildComparison(suite, fairRun(), ['lite', 'standard']));
+    expect(asked).toEqual(reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard']));
   });
 
   it('C and D: one profile alone is not a comparison', () => {
     for (const only of [['lite'], ['standard']] as const) {
       const problem = officialProfileSetProblem([...only]);
       expect(problem, only[0]).toMatch(/is absent, so nothing is being compared/);
-      expect(() => buildComparison(suite, fairRun(), [...only])).toThrow(
+      expect(() => reportedFromItsOwnCheckout(suite, fairRun(), [...only])).toThrow(
         /refusing to build an official comparison/,
       );
     }
@@ -615,14 +638,14 @@ describe('an official comparison is exactly Lite versus Standard', () => {
     run.generations = run.generations.filter(generation => generation.profile === 'lite');
     expect(validateRun(run)).toEqual([]);
     expect(officialEvidenceProblems(suite, run, ['lite'])).toEqual([]);
-    expect(() => buildComparison(suite, run, ['lite'])).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, run, ['lite'])).toThrow(
       /refusing to build an official comparison/,
     );
   });
 
   it('E: an empty profile list is refused', () => {
     expect(officialProfileSetProblem([])).toMatch(/no profiles were given/);
-    expect(() => buildComparison(suite, fairRun(), [])).toThrow(/no profiles were given/);
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), [])).toThrow(/no profiles were given/);
   });
 
   it('F and G: a profile compared with itself is not a comparison', () => {
@@ -630,7 +653,7 @@ describe('an official comparison is exactly Lite versus Standard', () => {
     expect(officialProfileSetProblem(['lite', 'standard', 'lite'])).toMatch(
       /appears more than once/,
     );
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'lite'])).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'lite'])).toThrow(
       /comparing a profile with itself/,
     );
   });
@@ -651,7 +674,7 @@ describe('an official comparison is exactly Lite versus Standard', () => {
     // question. This run is empty as well, and the profile set is what it says.
     const run = fairRun();
     run.generations = [];
-    expect(() => buildComparison(suite, run, ['lite'])).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, run, ['lite'])).toThrow(
       /refusing to build an official comparison/,
     );
   });
@@ -691,7 +714,7 @@ describe('every row is attributed to the model that answered it', () => {
     // latency, retry counts, acceptance rates — ever sees the row.
     const run = fairRun();
     run.generations.find(generation => generation.profile === 'lite')!.servedModel = 'standard';
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
   });
 
   it('J: one wrong row invalidates the run, however many are right', () => {
@@ -699,7 +722,7 @@ describe('every row is attributed to the model that answered it', () => {
     expect(validateRun(run)).toEqual([]);
     run.generations.at(-1)!.servedModel = 'lite';
     expect(validateRun(run)).not.toEqual([]);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('I: a swap partway through a run is caught at the row where it happened', () => {
@@ -792,7 +815,7 @@ describe('a rejected first attempt is owed its retry', () => {
   it('F: one interrupted pair among otherwise complete ones refuses the run', () => {
     const run = withHistory('standard', [[1, false]]);
     expect(run.generations.length).toBe(suite.cases.length * 2);
-    expect(() => buildComparison(suite, run)).toThrow(/complete_retry_history/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/complete_retry_history/);
   });
 
   it('E: a full 65x2 coverage made entirely of rejected first attempts is refused', () => {
@@ -810,7 +833,7 @@ describe('a rejected first attempt is owed its retry', () => {
     expect(problems.filter(p => p.requirement === 'complete_retry_history')).toHaveLength(
       suite.cases.length * 2,
     );
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('I and J: a retry after acceptance and a third attempt are still refused', () => {
@@ -819,7 +842,7 @@ describe('a rejected first attempt is owed its retry', () => {
       [[1, false], [2, false], [3, false]],
     ] as Array<Array<[number, boolean]>>) {
       const run = withHistory('lite', history);
-      expect(() => buildComparison(suite, run), JSON.stringify(history)).toThrow();
+      expect(() => reportedFromItsOwnCheckout(suite, run), JSON.stringify(history)).toThrow();
     }
   });
 
@@ -827,7 +850,7 @@ describe('a rejected first attempt is owed its retry', () => {
     // The shape the benchmark exists to observe, and it must stay valid.
     const run = withHistory('standard', [[1, false], [2, true]]);
     expect(officialEvidenceProblems(suite, run, both)).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 
   it('takes the retry ceiling from the contract, not from a number written here', () => {
@@ -847,7 +870,7 @@ describe('malformed metrics cannot corrupt an aggregate', () => {
       const run = fairRun();
       (run.generations[0] as unknown as Record<string, unknown>)[field] = value;
       expect(validateRun(run).some(problem => problem.field === field), field).toBe(true);
-      expect(() => buildComparison(suite, run), field).toThrow(/structurally invalid run/);
+      expect(() => reportedFromItsOwnCheckout(suite, run), field).toThrow(/structurally invalid run/);
     }
   });
 
@@ -863,11 +886,11 @@ describe('malformed metrics cannot corrupt an aggregate', () => {
 
     // And the run never reaches it.
     expect(validateRun(run).filter(problem => problem.field === 'latencyMs')).toHaveLength(2);
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
   });
 
   it('legitimate metrics still aggregate', () => {
-    const report = buildComparison(suite, fairRun());
+    const report = reportedFromItsOwnCheckout(suite, fairRun());
     for (const profile of report.profiles) {
       expect(typeof profile.medianLatencyMs).toBe('number');
       expect(typeof profile.meanTokensPerSecond).toBe('number');
@@ -890,7 +913,7 @@ describe('contradictory raw evidence cannot become compliance', () => {
 
     const problems = validateRun(run);
     expect(problems.map(problem => problem.field)).toContain('rawFormat.codeFencePresent');
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
   });
 
   it('a malformed flag type is refused before any aggregate too', () => {
@@ -901,7 +924,7 @@ describe('contradictory raw evidence cannot become compliance', () => {
     ]) {
       const run = fairRun();
       run.generations[0]!.rawFormat = rawFormat as never;
-      expect(() => buildComparison(suite, run), JSON.stringify(rawFormat)).toThrow(
+      expect(() => reportedFromItsOwnCheckout(suite, run), JSON.stringify(rawFormat)).toThrow(
         /structurally invalid run/,
       );
     }
@@ -927,7 +950,7 @@ describe('a truthy acceptance flag cannot become a successful result', () => {
     // ended the history as a success and the missing retry would go unnoticed.
     const run = withFlag('false');
     expect(validateRun(run).some(problem => problem.field === 'accepted')).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
   });
 
   it('I: it cannot contribute to official profile-case coverage', () => {
@@ -944,14 +967,14 @@ describe('a truthy acceptance flag cannot become a successful result', () => {
 
     // And it never gets there: validateRun is the first gate in buildComparison,
     // so the refusal is the structural one, not a coverage complaint.
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
-    expect(() => buildComparison(suite, run)).not.toThrow(/coverage/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow(/coverage/);
   });
 
   it('J: it cannot increment casesAccepted or reach any aggregate', () => {
     for (const value of ['false', 'true', 1, 0, null, {}]) {
       const run = withFlag(value);
-      expect(() => buildComparison(suite, run), JSON.stringify(value)).toThrow(
+      expect(() => reportedFromItsOwnCheckout(suite, run), JSON.stringify(value)).toThrow(
         /structurally invalid run/,
       );
     }
@@ -959,7 +982,7 @@ describe('a truthy acceptance flag cannot become a successful result', () => {
 
   it('L: every legitimate run in this suite still validates', () => {
     expect(validateRun(fairRun())).toEqual([]);
-    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun())).not.toThrow();
   });
 });
 
@@ -988,7 +1011,7 @@ describe('an unreviewed case is not a case with no findings', () => {
   it('A and B: with no review, the human and combined counts are unknown', () => {
     // The defect: this rendered `human 0`, which claims a review that never
     // happened found nothing.
-    const report = buildComparison(suite, fairRun(), both, null, null);
+    const report = reportedFromItsOwnCheckout(suite, fairRun(), both, null, null);
     for (const profile of report.profiles) {
       expect(profile.humanHardFailedCases).toBeNull();
       expect(profile.humanHardFailsByCategory).toBeNull();
@@ -1000,7 +1023,7 @@ describe('an unreviewed case is not a case with no findings', () => {
 
   it('C: a complete review with no findings is the only valid zero', () => {
     const run = fairRun();
-    const report = buildComparison(suite, run, both, null, fullReview(run));
+    const report = reportedFromItsOwnCheckout(suite, run, both, null, fullReview(run));
     for (const profile of report.profiles) {
       expect(profile.humanHardFailedCases).toBe(0);
       expect(profile.humanHardFailsByCategory).not.toBeNull();
@@ -1009,7 +1032,7 @@ describe('an unreviewed case is not a case with no findings', () => {
 
   it('D: a complete review with one finding counts it', () => {
     const run = fairRun();
-    const report = buildComparison(
+    const report = reportedFromItsOwnCheckout(
       suite, run, both, null, fullReview(run, [finding(`run:${first}:lite:1`)]),
     );
     const lite = report.profiles.find(profile => profile.profile === 'lite')!;
@@ -1029,7 +1052,7 @@ describe('an unreviewed case is not a case with no findings', () => {
       expect(problems, short).toHaveLength(1);
       expect(problems[0], short).toMatch(new RegExp(`^${short} has 1 of ${suite.cases.length}`));
       expect(problems[0], short).toContain(first);
-      expect(() => buildComparison(suite, run, both, null, review)).toThrow(/incomplete review/);
+      expect(() => reportedFromItsOwnCheckout(suite, run, both, null, review)).toThrow(/incomplete review/);
     }
   });
 
@@ -1052,7 +1075,7 @@ describe('an unreviewed case is not a case with no findings', () => {
     review.reviewedGenerationIds.push(review.reviewedGenerationIds[0]!);
     const problems = validateHumanReview(review, new Set(run.generations.map(g => g.id)));
     expect(problems.map(problem => problem.message)).toContain('listed as reviewed twice');
-    expect(() => buildComparison(suite, run, both, null, review)).toThrow(/malformed judgement/);
+    expect(() => reportedFromItsOwnCheckout(suite, run, both, null, review)).toThrow(/malformed judgement/);
   });
 
   it('J: a reviewed generation the run does not contain is refused', () => {
@@ -1141,7 +1164,7 @@ describe('an unreviewed case is not a case with no findings', () => {
 
   it('P: complete scores with no review stays valid', () => {
     const run = fairRun();
-    const report = buildComparison(suite, run, both, fullSheet(run), null);
+    const report = reportedFromItsOwnCheckout(suite, run, both, fullSheet(run), null);
     for (const profile of report.profiles) {
       expect(profile.humanMeanByAxis?.grounding).toBe(4);
       expect(profile.humanHardFailedCases).toBeNull();
@@ -1150,7 +1173,7 @@ describe('an unreviewed case is not a case with no findings', () => {
 
   it('Q: a complete review with no scores stays valid', () => {
     const run = fairRun();
-    const report = buildComparison(suite, run, both, null, fullReview(run));
+    const report = reportedFromItsOwnCheckout(suite, run, both, null, fullReview(run));
     for (const profile of report.profiles) {
       expect(profile.humanMeanByAxis).toBeNull();
       expect(profile.humanHardFailedCases).toBe(0);
@@ -1159,8 +1182,8 @@ describe('an unreviewed case is not a case with no findings', () => {
 
   it('R: the rendering shows unknown differently from zero', () => {
     const run = fairRun();
-    const unknown = renderComparison(buildComparison(suite, run, both, null, null));
-    const zero = renderComparison(buildComparison(suite, run, both, null, fullReview(run)));
+    const unknown = renderComparison(reportedFromItsOwnCheckout(suite, run, both, null, null));
+    const zero = renderComparison(reportedFromItsOwnCheckout(suite, run, both, null, fullReview(run)));
 
     expect(unknown).toContain('not reviewed');
     expect(unknown).not.toMatch(/human 0/);
@@ -1174,7 +1197,7 @@ describe('human scores are averaged over a comparable population', () => {
   const first = caseIds[0]!;
 
   it('A: no score sheet leaves the human means alone', () => {
-    const report = buildComparison(suite, fairRun(), ['lite', 'standard'], null);
+    const report = reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], null);
     for (const profile of report.profiles) {
       expect(profile.humanMeanByAxis).toBeNull();
     }
@@ -1186,7 +1209,7 @@ describe('human scores are averaged over a comparable population', () => {
     const sheet = fullSheet(run);
     expect(sheet.scores).toHaveLength(suite.cases.length * 2);
     expect(scorePopulationProblems(run, both, sheet)).toEqual([]);
-    const report = buildComparison(suite, run, ['lite', 'standard'], sheet);
+    const report = reportedFromItsOwnCheckout(suite, run, ['lite', 'standard'], sheet);
     for (const profile of report.profiles) {
       expect(profile.humanMeanByAxis?.grounding).toBe(4);
     }
@@ -1197,7 +1220,7 @@ describe('human scores are averaged over a comparable population', () => {
     // different population and rendered as a comparable profile mean.
     const run = fairRun();
     const sheet = { ...fullSheet(run), scores: fullSheet(run).scores.slice(0, 1) };
-    expect(() => buildComparison(suite, run, ['lite', 'standard'], sheet)).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, run, ['lite', 'standard'], sheet)).toThrow(
       /incomparable population/,
     );
   });
@@ -1364,7 +1387,7 @@ describe('official evidence is never produced by a fallback', () => {
     expect(validateRun(run)).toEqual([]);
     const problems = officialEvidenceProblems(suite, run, both);
     expect(problems.map(problem => problem.requirement)).toContain('no_fallback_evidence');
-    expect(() => buildComparison(suite, run)).toThrow(/no_fallback_evidence/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/no_fallback_evidence/);
   });
 
   it('D: a Lite row Standard answered is refused', () => {
@@ -1388,15 +1411,15 @@ describe('official evidence is never produced by a fallback', () => {
     const { run } = fellBack('standard', 'lite');
     expect(run.generations.length).toBe(suite.cases.length * 2);
     expect(run.generations.filter(generation => generation.fallbackUsed)).toHaveLength(1);
-    expect(() => buildComparison(suite, run)).toThrow(/refusing to publish/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/refusing to publish/);
   });
 
   it('F and G: a fallback row reaches no latency, acceptance or retry aggregate', () => {
     // It cannot, because the report never gets built. Proven by the absence of a
     // report rather than by inspecting one that should not exist.
     const { run } = fellBack('standard', 'lite');
-    expect(() => buildComparison(suite, run)).toThrow();
-    expect(() => buildComparison(suite, run, ['lite', 'standard'], null, null)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run, ['lite', 'standard'], null, null)).toThrow();
   });
 
   it('a fallback row covers nothing, so the profile is also short a case', () => {
@@ -1421,7 +1444,7 @@ describe('official evidence is never produced by a fallback', () => {
     for (const broken of [{}, { ...fairRun().generations[0]!.normalizedOutput, dialogue: [{}] }]) {
       const run = fairRun();
       run.generations[0]!.normalizedOutput = broken as never;
-      expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+      expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
     }
   });
 
@@ -1444,7 +1467,7 @@ describe('official comparison evidence', () => {
 
   it('G: a full suite for both profiles on a clean checkout qualifies', () => {
     expect(officialEvidenceProblems(suite, fairRun(), both)).toEqual([]);
-    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun())).not.toThrow();
   });
 
   it('A: a smoke run with impeccable rows is refused, and refused for that alone', () => {
@@ -1455,7 +1478,7 @@ describe('official comparison evidence', () => {
     const problems = officialEvidenceProblems(suite, run, both);
     expect(problems.map(problem => problem.requirement)).toEqual(['declared_official']);
     expect(problems[0]!.message).toMatch(/plumbing evidence/);
-    expect(() => buildComparison(suite, run)).toThrow(/declared_official/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/declared_official/);
   });
 
   it('B: a dirty checkout is refused', () => {
@@ -1464,7 +1487,7 @@ describe('official comparison evidence', () => {
     expect(officialEvidenceProblems(suite, run, both).map(p => p.requirement)).toContain(
       'clean_checkout',
     );
-    expect(() => buildComparison(suite, run)).toThrow(/nobody else can reproduce it/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/nobody else can reproduce it/);
   });
 
   it('C: a short or non-hex commit is refused', () => {
@@ -1509,7 +1532,7 @@ describe('official comparison evidence', () => {
       'full_profile_case_coverage',
       'full_profile_case_coverage',
     ]);
-    expect(() => buildComparison(suite, run)).toThrow(/full_profile_case_coverage/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/full_profile_case_coverage/);
   });
 
   it('F: one profile short by a single case is refused and the pair is named', () => {
@@ -1561,7 +1584,7 @@ describe('official comparison evidence', () => {
   it('I: an empty run is still refused by the earlier, clearer gate', () => {
     const run = fairRun();
     run.generations = [];
-    expect(() => buildComparison(suite, run)).toThrow(/no comparable evidence/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/no comparable evidence/);
   });
 
   it('J: a suite-version mismatch is still refused before coverage is measured', () => {
@@ -1569,7 +1592,7 @@ describe('official comparison evidence', () => {
     // computed from a question the run never answered.
     const revised = structuredClone(suite);
     revised.suiteVersion = 'p0.5-a.99';
-    expect(() => buildComparison(revised, fairRun())).toThrow(/different suite/);
+    expect(() => reportedFromItsOwnCheckout(revised, fairRun())).toThrow(/different suite/);
   });
 
   it('measures coverage against the supplied suite, never a written-down count', () => {
@@ -1631,7 +1654,7 @@ describe('official comparison evidence', () => {
 describe('comparison fairness', () => {
   it('accepts a run where everything was actually held equal', () => {
     expect(inputParityProblems(fairRun(), ['lite', 'standard'])).toEqual([]);
-    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun())).not.toThrow();
   });
 
   it('refuses a run where one case was asked differently of each profile', () => {
@@ -1641,7 +1664,7 @@ describe('comparison fairness', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('asked differently'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
   });
 
   it('refuses a profile that swapped artifacts halfway through', () => {
@@ -1650,7 +1673,7 @@ describe('comparison fairness', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('mixed 2 artifact identities'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('refuses profiles run with different controlled settings', () => {
@@ -1661,7 +1684,7 @@ describe('comparison fairness', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('different controlled generation settings'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('treats context size as controlled, so a later matrix must be explicit', () => {
@@ -1679,7 +1702,7 @@ describe('comparison fairness', () => {
     run.generations[0]!.task = 'warfare_report';
 
     expect(taskMismatches(suite, run).length).toBe(1);
-    expect(() => buildComparison(suite, run)).toThrow(/mislabels/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/mislabels/);
   });
 
   it('refuses a row naming a case the suite does not contain', () => {
@@ -1730,7 +1753,7 @@ describe('retries and fairness', () => {
     const run = runWithRejectedFirst('lite');
     run.generations.push(retryRow('lite'));
     expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 
   it('C: both profiles retried with the same wording is fair', () => {
@@ -1745,7 +1768,7 @@ describe('retries and fairness', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
   });
 
   it('E: a retry may legitimately differ from attempt 1', () => {
@@ -1767,7 +1790,7 @@ describe('retries and fairness', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('duplicate attempt recorded'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 });
 
@@ -1830,13 +1853,13 @@ describe('attempt histories must be coherent', () => {
     // there is no record of the try it supposedly retried.
     const problems = inputParityProblems(historyRun([1], [2]), ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('no attempt 1 for standard'))).toBe(true);
-    expect(() => buildComparison(suite, historyRun([1], [2]))).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, historyRun([1], [2]))).toThrow();
   });
 
   it('D: Lite with only attempt 2 is refused', () => {
     const problems = inputParityProblems(historyRun([2], [1]), ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('no attempt 1 for lite'))).toBe(true);
-    expect(() => buildComparison(suite, historyRun([2], [1]))).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, historyRun([2], [1]))).toThrow();
   });
 
   it('E: attempt 3 without attempt 2 is refused', () => {
@@ -1846,7 +1869,7 @@ describe('attempt histories must be coherent', () => {
       problems.some(problem => problem.includes('attempt 3 without attempt 2')),
       JSON.stringify(problems),
     ).toBe(true);
-    expect(() => buildComparison(suite, historyRun([1, 3], [1]))).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, historyRun([1, 3], [1]))).toThrow();
   });
 
   it('F: a retry both profiles made with the same wording passes', () => {
@@ -1865,7 +1888,7 @@ describe('attempt histories must be coherent', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
   });
 
   it('holds for a single profile too, before anything is compared', () => {
@@ -1879,7 +1902,7 @@ describe('attempt histories must be coherent', () => {
 describe('a run is bound to the suite it was executed against', () => {
   it('A: the recorded version and schema matching passes', () => {
     expect(suiteBindingProblems(suite, fairRun())).toEqual([]);
-    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun())).not.toThrow();
   });
 
   it('B: the same cases under a different suite version is refused', () => {
@@ -1891,7 +1914,7 @@ describe('a run is bound to the suite it was executed against', () => {
 
     expect(problems.some(problem => problem.includes(`recorded suite version '${suite.suiteVersion}'`))).toBe(true);
     expect(problems.some(problem => problem.includes(`'${suite.suiteVersion}-revised'`))).toBe(true);
-    expect(() => buildComparison(revised, fairRun())).toThrow(/different suite/);
+    expect(() => reportedFromItsOwnCheckout(revised, fairRun())).toThrow(/different suite/);
   });
 
   it('C: the same version under a different schema is refused', () => {
@@ -1900,7 +1923,7 @@ describe('a run is bound to the suite it was executed against', () => {
 
     expect(problems.some(problem => problem.includes('schema 1'))).toBe(true);
     expect(problems.some(problem => problem.includes('schema 2'))).toBe(true);
-    expect(() => buildComparison(migrated, fairRun())).toThrow(/different suite/);
+    expect(() => reportedFromItsOwnCheckout(migrated, fairRun())).toThrow(/different suite/);
   });
 
   it('D: an old run cannot be silently evaluated with a newer suite', () => {
@@ -1912,7 +1935,7 @@ describe('a run is bound to the suite it was executed against', () => {
     newer.cases[0]!.constraints.maxNarrationChars = 9999;
 
     expect(taskMismatches(newer, fairRun())).toEqual([]);
-    expect(() => buildComparison(newer, fairRun())).toThrow(/different suite/);
+    expect(() => reportedFromItsOwnCheckout(newer, fairRun())).toThrow(/different suite/);
   });
 
   it('refuses before any evaluation happens, not after', () => {
@@ -1921,7 +1944,7 @@ describe('a run is bound to the suite it was executed against', () => {
     const revised = { ...suite, suiteVersion: `${suite.suiteVersion}-revised` };
     let message = '';
     try {
-      buildComparison(revised, fairRun());
+      reportedFromItsOwnCheckout(revised, fairRun());
     } catch (error) {
       message = String(error);
     }
@@ -1966,7 +1989,7 @@ describe('a retry must follow a rejection', () => {
   it('A: rejected 1 then accepted 2 is a real retry', () => {
     const run = withHistory([[1, false], [2, true]], [[1, true]]);
     expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 
   it('B: rejected 1 then rejected 2 is a valid history', () => {
@@ -1983,19 +2006,19 @@ describe('a retry must follow a rejection', () => {
 
     expect(problems.some(problem => problem.includes('follows an accepted attempt 1'))).toBe(true);
     expect(problems.some(problem => problem.includes('a retry must follow a rejection'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('D: accepted 2 followed by attempt 3 is refused', () => {
     const run = withHistory([[1, false], [2, true], [3, false]], [[1, true]]);
     const problems = attemptHistoryProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('follows an accepted attempt 2'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('E: attempt 2 with no attempt 1 is refused', () => {
     const run = withHistory([[2, true]], [[1, true]]);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
     expect(
       inputParityProblems(run, ['lite', 'standard']).some(problem =>
         problem.includes('no attempt 1 for lite'),
@@ -2023,14 +2046,14 @@ describe('a retry must follow a rejection', () => {
     const run = withHistory([[1, false], [2, true]], [[1, true]]);
     expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
     expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 
   it('keeps an invalid history out of every aggregate', () => {
     // The consequence the finding named: latency, quality means and retry
     // totals must never be computed from a history the policy forbids.
     const run = withHistory([[1, true], [2, true]], [[1, true]]);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 });
 
@@ -2042,7 +2065,7 @@ describe('a comparison needs something to compare', () => {
     run.generations = [];
 
     expect(comparableEvidenceProblems(run, ['lite', 'standard'])).toHaveLength(1);
-    expect(() => buildComparison(suite, run)).toThrow(/no comparable evidence/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/no comparable evidence/);
   });
 
   it('B: Lite rows only, comparing Lite and Standard, is refused', () => {
@@ -2051,7 +2074,7 @@ describe('a comparison needs something to compare', () => {
 
     const problems = comparableEvidenceProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('no generations for standard'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow(/no comparable evidence/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/no comparable evidence/);
   });
 
   it('C: Standard rows only is refused symmetrically', () => {
@@ -2060,7 +2083,7 @@ describe('a comparison needs something to compare', () => {
 
     const problems = comparableEvidenceProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('no generations for lite'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('D: at least one case answered by both passes this gate', () => {
@@ -2083,7 +2106,7 @@ describe('a comparison needs something to compare', () => {
   it('E: an empty run reaches no caseCount, summary or latency aggregate', () => {
     const run = fairRun();
     run.generations = [];
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('F: the message says plainly there is nothing to compare', () => {
@@ -2091,7 +2114,7 @@ describe('a comparison needs something to compare', () => {
     run.generations = [];
     let message = '';
     try {
-      buildComparison(suite, run);
+      reportedFromItsOwnCheckout(suite, run);
     } catch (error) {
       message = String(error);
     }
@@ -2105,14 +2128,14 @@ describe('a structurally invalid run never reaches an aggregate', () => {
 
   it('A: a structurally valid run builds', () => {
     expect(validateRun(fairRun())).toEqual([]);
-    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun())).not.toThrow();
   });
 
   it('B: attempt 1 claiming retryUsed is refused', () => {
     // Would overcount retries in the summary.
     const run = fairRun();
     run.generations[0]!.retryUsed = true;
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
   });
 
   it('C: attempt 2 denying retryUsed is refused', () => {
@@ -2134,14 +2157,14 @@ describe('a structurally invalid run never reaches an aggregate', () => {
         rawOutputPath: `raw/${first}.lite.2.txt`,
       }),
     );
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
   });
 
   it('D: accepted with a null output is refused rather than crashing evaluation', () => {
     // This one used to reach `evaluateObjectively` and fall over there.
     const run = fairRun();
     run.generations[0]!.normalizedOutput = null;
-    expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/structurally invalid run/);
   });
 
   it('E: the structural check runs before evaluation, not after', () => {
@@ -2153,7 +2176,7 @@ describe('a structurally invalid run never reaches an aggregate', () => {
 
     let message = '';
     try {
-      buildComparison(suite, run);
+      reportedFromItsOwnCheckout(suite, run);
     } catch (error) {
       message = String(error);
     }
@@ -2165,7 +2188,7 @@ describe('a structurally invalid run never reaches an aggregate', () => {
     const run = fairRun();
     run.generations[0]!.retryUsed = true;
     run.generations[0]!.latencyMs = 999_999;
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('G: validateRun stays the single owner of these rules', () => {
@@ -2219,14 +2242,14 @@ describe('one retry, and only one', () => {
   it('B: rejected 1 then accepted 2 is valid', () => {
     const run = withHistory([[1, false], [2, true]], [[1, true]]);
     expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 
   it('C: rejected 1 then rejected 2 is valid, and the retry is exhausted', () => {
     // Two failures is a finding. What it is not is permission for a third try.
     const run = withHistory([[1, false], [2, false]], [[1, true]]);
     expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 
   it('D: rejected, rejected, then accepted on attempt 3 is refused', () => {
@@ -2236,13 +2259,13 @@ describe('one retry, and only one', () => {
     const problems = attemptHistoryProblems(run, ['lite', 'standard']);
 
     expect(problems.some(problem => problem.includes('attempt 3 exceeds the one-shot retry'))).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('E: a third rejected attempt is refused too', () => {
     const run = withHistory([[1, false], [2, false], [3, false]], [[1, true]]);
     expect(attemptHistoryProblems(run, ['lite', 'standard']).length).toBeGreaterThan(0);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('F: accepted 1 followed by attempt 2 is still refused', () => {
@@ -2256,7 +2279,7 @@ describe('one retry, and only one', () => {
 
   it('G: attempt 2 with no attempt 1 is still refused', () => {
     const run = withHistory([[2, true]], [[1, true]]);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('H: a unilateral retry stays valid', () => {
@@ -2264,7 +2287,7 @@ describe('one retry, and only one', () => {
     const run = withHistory([[1, false], [2, true]], [[1, true]]);
     expect(attemptHistoryProblems(run, ['lite', 'standard'])).toEqual([]);
     expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
-    expect(() => buildComparison(suite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).not.toThrow();
   });
 
   it('I: a third attempt can never enter latency, quality or retry totals', () => {
@@ -2272,7 +2295,7 @@ describe('one retry, and only one', () => {
     // report is ever built.
     const run = withHistory([[1, false], [2, false], [3, true]], [[1, true]]);
     expect(validateRun(run).some(problem => problem.field === 'attempt')).toBe(true);
-    expect(() => buildComparison(suite, run)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow();
   });
 
   it('applies per profile independently', () => {
@@ -2305,19 +2328,19 @@ describe('judgement is bound to the run it judges', () => {
 
   it('accepts a score sheet written for this run', () => {
     expect(() =>
-      buildComparison(suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun())),
+      reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun())),
     ).not.toThrow();
   });
 
   it('refuses a score sheet from another run, even with a copied generation id', () => {
     expect(() =>
-      buildComparison(suite, fairRun(), ['lite', 'standard'], sheet({ runId: 'other_run' })),
+      reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], sheet({ runId: 'other_run' })),
     ).toThrow(/belongs to another run/);
   });
 
   it('refuses a score sheet written against another suite version', () => {
     expect(() =>
-      buildComparison(suite, fairRun(), ['lite', 'standard'], sheet({ suiteVersion: 'p0.4-old' })),
+      reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], sheet({ suiteVersion: 'p0.4-old' })),
     ).toThrow(/suite/);
   });
 });
@@ -2371,7 +2394,7 @@ describe('judgement must be well formed before it is aggregated', () => {
     // The sheet must also cover the whole population before a mean is taken; a
     // human review names disqualifications and carries no such requirement.
     expect(() =>
-      buildComparison(suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun()), reviewWith([fail()])),
+      reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun()), reviewWith([fail()])),
     ).not.toThrow();
   });
 
@@ -2379,28 +2402,28 @@ describe('judgement must be well formed before it is aggregated', () => {
     // Previously it disappeared silently, which is worse than a wrong number.
     const sheet = sheetWith([score({ generationId: 'run:ghost:lite:1' })]);
     expect(judgementProblems(fairRun(), sheet, null).some(p => p.includes('run:ghost:lite:1'))).toBe(true);
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], sheet)).toThrow(/malformed judgement/);
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], sheet)).toThrow(/malformed judgement/);
   });
 
   it('C: the same generation scored twice is refused', () => {
     const sheet = sheetWith([score(), score()]);
     expect(judgementProblems(fairRun(), sheet, null).some(p => p.includes('scored twice'))).toBe(true);
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], sheet)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], sheet)).toThrow();
   });
 
   it('D: an out-of-range or unknown axis is refused', () => {
     const outOfRange = sheetWith([score()]);
     (outOfRange.scores[0]!.scores as Record<string, number>).grounding = 9;
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], outOfRange)).toThrow(/grounding/);
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], outOfRange)).toThrow(/grounding/);
 
     const unknownAxis = sheetWith([score()]);
     (unknownAxis.scores[0]!.scores as Record<string, number>).vibes = 5;
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], unknownAxis)).toThrow(/vibes/);
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], unknownAxis)).toThrow(/vibes/);
   });
 
   it('E: a hard fail against an unknown generation is refused', () => {
     const review = reviewWith([fail({ generationId: 'run:ghost:lite:1' })]);
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow(
       /malformed judgement/,
     );
   });
@@ -2408,7 +2431,7 @@ describe('judgement must be well formed before it is aggregated', () => {
   it('F: a hard-fail category outside the five locked ones is refused', () => {
     const review = reviewWith([fail()]);
     (review.hardFails[0] as unknown as Record<string, unknown>).category = 'bad_vibes';
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow(
       /bad_vibes/,
     );
   });
@@ -2418,10 +2441,10 @@ describe('judgement must be well formed before it is aggregated', () => {
     // initialised for it, so the count became NaN and travelled into the report.
     const review = reviewWith([fail()]);
     (review.hardFails[0] as unknown as Record<string, unknown>).category = 'bad_vibes';
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow();
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], null, review)).toThrow();
 
     // And a report built from valid judgement contains no NaN anywhere.
-    const report = buildComparison(
+    const report = reportedFromItsOwnCheckout(
       suite, fairRun(), ['lite', 'standard'], fullSheet(fairRun()), reviewWith([fail()]),
     );
     const numbers: number[] = [];
@@ -2439,7 +2462,7 @@ describe('judgement must be well formed before it is aggregated', () => {
     // A perfectly valid sheet from another run must still be refused, and for
     // the attribution reason rather than a validation one.
     const foreign = { ...sheetWith([score()]), runId: 'other_run' };
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], foreign)).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], foreign)).toThrow(
       /belongs to another run/,
     );
   });
@@ -2505,7 +2528,7 @@ describe('human hard failures', () => {
   });
 
   it('is reported alongside machine hard fails, not merged into them', () => {
-    const report = buildComparison(suite, fairRun(), ['lite', 'standard'], null, review());
+    const report = reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], null, review());
     const lite = report.profiles.find(profile => profile.profile === 'lite')!;
     const standard = report.profiles.find(profile => profile.profile === 'standard')!;
 
@@ -2522,14 +2545,14 @@ describe('human hard failures', () => {
   it('is refused when it was written for another run', () => {
     // Generation ids are stable and typeable, so an id alone proves nothing.
     const foreign = review({ runId: 'some_other_run' });
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, foreign)).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], null, foreign)).toThrow(
       /belongs to another run/,
     );
   });
 
   it('is refused when it scored a different suite version', () => {
     const stale = review({ suiteVersion: 'p0.4-old' });
-    expect(() => buildComparison(suite, fairRun(), ['lite', 'standard'], null, stale)).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], null, stale)).toThrow(
       /suite/,
     );
   });
@@ -2552,7 +2575,7 @@ describe('human hard failures', () => {
       })),
     };
 
-    const report = buildComparison(suite, fairRun(), ['lite', 'standard'], sheet, review());
+    const report = reportedFromItsOwnCheckout(suite, fairRun(), ['lite', 'standard'], sheet, review());
     const lite = report.profiles.find(profile => profile.profile === 'lite')!;
     expect(lite.humanMeanByAxis?.grounding).toBe(5);
     expect(lite.hardFailedCases).toBe(1);

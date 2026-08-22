@@ -9,6 +9,29 @@ import { lockedRuntime } from '../src/runtime-lock.js';
 import { lockedArtifact } from '../src/model-lock.js';
 
 /**
+ * `buildComparison` with a checkout that matches the run being reported.
+ *
+ * Every existing test describes a report produced from the run's own commit,
+ * which is the ordinary case. Deriving it from the run here simulates that
+ * situation; it is not the production path, where the commit is read from the
+ * repository. The tests that matter for this boundary build mismatches
+ * explicitly.
+ */
+function reportedFromItsOwnCheckout(
+  suiteUnderTest: Parameters<typeof buildComparison>[0],
+  run: Parameters<typeof buildComparison>[1],
+  profiles?: Parameters<typeof buildComparison>[2],
+  sheet?: Parameters<typeof buildComparison>[3],
+  review?: Parameters<typeof buildComparison>[4],
+) {
+  return buildComparison(suiteUnderTest, run, profiles, sheet, review, {
+    gitCommit: run.metadata.gitCommit,
+    gitDirty: false,
+  });
+}
+
+
+/**
  * The benchmark reads the world; it never writes it.
  *
  * The strongest available proof at this boundary is twofold: the package cannot
@@ -132,7 +155,7 @@ describe('benchmark isolation from authoritative state', () => {
       ]),
     });
 
-    expect(() => buildComparison(frozenSuite, run)).not.toThrow();
+    expect(() => reportedFromItsOwnCheckout(frozenSuite, run)).not.toThrow();
   });
 
   it('produces the same evaluation whatever order cases are visited in', () => {

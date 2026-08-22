@@ -349,6 +349,37 @@ typed fields stayed impeccable. Free text is where invention hides, so `topic`,
 `rationale` and `summary` join the same corpus, examined by the same detector.
 Nothing was widened and no check changed confidence.
 
+A report is bound to the checkout that produced the run. The suite digest, the
+model lock and the runtime lock are each compared against *this* working tree, so
+between them they prove the tree describes the same suite, the same GGUF bytes
+and the same llama.cpp build. None of them proves it is the same **code**: a run
+produced at commit A and reported from commit B, with those three unchanged and
+the evaluator's semantics changed, published commit A's numbers under commit B's
+judgement. `gitCommit` was checked for being forty hex characters, which proves a
+string is a string.
+
+An official comparison now requires a trusted `ReportCheckoutIdentity` — the
+commit the reporting code was built from and whether its tree is clean — read
+from the repository by `src/adapters/local-checkout.ts` and passed in. Evidence
+cannot supply it; taking `metadata.gitCommit` as the answer would be asking the
+run to vouch for itself. It defaults to `null`, which refuses, because the safe
+default for a trust boundary is to have none until somebody supplies one. Four
+refusals, kept distinct because they mean different things: no identity at all is
+a wiring mistake, an undeterminable commit a broken environment, a dirty tree a
+discipline problem, and a mismatch the actual reproducibility failure.
+
+The adapter is the only file under `src/` that touches Git, and it is not
+re-exported from the entry point — a test walks the tree to prove the pure
+library imports nothing from `node:`. No network is involved; `git rev-parse` and
+`git status` read a working tree already on disk.
+
+The chain closes:
+
+```
+recorded git commit == trusted reporting checkout HEAD
+  -> suite content digest -> model lock -> runtime lock -> evaluator code
+```
+
 Runtime provenance is bound to the committed distribution, not merely to a
 plausible shape. The official gate checked that `runtimeReleaseTag` was non-empty
 and `runtimeExecutableSha256` was sixty-four lowercase hex — conditions any

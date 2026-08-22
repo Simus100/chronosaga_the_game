@@ -11,6 +11,7 @@ import { sha256Hex } from './digest.js';
 import { acceptedOutputContractProblems } from './contract.js';
 import { lockedArtifactProblems } from './model-lock.js';
 import { runtimeProvenanceMismatches } from './runtime-lock.js';
+import { checkoutBindingProblems, type ReportCheckoutIdentity } from './checkout.js';
 import {
   MAX_ATTEMPTS,
   OFFICIAL_COMPARISON_PROFILES,
@@ -1146,6 +1147,14 @@ export function buildComparison(
   profiles: BenchmarkProfile[] = ['lite', 'standard'],
   sheet: ScoreSheet | null = null,
   review: HumanReview | null = null,
+  /**
+   * The checkout this report is being produced from, read from the repository.
+   *
+   * Defaults to `null`, which refuses: an official comparison that cannot say
+   * which code interpreted the evidence is not reproducible, and the safe
+   * default for a trust boundary is to have none until somebody supplies it.
+   */
+  checkout: ReportCheckoutIdentity | null = null,
 ): ComparisonReport {
   // Before anything at all: which profiles are being compared. Every gate below
   // takes this list as given — coverage, parity, evidence — so a wrong list does
@@ -1195,6 +1204,17 @@ export function buildComparison(
   if (binding.length > 0) {
     throw new Error(
       `refusing to evaluate a run against a different suite: ${binding.join('; ')}`,
+    );
+  }
+
+  // The suite, the models and the runtime are all compared against *this*
+  // checkout, so this checkout has to be the run's. Otherwise unchanged locks
+  // and a changed evaluator publish commit A's numbers under commit B's
+  // judgement.
+  const provenance = checkoutBindingProblems(run, checkout);
+  if (provenance.length > 0) {
+    throw new Error(
+      `refusing to report from a checkout that is not the run's: ${provenance.join('; ')}`,
     );
   }
 

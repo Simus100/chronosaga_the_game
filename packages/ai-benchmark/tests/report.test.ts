@@ -9,6 +9,29 @@ import {
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 
+/**
+ * `buildComparison` with a checkout that matches the run being reported.
+ *
+ * Every existing test describes a report produced from the run's own commit,
+ * which is the ordinary case. Deriving it from the run here simulates that
+ * situation; it is not the production path, where the commit is read from the
+ * repository. The tests that matter for this boundary build mismatches
+ * explicitly.
+ */
+function reportedFromItsOwnCheckout(
+  suiteUnderTest: Parameters<typeof buildComparison>[0],
+  run: Parameters<typeof buildComparison>[1],
+  profiles?: Parameters<typeof buildComparison>[2],
+  sheet?: Parameters<typeof buildComparison>[3],
+  review?: Parameters<typeof buildComparison>[4],
+) {
+  return buildComparison(suiteUnderTest, run, profiles, sheet, review, {
+    gitCommit: run.metadata.gitCommit,
+    gitDirty: false,
+  });
+}
+
+
 const suite = loadSuite();
 const SHA = {
   lite: 'd2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5',
@@ -118,7 +141,7 @@ const caseIds = suite.cases.map(entry => entry.id);
 
 describe('the Lite vs Standard comparison', () => {
   it('reports both profiles over the same cases', () => {
-    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const report = reportedFromItsOwnCheckout(suite, twoProfileRun(caseIds));
     expect(report.profiles.map(profile => profile.profile)).toEqual(['lite', 'standard']);
     for (const profile of report.profiles) {
       expect(profile.casesAttempted).toBe(caseIds.length);
@@ -134,7 +157,7 @@ describe('the Lite vs Standard comparison', () => {
     )!;
     lite.inputFingerprint = 'f'.repeat(64);
     expect(inputParityProblems(run, ['lite', 'standard'])).toHaveLength(1);
-    expect(() => buildComparison(suite, run)).toThrow(/identical case inputs/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
   });
 
   it('catches a missing row as a coverage hole, not as a parity mismatch', () => {
@@ -145,13 +168,13 @@ describe('the Lite vs Standard comparison', () => {
     run.generations = run.generations.filter(
       generation => !(generation.profile === 'lite' && generation.caseId === caseIds[0]),
     );
-    expect(() => buildComparison(suite, run)).toThrow(
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(
       new RegExp(`full_profile_case_coverage.*lite is missing 1 of ${suite.cases.length}`),
     );
   });
 
   it('names the cases where the profiles disagreed', () => {
-    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const report = reportedFromItsOwnCheckout(suite, twoProfileRun(caseIds));
     expect(report.divergentCases).toHaveLength(caseIds.length);
     for (const divergent of report.divergentCases) {
       expect(divergent.acceptedBy).toEqual(['standard']);
@@ -159,7 +182,7 @@ describe('the Lite vs Standard comparison', () => {
   });
 
   it('separates acceptance from hard failures', () => {
-    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const report = reportedFromItsOwnCheckout(suite, twoProfileRun(caseIds));
     const standard = report.profiles.find(profile => profile.profile === 'standard')!;
     expect(standard.casesAccepted).toBe(caseIds.length);
     expect(standard.machineHardFailedCases).toBe(0);
@@ -170,21 +193,21 @@ describe('the Lite vs Standard comparison', () => {
   });
 
   it('carries the exact artifact identity into the summary', () => {
-    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const report = reportedFromItsOwnCheckout(suite, twoProfileRun(caseIds));
     const lite = report.profiles.find(profile => profile.profile === 'lite')!;
     expect(lite.artifactFilename).toBe('Qwen3-1.7B-Q4_K_M.gguf');
     expect(lite.sha256).toBe(SHA.lite);
   });
 
   it('breaks acceptance down by task', () => {
-    const report = buildComparison(suite, twoProfileRun(caseIds));
+    const report = reportedFromItsOwnCheckout(suite, twoProfileRun(caseIds));
     const standard = report.profiles.find(profile => profile.profile === 'standard')!;
     const attempted = Object.values(standard.acceptanceByTask).reduce((sum, entry) => sum + entry.attempted, 0);
     expect(attempted).toBe(caseIds.length);
   });
 
   it('renders a table a human can read', () => {
-    const rendered = renderComparison(buildComparison(suite, twoProfileRun(caseIds)));
+    const rendered = renderComparison(reportedFromItsOwnCheckout(suite, twoProfileRun(caseIds)));
     expect(rendered).toContain('LITE');
     expect(rendered).toContain('STANDARD');
     expect(rendered).toContain('median latency');
@@ -192,8 +215,8 @@ describe('the Lite vs Standard comparison', () => {
 
   it('is stable: the same run renders identically twice', () => {
     const run = twoProfileRun(caseIds);
-    expect(renderComparison(buildComparison(suite, run))).toBe(
-      renderComparison(buildComparison(suite, run)),
+    expect(renderComparison(reportedFromItsOwnCheckout(suite, run))).toBe(
+      renderComparison(reportedFromItsOwnCheckout(suite, run)),
     );
   });
 });
