@@ -375,8 +375,21 @@ it `{ gitCommit: run.metadata.gitCommit, gitDirty: false }` and satisfy the
 binding without Git ever being consulted — the evidence vouching for itself. The
 test helpers were written that way, which was the tell.
 
-`buildLocalOfficialComparison` has no checkout parameter. There is nothing to
-forge because there is nothing to pass: it reads the repository itself. The pure
+`buildLocalOfficialComparison` has no checkout parameter **and no repository
+parameter**. Removing the identity was not enough on its own: an earlier version
+still took a `repositoryRoot`, which is the same *trust me* a level along —
+the identity Git returns is real, but it belongs to whichever checkout the caller
+pointed at, so evaluator code from B could authenticate a run from A by naming a
+clean copy of A elsewhere on disk.
+
+The repository is derived from the location of the adapter itself, through
+`import.meta.url`, so the invariant is *the code evaluates itself* rather than
+*the caller tells the code which repository to evaluate*. `process.cwd()` is
+deliberately not consulted — a process can be launched from anywhere, which would
+hand the choice straight back — and neither is any environment variable or
+anything in the run's own metadata. Git walks upward from that directory to find
+its worktree, which works from `src/` under a test runner and from `dist/` after
+a build, on Windows and Linux alike. The pure
 builder is renamed `buildComparisonWithTrustedCheckout` and is deliberately
 absent from the package entry point, so the forgeable path is not the reachable
 one. Reproducibility follows from the API rather than from remembering which

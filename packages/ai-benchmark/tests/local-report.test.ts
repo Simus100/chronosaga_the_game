@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
 import { buildLocalOfficialComparison } from '../src/adapters/local-report.js';
+import { buildOfficialComparisonFromRepository } from '../src/adapters/repository-report.js';
 import { suiteContentDigest } from '../src/report.js';
 import { lockedArtifact } from '../src/model-lock.js';
 import { lockedRuntime } from '../src/runtime-lock.js';
@@ -116,7 +117,7 @@ describe('publishing an official comparison', () => {
   it('A and E: reads the actual HEAD, and a run recorded there passes', () => {
     const { root, head } = repositoryWithOneCommit();
     expect(head).toMatch(/^[0-9a-f]{40}$/);
-    const report = buildLocalOfficialComparison(
+    const report = buildOfficialComparisonFromRepository(
       suite,
       officialRun(head),
       ['lite', 'standard'],
@@ -127,7 +128,7 @@ describe('publishing an official comparison', () => {
     expect(report.profiles).toHaveLength(2);
   });
 
-  it('B, C and the forgery: there is no checkout argument to supply', () => {
+  it('the internal helper still refuses a forged identity in its path slot', () => {
     // The exact shape this round exists to make impossible. It does not
     // typecheck, and at runtime an extra argument is read as a repository path,
     // never as an identity — so the object cannot become trusted context.
@@ -135,14 +136,14 @@ describe('publishing an official comparison', () => {
     const run = officialRun('f'.repeat(40));
     const forged = { gitCommit: run.metadata.gitCommit, gitDirty: false };
 
-    // @ts-expect-error the official API accepts no checkout identity
-    expect(() => buildLocalOfficialComparison(suite, run, ['lite', 'standard'], null, null, forged))
+    // @ts-expect-error a path is expected here, not an identity
+    expect(() => buildOfficialComparisonFromRepository(suite, run, ['lite', 'standard'], null, null, forged))
       .toThrow();
 
     // And the honest call against the same repository refuses too, because the
     // run was not produced there.
     expect(() =>
-      buildLocalOfficialComparison(suite, run, ['lite', 'standard'], null, null, root),
+      buildOfficialComparisonFromRepository(suite, run, ['lite', 'standard'], null, null, root),
     ).toThrow(/is being produced at/);
     expect(head).not.toBe(run.metadata.gitCommit);
   });
@@ -158,7 +159,7 @@ describe('publishing an official comparison', () => {
     // The planted objects are ignored entirely: the report succeeds because the
     // *real* HEAD matches, not because the run said so.
     expect(
-      buildLocalOfficialComparison(
+      buildOfficialComparisonFromRepository(
         suite,
         run as unknown as BenchmarkRun,
         ['lite', 'standard'],
@@ -171,7 +172,7 @@ describe('publishing an official comparison', () => {
     // Change only the recorded commit and it refuses, planted objects and all.
     (run.metadata as Record<string, unknown>).gitCommit = 'a'.repeat(40);
     expect(() =>
-      buildLocalOfficialComparison(
+      buildOfficialComparisonFromRepository(
         suite,
         run as unknown as BenchmarkRun,
         ['lite', 'standard'],
@@ -189,7 +190,7 @@ describe('publishing an official comparison', () => {
 
     // Recorded at the first repository's commit, reported from the second.
     expect(() =>
-      buildLocalOfficialComparison(
+      buildOfficialComparisonFromRepository(
         suite,
         officialRun(first.head),
         ['lite', 'standard'],
@@ -204,13 +205,13 @@ describe('publishing an official comparison', () => {
     const { root, head } = repositoryWithOneCommit();
     writeFileSync(join(root, 'evaluator.ts'), 'export const version = 2;\n');
     expect(() =>
-      buildLocalOfficialComparison(suite, officialRun(head), ['lite', 'standard'], null, null, root),
+      buildOfficialComparisonFromRepository(suite, officialRun(head), ['lite', 'standard'], null, null, root),
     ).toThrow(/uncommitted changes/);
   });
 
   it('H: a directory that is not a repository is refused', () => {
     expect(() =>
-      buildLocalOfficialComparison(
+      buildOfficialComparisonFromRepository(
         suite,
         officialRun('a'.repeat(40)),
         ['lite', 'standard'],
@@ -238,10 +239,125 @@ describe('publishing an official comparison', () => {
       const run = officialRun(head);
       breakIt(run);
       expect(
-        () => buildLocalOfficialComparison(suite, run, ['lite', 'standard'], null, null, root),
+        () => buildOfficialComparisonFromRepository(suite, run, ['lite', 'standard'], null, null, root),
         label,
       ).toThrow(expected);
     }
+  });
+});
+
+describe('the public entry point evaluates its own checkout', () => {
+  /** The repository this test file, and the evaluator beside it, live in. */
+  function executingRepository(): { root: string; head: string; dirty: boolean } {
+    const root = fileURLToPath(new URL('../../../', import.meta.url));
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return {
+      root,
+      head: git('rev-parse', 'HEAD').trim(),
+      dirty: git('status', '--porcelain').trim() !== '',
+    };
+  }
+
+  /** Whatever the public API refuses, as text; empty when it accepts. */
+  function refusalFor(run: BenchmarkRun): string {
+    try {
+      buildLocalOfficialComparison(suite, run, ['lite', 'standard'], null, null);
+      return '';
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }
+
+  it('A: takes no repository and no identity', () => {
+    // (suite, run, profiles, sheet, review) — five, none of them a path.
+    expect(buildLocalOfficialComparison.length).toBe(5);
+
+    const source = readFileSync(
+      fileURLToPath(new URL('../src/adapters/local-report.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(/repositoryRoot\s*[?:]/.test(source)).toBe(false);
+    expect(/checkout\s*[?:]\s*ReportCheckoutIdentity/.test(source)).toBe(false);
+    expect(source).toContain('executingCheckoutDirectory()');
+    expect(source).toContain('import.meta.url');
+  });
+
+  it('B: the identity it uses is this checkout\'s actual HEAD', () => {
+    // A run recorded at a commit that exists nowhere: the refusal must name the
+    // real HEAD of the repository holding the evaluator.
+    const { head } = executingRepository();
+    const refusal = refusalFor(officialRun('9'.repeat(40)));
+    expect(refusal).toContain('is being produced at');
+    expect(refusal).toContain(head);
+  });
+
+  it('C and N: the working directory is not the authority', () => {
+    const { head } = executingRepository();
+    const elsewhere = repositoryWithOneCommit('export const decoy = true;\n');
+    expect(elsewhere.head).not.toBe(head);
+
+    const original = process.cwd();
+    try {
+      process.chdir(elsewhere.root);
+      // Launched from another repository entirely; the answer must not move.
+      const refusal = refusalFor(officialRun('9'.repeat(40)));
+      expect(refusal).toContain(head);
+      expect(refusal).not.toContain(elsewhere.head);
+    } finally {
+      process.chdir(original);
+    }
+  });
+
+  it('D: an alternate clean checkout on disk cannot authenticate a foreign run', () => {
+    // The attack in full. The evaluator runs out of this checkout; the run
+    // claims another commit; a clean repository at that commit sits on disk and
+    // the caller would like it used. There is no argument for it, and pointing
+    // the process at it changes nothing.
+    const { head } = executingRepository();
+    const alternate = repositoryWithOneCommit('export const version = 99;\n');
+    const run = officialRun(alternate.head);
+
+    const original = process.cwd();
+    try {
+      process.chdir(alternate.root);
+      const refusal = refusalFor(run);
+      expect(refusal).toContain('is being produced at');
+      expect(refusal).toContain(alternate.head);
+      expect(refusal).toContain(head);
+    } finally {
+      process.chdir(original);
+    }
+  });
+
+  it('E, F and G: it agrees with the repository it is standing in', () => {
+    const { head, dirty } = executingRepository();
+
+    // E: a run from another commit is refused whatever the tree looks like.
+    expect(refusalFor(officialRun('9'.repeat(40)))).toContain('is being produced at');
+
+    // F and G depend on the tree, so both are asserted against what it actually
+    // is: deterministic in CI, honest on a working copy mid-edit.
+    const matching = refusalFor(officialRun(head));
+    if (dirty) {
+      expect(matching).toContain('uncommitted changes');
+    } else {
+      expect(matching).toBe('');
+    }
+  });
+
+  it('H: nothing inside the evidence can redirect the trust', () => {
+    const { head } = executingRepository();
+    const alternate = repositoryWithOneCommit('export const version = 77;\n');
+    const run = officialRun(alternate.head) as unknown as Record<string, unknown>;
+    (run.metadata as Record<string, unknown>).repositoryRoot = alternate.root;
+    (run.metadata as Record<string, unknown>).checkout = {
+      gitCommit: alternate.head,
+      gitDirty: false,
+    };
+    (run as Record<string, unknown>).repositoryRoot = alternate.root;
+
+    expect(refusalFor(run as unknown as BenchmarkRun)).toContain(head);
   });
 });
 
@@ -298,6 +414,18 @@ describe('the shape of the public surface', () => {
     // way. Two doors, and only one of them publishes.
     expect(Object.keys(manifest.exports).sort()).toEqual(['.', './local-report']);
     expect(JSON.stringify(manifest.exports)).not.toContain('*');
+  });
+
+  it('I and J: the path-injectable builder is on neither public door', () => {
+    const index = readFileSync(join(root, 'index.ts'), 'utf8');
+    expect(index).not.toContain('repository-report');
+    expect(index).not.toContain('buildOfficialComparisonFromRepository');
+
+    const official = readFileSync(join(root, 'adapters', 'local-report.ts'), 'utf8');
+    // It imports the helper and re-exports nothing.
+    expect(official).toContain('buildOfficialComparisonFromRepository');
+    expect(/export\s*\{[^}]*buildOfficialComparisonFromRepository/.test(official)).toBe(false);
+    expect(official).not.toContain("export * from './repository-report.js'");
   });
 
   it('nothing on the package root can produce a ComparisonReport', () => {

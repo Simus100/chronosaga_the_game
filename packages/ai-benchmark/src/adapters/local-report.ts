@@ -5,36 +5,50 @@
  * argument, which is the right shape for a unit test and the wrong shape for a
  * guarantee: a caller can hand it
  * `{ gitCommit: run.metadata.gitCommit, gitDirty: false }` and satisfy the
- * binding without anybody having asked Git anything. The evidence would then be
- * vouching for itself, which is exactly what the binding exists to prevent.
+ * binding without anybody having asked Git anything.
  *
- * So this function has **no checkout parameter**. There is nothing to forge
- * because there is nothing to pass: the identity comes from
- * {@link readLocalCheckout}, which reads the repository on disk. Reproducibility
- * follows from the API a caller can reach rather than from remembering which
- * helper to call.
+ * Removing that argument was not enough on its own. An earlier version of this
+ * function still took a `repositoryRoot`, which is the same "trust me" a level
+ * along: the identity Git returns is real, but it belongs to whichever checkout
+ * the caller pointed at. Evaluator code from checkout B could authenticate a run
+ * from commit A simply by naming a clean copy of A elsewhere on disk.
  *
- * This is not a defence against someone editing the source — nothing in a
- * library is. It is a defence against an ordinary caller, or a CLI written next
- * month, accidentally saying "trust me, this checkout is commit X" when the
- * code is perfectly capable of looking.
+ * So there is no path parameter either. The repository is derived from the
+ * location of **this file** — the code that is actually doing the evaluating —
+ * so the invariant is *the code evaluates itself*, not *the caller tells the code
+ * which repository to evaluate*.
+ *
+ * `process.cwd()` is deliberately not consulted: a process can be launched from
+ * anywhere, which would hand the choice straight back to the caller. Nor is any
+ * environment variable, nor anything in the run's own metadata.
  *
  * Reached through `@paa/ai-benchmark/local-report`. The package root stays pure
  * and imports nothing from `node:`.
  */
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { BenchmarkSuite } from '../case.js';
 import type { BenchmarkProfile, BenchmarkRun } from '../result.js';
 import type { HumanReview } from '../human-review.js';
 import type { ScoreSheet } from '../scoring.js';
-import { buildComparisonWithTrustedCheckout, type ComparisonReport } from '../report.js';
-import { readLocalCheckout } from './local-checkout.js';
+import type { ComparisonReport } from '../report.js';
+import { buildOfficialComparisonFromRepository } from './repository-report.js';
 
 /**
- * Build an official Lite-versus-Standard comparison from this checkout.
+ * The directory holding this module, whatever it was loaded from.
  *
- * @param repositoryRoot which repository to ask about; defaults to the process's
- *   own working directory. It selects a repository, and is not an identity: what
- *   the commit *is*, and whether the tree is clean, is read from Git either way.
+ * Git walks upwards from a working directory to find its worktree, so pointing
+ * it here finds the checkout containing the evaluator — from `src/` under a test
+ * runner, from `dist/` after a build, and from either on Windows or Linux, since
+ * `fileURLToPath` is what turns a file URL into a path both places.
+ */
+function executingCheckoutDirectory(): string {
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+/**
+ * Build an official Lite-versus-Standard comparison from the checkout this code
+ * is running out of.
  */
 export function buildLocalOfficialComparison(
   suite: BenchmarkSuite,
@@ -42,11 +56,13 @@ export function buildLocalOfficialComparison(
   profiles?: BenchmarkProfile[],
   sheet?: ScoreSheet | null,
   review?: HumanReview | null,
-  repositoryRoot?: string,
 ): ComparisonReport {
-  // Read first, unconditionally. `null` — no repository, no Git, an unreadable
-  // status — travels straight through to the binding, which refuses it, because
-  // not knowing which code is reporting must never read as knowing.
-  const checkout = readLocalCheckout(repositoryRoot);
-  return buildComparisonWithTrustedCheckout(suite, run, profiles, sheet, review, checkout);
+  return buildOfficialComparisonFromRepository(
+    suite,
+    run,
+    profiles,
+    sheet,
+    review,
+    executingCheckoutDirectory(),
+  );
 }
