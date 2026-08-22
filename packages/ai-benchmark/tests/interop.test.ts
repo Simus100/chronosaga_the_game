@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
 import rustRequirements from './fixtures/official-evidence-requirements.json' with { type: 'json' };
 import rustSceneIds from './fixtures/scene-subject-ids.json' with { type: 'json' };
+import rustSuiteDigest from './fixtures/suite-content-digest.json' with { type: 'json' };
+import { suiteContentDigest } from '../src/report.js';
+import { sha256Hex } from '../src/digest.js';
 import { OFFICIAL_EVIDENCE_REQUIREMENTS } from '../src/report.js';
 import {
   normalizedOutputProblems,
@@ -34,6 +37,37 @@ describe('the shared definition of official evidence', () => {
 
   it('declares each requirement exactly once', () => {
     expect(new Set(rustRequirements).size).toBe(rustRequirements.length);
+  });
+});
+
+describe('the exact suite both sides bind to', () => {
+  const exported = rustSuiteDigest as { suiteVersion: string; suiteContentSha256: string };
+
+  it('J: Rust and TypeScript digest the shipped suite identically', () => {
+    // Two independent implementations, one expected value. Each asserting
+    // against itself would prove nothing about the other.
+    expect(suiteContentDigest(loadSuite())).toBe(exported.suiteContentSha256);
+  });
+
+  it('names the version it hashed, so a mismatch is legible', () => {
+    expect(exported.suiteVersion).toBe(loadSuite().suiteVersion);
+    expect(exported.suiteContentSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('hashes correctly at all, checked against the published vectors', () => {
+    // The implementation is ours, so it is verified rather than trusted.
+    expect(sha256Hex('')).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+    expect(sha256Hex('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    expect(sha256Hex('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')).toBe(
+      '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+    );
+    // Multi-byte input, since the suite is Italian and the digest must not
+    // depend on how a platform happens to encode it.
+    expect(sha256Hex('perché')).toBe(sha256Hex('perch\u00e9'));
   });
 });
 

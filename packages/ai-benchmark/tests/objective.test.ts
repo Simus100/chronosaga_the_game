@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BenchmarkCase } from '../src/case.js';
 import type { BenchmarkGeneration, NormalizedOutput } from '../src/result.js';
-import { evaluateObjectively } from '../src/objective.js';
+import { characterCount, evaluateObjectively } from '../src/objective.js';
 import { loadSuite } from '../src/suite.js';
 
 const suite = loadSuite();
@@ -863,5 +863,58 @@ describe('bare-JSON compliance is measured only where it was demanded', () => {
     );
     expect(judged.length).toBeGreaterThan(0);
     expect(judged.length).toBeLessThan(suite.cases.length);
+  });
+});
+
+describe('narration length is counted as Rust counts it', () => {
+  const limit = () => caseFixture().constraints.maxNarrationChars;
+
+  const check = (narration: string) => {
+    const entry = caseFixture();
+    const result = evaluateObjectively(
+      entry,
+      generation({ normalizedOutput: output({ narration }) }),
+    );
+    return result.checks.find(item => item.id === 'narration_within_limit')!;
+  };
+
+  it('A: ASCII agrees with both counts', () => {
+    const text = 'a'.repeat(limit());
+    expect(characterCount(text)).toBe(text.length);
+    expect(check(text).passed).toBe(true);
+  });
+
+  it('B: accented Italian is one character each', () => {
+    const text = 'perché è così';
+    expect(characterCount(text)).toBe(text.length);
+    expect(characterCount(text)).toBe(13);
+  });
+
+  it('C: a non-BMP character at the exact limit passes', () => {
+    // The emoji is one Unicode scalar and two UTF-16 code units. Rust accepts
+    // this narration, so the report must not call it over-length.
+    const text = '🌍'.repeat(limit());
+    expect(characterCount(text)).toBe(limit());
+    expect(text.length).toBe(limit() * 2);
+    expect(check(text).passed).toBe(true);
+  });
+
+  it('D: one scalar over the limit fails', () => {
+    const text = '🌍'.repeat(limit() + 1);
+    expect(characterCount(text)).toBe(limit() + 1);
+    expect(check(text).passed).toBe(false);
+  });
+
+  it('E: a mixed string counts scalars, not code units', () => {
+    const text = 'Helios 🌍 è qui';
+    expect(characterCount(text)).toBe(14);
+    expect(text.length).toBe(15);
+  });
+
+  it('F: the diagnostic reports the number the verdict used', () => {
+    const text = '🌍'.repeat(limit() + 5);
+    const result = check(text);
+    expect(result.detail).toBe(`${limit() + 5} of ${limit()} characters`);
+    expect(result.detail).not.toContain(String(text.length));
   });
 });

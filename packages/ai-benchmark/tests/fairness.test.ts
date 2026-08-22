@@ -11,6 +11,7 @@ import {
   terminalGenerations,
   OFFICIAL_EVIDENCE_REQUIREMENTS,
   suiteBindingProblems,
+  suiteContentDigest,
   taskMismatches,
 } from '../src/report.js';
 import { asHardFails, validateHumanReview, type HumanReview } from '../src/human-review.js';
@@ -131,6 +132,7 @@ function fairRun(): BenchmarkRun {
       gitDirty: false,
       suiteVersion: suite.suiteVersion,
       suiteSchemaVersion: 1,
+      suiteContentSha256: suiteContentDigest(suite),
       runnerVersion: '0.1.0',
       runtimeReleaseTag: 'b10343',
       runtimeExecutableSha256: '3e8c1a6b5d4f2907c8b1e6a4d7f0b3c5928e1d4a7b0c3f6e9d2a5b8c1e4f7a0d',
@@ -142,6 +144,96 @@ function fairRun(): BenchmarkRun {
     ]),
   };
 }
+
+describe('a report is bound to the exact contents of its suite', () => {
+  it('A: the unchanged suite passes', () => {
+    expect(suiteBindingProblems(suite, fairRun())).toEqual([]);
+    expect(() => buildComparison(suite, fairRun())).not.toThrow();
+  });
+
+  const mutated = (edit: (copy: typeof suite) => void) => {
+    const copy = structuredClone(suite);
+    edit(copy);
+    expect(copy.suiteVersion, 'the version must stay put').toBe(suite.suiteVersion);
+    return copy;
+  };
+
+  it('B: a changed expected fact is refused, version untouched', () => {
+    const copy = mutated(entry => void (entry.cases[0]!.expectedFacts[0] = 'something else'));
+    expect(suiteBindingProblems(copy, fairRun())[0]).toMatch(/same version, different contents/);
+    expect(() => buildComparison(copy, fairRun())).toThrow(/different suite/);
+  });
+
+  it('C: a changed constraint is refused', () => {
+    const copy = mutated(entry => void (entry.cases[0]!.constraints.maxNarrationChars = 1));
+    expect(suiteBindingProblems(copy, fairRun())).toHaveLength(1);
+  });
+
+  it('D: a changed worldStateSlice is refused', () => {
+    const copy = mutated(entry => {
+      (entry.cases[0]!.worldStateSlice as Record<string, never>).injected = 1 as never;
+    });
+    expect(suiteBindingProblems(copy, fairRun())).toHaveLength(1);
+  });
+
+  it('E: a changed forbidden claim is refused', () => {
+    const copy = mutated(entry => void (entry.cases[0]!.forbiddenClaims[0] = 'anything'));
+    expect(suiteBindingProblems(copy, fairRun())).toHaveLength(1);
+  });
+
+  it('F: a case added or removed is refused', () => {
+    const removed = mutated(entry => void entry.cases.pop());
+    expect(suiteBindingProblems(removed, fairRun())).toHaveLength(1);
+    const added = mutated(entry => void entry.cases.push(structuredClone(entry.cases[0]!)));
+    expect(suiteBindingProblems(added, fairRun())).toHaveLength(1);
+  });
+
+  it('G: reordering object keys changes nothing', () => {
+    // Key order is not meaning; array order is.
+    // A genuine deep re-key: same data, every object's keys emitted in reverse
+    // order. A replacer array would filter keys instead of reordering them.
+    const rekey = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(rekey);
+      if (value && typeof value === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const key of Object.keys(value as Record<string, unknown>).sort().reverse()) {
+          out[key] = rekey((value as Record<string, unknown>)[key]);
+        }
+        return out;
+      }
+      return value;
+    };
+    const reordered = rekey(structuredClone(suite)) as typeof suite;
+    expect(Object.keys(reordered)).not.toEqual(Object.keys(suite));
+    expect(suiteContentDigest(reordered)).toBe(suiteContentDigest(suite));
+
+    const swapped = structuredClone(suite);
+    swapped.cases = [swapped.cases[1]!, swapped.cases[0]!, ...swapped.cases.slice(2)];
+    expect(suiteContentDigest(swapped)).not.toBe(suiteContentDigest(suite));
+  });
+
+  it('H and I: an absent or malformed digest is refused as evidence', () => {
+    for (const value of ['', 'not-a-digest', 'C7E61A89'.repeat(8)]) {
+      const run = fairRun();
+      (run.metadata as { suiteContentSha256: string }).suiteContentSha256 = value;
+      const problems = validateRun(run);
+      expect(problems.map(problem => problem.field), value).toContain(
+        'metadata.suiteContentSha256',
+      );
+      expect(() => buildComparison(suite, run)).toThrow(/structurally invalid run/);
+    }
+  });
+
+  it('refuses before any evaluation happens', () => {
+    const copy = mutated(entry => void (entry.cases[0]!.expectedFacts[0] = 'edited'));
+    try {
+      buildComparison(copy, fairRun());
+      throw new Error('should have refused');
+    } catch (error) {
+      expect((error as Error).message).toMatch(/refusing to evaluate a run against a different suite/);
+    }
+  });
+});
 
 describe('an official comparison is exactly Lite versus Standard', () => {
   it('A: lite and standard is the comparison', () => {

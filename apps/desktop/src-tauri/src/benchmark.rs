@@ -51,6 +51,15 @@ pub struct BenchmarkSuite {
     pub schema_version: u32,
     pub suite_version: String,
     pub cases: Vec<BenchmarkCase>,
+    /// The digest of the file this was parsed from.
+    ///
+    /// Not a field of the suite document: it is computed over the complete JSON
+    /// at load time and carried here, so anything holding a suite also holds
+    /// proof of which suite it is. Skipped by serde in both directions — it
+    /// describes the file rather than living in it, and a suite deserialised
+    /// from anywhere else gets an empty digest rather than a borrowed one.
+    #[serde(skip)]
+    pub content_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,8 +170,16 @@ pub fn load_suite() -> Result<BenchmarkSuite, String> {
         .join(SUITE_RELATIVE_PATH);
     let contents = fs::read_to_string(&path)
         .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
-    serde_json::from_str(&contents)
-        .map_err(|error| format!("unable to parse {}: {error}", path.display()))
+    // Digest the complete document, then read the parts this crate needs from
+    // the same value. Hashing after deserialisation would sign a suite with the
+    // root fields this struct does not keep torn out of it.
+    let complete: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|error| format!("unable to parse {}: {error}", path.display()))?;
+    let digest = suite_content_digest(&complete);
+    let mut suite: BenchmarkSuite = serde_json::from_value(complete)
+        .map_err(|error| format!("unable to parse {}: {error}", path.display()))?;
+    suite.content_sha256 = digest;
+    Ok(suite)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +257,75 @@ fn case_subject_ids(case: &BenchmarkCase) -> Vec<String> {
     collect_scene_ids(&case.world_state_slice, &mut push);
     ids
 }
+
+/// Serialise a JSON value with object keys sorted, recursively.
+///
+/// The canonical form both languages hash. Arrays keep their order because order
+/// is meaning in a case list; object keys do not, so two files that differ only
+/// in key order describe the same suite and must not read as tampering. Scalars
+/// are written by `serde_json`, which is the same set of rules `JSON.stringify`
+/// follows for the values this suite contains.
+pub fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut keys: Vec<&String> = fields.keys().collect();
+            keys.sort();
+            let body: Vec<String> = keys
+                .into_iter()
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        serde_json::Value::String(key.clone()),
+                        canonical_json(&fields[key])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", body.join(","))
+        }
+        serde_json::Value::Array(items) => {
+            let body: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", body.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// The exact content of a suite, as a digest.
+///
+/// `suiteVersion` is assigned by hand, so it says what somebody intended and not
+/// what the file contains. A constraint, an expected fact or a whole case could
+/// change while the version stayed put, and a stored run would then be evaluated
+/// against a suite it never saw, with the report still naming the version it
+/// recorded.
+///
+/// Computed from the **complete JSON**, not from `BenchmarkSuite`: that struct
+/// keeps three of the file's six root fields, so hashing it after deserialisation
+/// would sign a document with `outputContract`, `scenario` and `status` torn out.
+pub fn suite_content_digest(complete_suite: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_json(complete_suite).as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Read the shipped suite file as raw JSON, for digesting.
+pub fn load_suite_json() -> Result<serde_json::Value, String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../")
+        .join(SUITE_RELATIVE_PATH);
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
+    serde_json::from_str(&contents)
+        .map_err(|error| format!("unable to parse {}: {error}", path.display()))
+}
+
+/// The one consequence status the suite actually uses.
+///
+/// Read from the data, not assumed: across the 65 cases exactly four
+/// consequences exist, one carries `"status": "applied"` and three carry no
+/// status at all. An absent status means the consequence has not fired, so
+/// nothing needs a second name for it.
+pub const APPLIED_STATUS: &str = "applied";
 
 /// Whether a string is shaped like an entity id in this project.
 ///
@@ -353,6 +439,21 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
     // The worked example has to agree with the instruction. Showing an empty
     // array to a case that demands a proposal contradicts the sentence above it,
     // and the example is what a small model copies.
+    // Every placeholder in the worked example is an instance of the contract,
+    // not decoration. `"..."` was shown where identity is constrained — a tone
+    // tag outside the vocabulary, a subjectId no scene contains, a characterId
+    // nobody has — so a small model that copied the example was rejected for
+    // following it. Narration is free prose and keeps its ellipsis; everything
+    // whose value the validator checks is a real value.
+    //
+    // Tone tags are optional in the contract, so the honest example is the empty
+    // array unless the case has a vocabulary to draw from, in which case the
+    // first allowed tag is shown deterministically.
+    let tone_example = match case.constraints.allowed_tone_tags.first() {
+        Some(tag) => format!("[\"{tag}\"]"),
+        None => "[]".to_string(),
+    };
+
     // The worked example is an instance of the contract, not decoration. A
     // zero-speaker case was told "non produrre dialogo" and then shown a line to
     // copy — and a small model copies the example, earning an UnknownSpeaker
@@ -376,15 +477,31 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
         )
     };
 
+    // A required proposal needs a subject the scene actually contains, taken
+    // deterministically from the same grounding the validator applies. A case
+    // that demands a proposal and offers no valid subject is a suite defect the
+    // model cannot solve, so the example says so rather than inventing an id.
     let proposal_example = if case.constraints.require_event_proposal {
-        "[{\"subjectId\": \"...\", \"topic\": \"...\", \"rationale\": \"...\"}]"
+        match case_subject_ids(case).first() {
+            Some(subject) => format!(
+                "[{{\"subjectId\": \"{subject}\", \"topic\": \"conseguenza\", \
+                 \"rationale\": \"motivo breve\"}}]"
+            ),
+            None => "[]".to_string(),
+        }
     } else {
-        "[]"
+        "[]".to_string()
     };
     let memory_example = if case.constraints.require_memory_suggestion {
-        "[{\"characterId\": \"...\", \"summary\": \"...\"}]"
+        match case.characters.first() {
+            Some(character) => format!(
+                "[{{\"characterId\": \"{}\", \"summary\": \"cosa ricorda\"}}]",
+                character.id
+            ),
+            None => "[]".to_string(),
+        }
     } else {
-        "[]"
+        "[]".to_string()
     };
 
     let structure = if case.constraints.strict_json_only {
@@ -433,7 +550,8 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
          - {memories}.{structure}\n\n\
          {envelope}:\n\
          {{\"narration\": \"...\", \"dialogue\": {dialogue_example}, \
-         \"tone_tags\": [\"...\"], \"event_proposals\": {proposal_example}, \"memory_suggestions\": {memory_example}}}",
+         \"tone_tags\": {tone_example}, \"event_proposals\": {proposal_example}, \
+         \"memory_suggestions\": {memory_example}}}",
         language = case.constraints.language,
         speakers = speakers,
         tags = tags,
@@ -443,6 +561,7 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
         numbers = numbers,
         structure = structure,
         dialogue_example = dialogue_example,
+        tone_example = tone_example,
         proposal_example = proposal_example,
         memory_example = memory_example,
         envelope = envelope,
@@ -533,10 +652,34 @@ pub fn user_prompt(case: &BenchmarkCase) -> String {
         ));
     }
 
-    if !case.constraints.pending_consequences.is_empty() {
+    // Applied and pending are opposite facts and were printed under one heading
+    // that asserted the pending one. `ai_case_060` carries a consequence marked
+    // `applied`, so the model was told it had not happened while the case
+    // expected it narrated as having happened — a contradiction no answer could
+    // satisfy.
+    //
+    // The suite states a status only when it is `applied`; an absent status means
+    // the consequence is still waiting. Nothing else is invented here.
+    let (applied, pending): (Vec<_>, Vec<_>) = case
+        .constraints
+        .pending_consequences
+        .iter()
+        .partition(|consequence| {
+            consequence.get("status").and_then(|value| value.as_str()) == Some(APPLIED_STATUS)
+        });
+
+    if !applied.is_empty() {
+        sections.push(format!(
+            "CONSEGUENZE GIA' AVVENUTE: sono gia' accadute e i loro effetti sono nel \
+             delta autorevole qui sopra. Raccontale come avvenute, senza aggiungere \
+             dettagli che il delta non mostra:\n{}",
+            serde_json::to_string_pretty(&applied).unwrap_or_default()
+        ));
+    }
+    if !pending.is_empty() {
         sections.push(format!(
             "CONSEGUENZE IN SOSPESO (non ancora avvenute, quelle nascoste non vanno rivelate):\n{}",
-            serde_json::to_string_pretty(&case.constraints.pending_consequences).unwrap_or_default()
+            serde_json::to_string_pretty(&pending).unwrap_or_default()
         ));
     }
 
@@ -805,6 +948,12 @@ pub struct RunMetadata {
     pub git_dirty: bool,
     pub suite_version: String,
     pub suite_schema_version: u32,
+    /// SHA-256 of the canonicalised suite file, as it was when the run executed.
+    ///
+    /// The version is what somebody called the suite; this is what the suite
+    /// actually contained. Written with the metadata, before the first
+    /// generation, so an interrupted run still says which suite it was answering.
+    pub suite_content_sha256: String,
     pub runner_version: String,
     pub runtime_release_tag: String,
     pub runtime_executable_sha256: Option<String>,
@@ -844,6 +993,7 @@ pub fn new_run_metadata(
         git_dirty,
         suite_version: suite.suite_version.clone(),
         suite_schema_version: suite.schema_version,
+        suite_content_sha256: suite.content_sha256.clone(),
         runner_version: RUNNER_VERSION.to_string(),
         runtime_release_tag: runtime_release_tag.to_string(),
         runtime_executable_sha256,
@@ -3355,6 +3505,141 @@ mod tests {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Exact suite content binding
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn g_key_order_does_not_change_the_canonical_form() {
+        let one: serde_json::Value =
+            serde_json::from_str(r#"{"b": 1, "a": {"d": [3, 2], "c": null}}"#).unwrap();
+        let other: serde_json::Value =
+            serde_json::from_str(r#"{"a": {"c": null, "d": [3, 2]}, "b": 1}"#).unwrap();
+        assert_eq!(canonical_json(&one), canonical_json(&other));
+        assert_eq!(suite_content_digest(&one), suite_content_digest(&other));
+
+        // Array order is meaning, and must still change the digest.
+        let reordered: serde_json::Value =
+            serde_json::from_str(r#"{"a": {"c": null, "d": [2, 3]}, "b": 1}"#).unwrap();
+        assert_ne!(suite_content_digest(&one), suite_content_digest(&reordered));
+    }
+
+    #[test]
+    fn b_through_f_any_content_change_changes_the_digest() {
+        // Every mutation the finding names, with the version left untouched.
+        let original = load_suite_json().unwrap();
+        let base = suite_content_digest(&original);
+
+        let mutate = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut copy = original.clone();
+            edit(&mut copy);
+            assert_eq!(
+                copy["suiteVersion"], original["suiteVersion"],
+                "the version must stay put; that is the whole point"
+            );
+            assert_ne!(suite_content_digest(&copy), base);
+        };
+
+        // B: an expected fact.
+        mutate(&|suite| {
+            suite["cases"][0]["expectedFacts"][0] = serde_json::json!("something else");
+        });
+        // C: a constraint.
+        mutate(&|suite| {
+            suite["cases"][0]["constraints"]["maxNarrationChars"] = serde_json::json!(1);
+        });
+        // D: the world state slice.
+        mutate(&|suite| {
+            suite["cases"][0]["worldStateSlice"]["settlement"]["population"] =
+                serde_json::json!(1);
+        });
+        // E: a forbidden claim.
+        mutate(&|suite| {
+            suite["cases"][0]["forbiddenClaims"][0] = serde_json::json!("anything");
+        });
+        // F: a case removed, and a case added.
+        mutate(&|suite| {
+            suite["cases"].as_array_mut().unwrap().pop();
+        });
+        mutate(&|suite| {
+            let extra = suite["cases"][0].clone();
+            suite["cases"].as_array_mut().unwrap().push(extra);
+        });
+        // And a root field the BenchmarkSuite struct does not even keep.
+        mutate(&|suite| {
+            suite["status"] = serde_json::json!("SOMETHING_ELSE");
+        });
+    }
+
+    #[test]
+    fn the_digest_covers_fields_the_struct_discards() {
+        // The implementation trap, stated as a test: hashing the parsed struct
+        // would sign a document with three of its six root fields torn out.
+        let complete = load_suite_json().unwrap();
+        let root: Vec<&String> = complete.as_object().unwrap().keys().collect();
+        assert!(root.len() > 3, "{root:?}");
+        for field in ["outputContract", "scenario", "status"] {
+            assert!(complete.get(field).is_some(), "{field} is in the file");
+        }
+        // The struct keeps three of them; the digest covers all six, which is
+        // why the raw JSON is hashed rather than the parsed value.
+        let kept = ["schemaVersion", "suiteVersion", "cases"];
+        for field in root {
+            if !kept.contains(&field.as_str()) {
+                assert!(
+                    ["outputContract", "scenario", "status"].contains(&field.as_str()),
+                    "unexpected root field {field}; check the digest still covers it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_loaded_suite_carries_its_own_digest() {
+        let suite = load_suite().unwrap();
+        assert_eq!(suite.content_sha256.len(), 64);
+        assert!(suite.content_sha256.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            suite.content_sha256,
+            suite_content_digest(&load_suite_json().unwrap())
+        );
+
+        let metadata = test_metadata(false);
+        assert_eq!(metadata.suite_content_sha256, suite.content_sha256);
+    }
+
+    #[test]
+    fn j_the_shipped_suite_digest_is_exported_for_typescript() {
+        // Two independent implementations, one expected value. Asserting each
+        // against itself would prove nothing about the other.
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/ai-benchmark/tests/fixtures/suite-content-digest.json");
+        let produced = serde_json::to_string_pretty(&serde_json::json!({
+            "suiteVersion": load_suite().unwrap().suite_version,
+            "suiteContentSha256": load_suite().unwrap().content_sha256,
+        }))
+        .unwrap()
+            + "\n";
+
+        if env::var("CHRONOSAGA_UPDATE_FIXTURES").ok().as_deref() == Some("1") {
+            fs::create_dir_all(fixture_path.parent().unwrap()).unwrap();
+            fs::write(&fixture_path, &produced).unwrap();
+            return;
+        }
+
+        let committed = fs::read_to_string(&fixture_path).unwrap_or_else(|error| {
+            panic!(
+                "missing {}: {error}. Regenerate with CHRONOSAGA_UPDATE_FIXTURES=1",
+                fixture_path.display()
+            )
+        });
+        assert_eq!(
+            committed.replace("\r\n", "\n"),
+            produced,
+            "the suite content changed; regenerate the fixture and check TypeScript agrees"
+        );
+    }
+
     #[test]
     fn the_scene_ids_are_exported_for_the_typescript_evaluator() {
         // Parity is checked, not asserted: each side computes the visible ids
@@ -3409,6 +3694,235 @@ mod tests {
         let rest = &line[start..];
         let end = rest.find("], \"tone_tags\"").expect("the example is well formed") + 1;
         rest[..end].to_string()
+    }
+
+    /// The worked JSON object from a prompt, as a model would copy it.
+    fn worked_example(case: &BenchmarkCase) -> String {
+        let prompt = system_prompt(case);
+        prompt
+            .lines()
+            .last()
+            .expect("the example is the last line")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn every_worked_example_is_accepted_by_the_real_validator() {
+        // The invariant that stops the next placeholder contradiction before it
+        // is written. Not "the example looks right" — the example is parsed and
+        // put through the same validator the run uses, with the same contract.
+        //
+        // A model that copies the prompt must not be rejected for obeying it.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let example = worked_example(case);
+            crate::inference::validate(&example, &case_contract(case)).unwrap_or_else(|error| {
+                panic!(
+                    "{}: the prompt shows an example its own contract refuses: {}\n{}",
+                    case.id,
+                    error.message(),
+                    example
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn no_constrained_identity_is_left_as_an_ellipsis() {
+        // Narration is free prose and keeps its ellipsis. Everything whose value
+        // the validator checks is a real value.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let example = worked_example(case);
+            for field in ["speakerId", "tone_tags", "subjectId", "characterId"] {
+                let placeholder = format!("\"{field}\": \"...\"");
+                assert!(!example.contains(&placeholder), "{}: {example}", case.id);
+            }
+            assert!(!example.contains("[\"...\"]"), "{}: {example}", case.id);
+            assert!(example.contains("\"narration\": \"...\""), "{}", case.id);
+        }
+    }
+
+    #[test]
+    fn a_required_suggestion_example_uses_a_real_id() {
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let example = worked_example(case);
+            if case.constraints.require_event_proposal {
+                let subjects = case_subject_ids(case);
+                assert!(
+                    subjects.iter().any(|id| example.contains(id.as_str())),
+                    "{} demands a proposal and shows no grounded subject: {example}",
+                    case.id
+                );
+            }
+            if case.constraints.require_memory_suggestion {
+                assert!(
+                    case.characters
+                        .iter()
+                        .any(|character| example.contains(character.id.as_str())),
+                    "{} demands a memory and shows no real character: {example}",
+                    case.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tone_tag_shown_is_a_tag_the_case_allows() {
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let example = worked_example(case);
+            let start = example.find("\"tone_tags\": ").expect("the example names tone_tags") + 13;
+            let rest = &example[start..];
+            let end = rest.find(']').expect("well formed") + 1;
+            let shown = &rest[..end];
+            if shown == "[]" {
+                continue;
+            }
+            assert!(
+                case.constraints
+                    .allowed_tone_tags
+                    .iter()
+                    .any(|tag| shown.contains(tag.as_str())),
+                "{} shows {shown}, outside its vocabulary",
+                case.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_strict_case_example_is_still_bare_json() {
+        let suite = load_suite().unwrap();
+        for case in suite.cases.iter().filter(|case| case.constraints.strict_json_only) {
+            let example = worked_example(case);
+            assert!(example.starts_with('{') && example.ends_with('}'), "{example}");
+            assert!(!example.contains("```"), "{example}");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Consequence status
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn the_suite_states_a_status_only_when_a_consequence_has_fired() {
+        // Derived, so the rendering rule below is grounded in the data rather
+        // than in an assumption about what statuses might exist.
+        let suite = load_suite().unwrap();
+        let mut seen: Vec<String> = Vec::new();
+        for case in &suite.cases {
+            for consequence in &case.constraints.pending_consequences {
+                let status = consequence
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("<assente>");
+                if !seen.iter().any(|existing| existing == status) {
+                    seen.push(status.to_string());
+                }
+            }
+        }
+        seen.sort();
+        assert_eq!(seen, vec!["<assente>".to_string(), APPLIED_STATUS.to_string()]);
+    }
+
+    #[test]
+    fn a_and_b_an_applied_consequence_is_presented_as_having_happened() {
+        let suite = load_suite().unwrap();
+        let case = suite
+            .cases
+            .iter()
+            .find(|candidate| candidate.id == "ai_case_060")
+            .expect("the case exists");
+        let prompt = user_prompt(case);
+
+        assert!(prompt.contains("CONSEGUENZE GIA' AVVENUTE"), "{prompt}");
+        // A: it is no longer under the heading that denies it happened.
+        let applied_at = prompt.find("CONSEGUENZE GIA' AVVENUTE").unwrap();
+        assert!(
+            prompt[applied_at..].contains("con_relay_debt_01"),
+            "the applied consequence must appear under the applied heading"
+        );
+        assert!(
+            !prompt.contains("CONSEGUENZE IN SOSPESO"),
+            "{} has nothing left pending: {prompt}",
+            case.id
+        );
+    }
+
+    #[test]
+    fn c_a_pending_consequence_is_still_presented_as_not_yet_occurred() {
+        let suite = load_suite().unwrap();
+        for id in ["ai_case_059", "ai_case_061", "ai_case_062"] {
+            let case = suite.cases.iter().find(|c| c.id == id).expect("the case exists");
+            let prompt = user_prompt(case);
+            assert!(prompt.contains("non ancora avvenute"), "{id}: {prompt}");
+            assert!(!prompt.contains("CONSEGUENZE GIA' AVVENUTE"), "{id}: {prompt}");
+        }
+    }
+
+    #[test]
+    fn d_hidden_consequences_are_still_protected() {
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            let hidden_pending = case.constraints.pending_consequences.iter().any(|c| {
+                c.get("visibility").and_then(|v| v.as_str()) == Some("hidden")
+                    && c.get("status").and_then(|v| v.as_str()) != Some(APPLIED_STATUS)
+            });
+            if hidden_pending {
+                assert!(
+                    user_prompt(case).contains("quelle nascoste non vanno rivelate"),
+                    "{}",
+                    case.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn e_f_and_g_no_consequence_is_filed_under_the_wrong_heading() {
+        // The suite-wide invariant: whichever section a consequence appears in
+        // must agree with its own status.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            if case.constraints.pending_consequences.is_empty() {
+                continue;
+            }
+            let prompt = user_prompt(case);
+            let applied_at = prompt.find("CONSEGUENZE GIA' AVVENUTE");
+            let pending_at = prompt.find("CONSEGUENZE IN SOSPESO");
+
+            for consequence in &case.constraints.pending_consequences {
+                let id = consequence
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .expect("a consequence has an id");
+                let is_applied =
+                    consequence.get("status").and_then(|v| v.as_str()) == Some(APPLIED_STATUS);
+                let section = if is_applied { applied_at } else { pending_at };
+                let section = section.unwrap_or_else(|| {
+                    panic!("{}: {id} has no section to belong to:\n{prompt}", case.id)
+                });
+                let other = if is_applied { pending_at } else { applied_at };
+
+                let in_section = prompt[section..]
+                    .split("\n\n")
+                    .next()
+                    .expect("a section")
+                    .contains(id);
+                assert!(in_section, "{}: {id} is under the wrong heading:\n{prompt}", case.id);
+
+                if let Some(other) = other {
+                    let in_other = prompt[other..]
+                        .split("\n\n")
+                        .next()
+                        .expect("a section")
+                        .contains(id);
+                    assert!(!in_other, "{}: {id} appears in both sections", case.id);
+                }
+            }
+        }
     }
 
     #[test]
@@ -3736,8 +4250,14 @@ mod tests {
             prompt.contains("mai un effetto applicato"),
             "it stays a suggestion: {prompt}"
         );
+        // The example is populated *and* grounded: a real subject from the
+        // scene, not an ellipsis the model would have to guess at.
+        let subject = case_subject_ids(required)
+            .first()
+            .cloned()
+            .expect("a case that demands a proposal has something to propose about");
         assert!(
-            prompt.contains("\"event_proposals\": [{\"subjectId\": \"...\""),
+            prompt.contains(&format!("\"event_proposals\": [{{\"subjectId\": \"{subject}\"")),
             "the example must not be empty: {prompt}"
         );
         assert!(
@@ -3758,8 +4278,15 @@ mod tests {
         let prompt = system_prompt(required);
         assert!(prompt.contains("memory_suggestions DEVE contenere almeno un oggetto"), "{prompt}");
         assert!(prompt.contains("characterId"), "{prompt}");
+        let character = required
+            .characters
+            .first()
+            .map(|character| character.id.clone())
+            .expect("a case that demands a memory has somebody to remember");
         assert!(
-            prompt.contains("\"memory_suggestions\": [{\"characterId\": \"...\""),
+            prompt.contains(&format!(
+                "\"memory_suggestions\": [{{\"characterId\": \"{character}\""
+            )),
             "the example must not be empty: {prompt}"
         );
     }

@@ -25,7 +25,7 @@
       "fallbackProfile": null,
       "fallbackUsed": false,
       "id": "run_001:ai_case_001:lite:1",
-      "inputFingerprint": "18651c52df027717757a959b407ce150348d83d0369c99a3f543a4f664d4b5b4",
+      "inputFingerprint": "311b351d727edc9986f8d1faf851d9fb85bffceacd9b37c4fd3003b677a654f8",
       "latencyMs": 8916,
       "normalizedOutput": {
         "dialogue": [
@@ -81,7 +81,7 @@
       "fallbackProfile": null,
       "fallbackUsed": false,
       "id": "run_001:ai_case_001:standard:1",
-      "inputFingerprint": "18651c52df027717757a959b407ce150348d83d0369c99a3f543a4f664d4b5b4",
+      "inputFingerprint": "311b351d727edc9986f8d1faf851d9fb85bffceacd9b37c4fd3003b677a654f8",
       "latencyMs": 26326,
       "normalizedOutput": null,
       "profile": "standard",
@@ -118,6 +118,7 @@
     "runtimeExecutableSha256": "7a110e56e47fab319791c1f450321ecb77449a372e4c75db68d69069e7cd531e",
     "runtimeReleaseTag": "b10343",
     "startedAt": "2026-08-21T00:00:00Z",
+    "suiteContentSha256": "c7e61a89332b611322565fff6644f2e5207e1ea83e6e529328dec236d158c5c7",
     "suiteSchemaVersion": 1,
     "suiteVersion": "p0.5-a.4"
   }

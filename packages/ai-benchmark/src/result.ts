@@ -99,6 +99,14 @@ export interface RunMetadata {
   gitDirty: boolean;
   suiteVersion: string;
   suiteSchemaVersion: number;
+  /**
+   * SHA-256 of the canonicalised suite file, as it was when the run executed.
+   *
+   * `suiteVersion` is assigned by hand: it records what somebody called the
+   * suite, not what the suite contained. This records the second, so a stored
+   * run cannot be evaluated against an edited suite that kept its version.
+   */
+  suiteContentSha256: string;
   runnerVersion: string;
   runtimeReleaseTag: string;
   runtimeExecutableSha256: string | null;
@@ -215,10 +223,19 @@ export interface NormalizedOutput {
  * because it does not crash: `dialogue: [{ text: 'ok' }]` evaluates a speaker of
  * `undefined` against the scene and produces a score.
  *
- * Shape only: fields, primitive types, array item shapes. Whether a speaker
- * belongs to the scene, whether a tone tag is in the vocabulary and whether a
- * proposal is grounded are semantic questions that stay with their owners — the
- * application validator and the objective evaluator.
+ * Shape and intrinsic value, which is one question: could the application
+ * validator have produced this row at all? It rejects a blank narration, a blank
+ * dialogue line, a blank proposal field and a blank memory field, so a stored row
+ * marked `accepted` that carries any of them did not come from that validator and
+ * is not evidence of anything. `dialogue: [{ speakerId: 'mara_001', text: '   ' }]`
+ * typechecks perfectly and could never have been accepted.
+ *
+ * The line is drawn at *impossible*, not at *bad*. Whether a speaker belongs to
+ * the scene, whether a tone tag is in the vocabulary, whether a proposal is
+ * grounded, whether the narration is any good — those are answers the validator
+ * could legitimately have accepted and the evaluator exists to judge. Turning
+ * them into malformed evidence would refuse to report the very failures the
+ * benchmark is built to measure.
  *
  * Unknown keys are refused, because the authoritative cross-language contract
  * refuses them: `StructuredNarration`, `DialogueLine`, `EventProposal` and
@@ -239,6 +256,8 @@ export function normalizedOutputProblems(value: unknown): string[] {
 
   if (typeof object.narration !== 'string') {
     problems.push('narration is not a string');
+  } else if (object.narration.trim() === '') {
+    problems.push('narration is blank');
   }
 
   problems.push(
@@ -251,7 +270,11 @@ export function normalizedOutputProblems(value: unknown): string[] {
     problems.push('toneTags is not an array');
   } else {
     object.toneTags.forEach((tag, index) => {
-      if (typeof tag !== 'string') problems.push(`toneTags[${index}] is not a string`);
+      if (typeof tag !== 'string') {
+        problems.push(`toneTags[${index}] is not a string`);
+      } else if (tag.trim() === '') {
+        problems.push(`toneTags[${index}] is blank`);
+      }
     });
   }
 
@@ -298,7 +321,12 @@ function fieldProblems(value: unknown, at: string, shape: Record<string, 'string
 
   const problems: string[] = [];
   for (const [field, kind] of Object.entries(shape)) {
-    if (typeof object[field] !== kind) problems.push(`${at}.${field} is not a ${kind}`);
+    const value = object[field];
+    if (typeof value !== kind) {
+      problems.push(`${at}.${field} is not a ${kind}`);
+    } else if (typeof value === 'string' && value.trim() === '') {
+      problems.push(`${at}.${field} is blank`);
+    }
   }
   for (const key of Object.keys(object)) {
     if (!(key in shape)) problems.push(`${at} has an unexpected field '${key}'`);
@@ -320,6 +348,22 @@ export interface ResultProblem {
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /**
+ * Serialise a value with object keys sorted, recursively.
+ *
+ * The canonical form both languages hash. Arrays keep their order, because order
+ * is meaning in a case list; object keys do not, so two files differing only in
+ * key order describe the same suite and must not read as tampering.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, nested]) => nested !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(',')}}`;
+}
+
+/**
  * Validate a recorded run.
  *
  * Deliberately strict about identity and metadata, because a run that cannot be
@@ -330,6 +374,14 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
   const metadata = run.metadata;
 
   if (!metadata.runId) problems.push({ field: 'metadata.runId', message: 'a run id is required' });
+  if (!SHA256.test(metadata.suiteContentSha256 ?? '')) {
+    problems.push({
+      field: 'metadata.suiteContentSha256',
+      message:
+        'a run must record the exact content of the suite it answered, as a SHA-256; ' +
+        'the version alone is a label somebody chose',
+    });
+  }
   if (!metadata.gitCommit) {
     problems.push({ field: 'metadata.gitCommit', message: 'results must be attributable to a commit' });
   }

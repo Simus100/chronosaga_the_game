@@ -7,9 +7,11 @@
  */
 
 import type { BenchmarkCase, BenchmarkSuite, BenchmarkTask } from './case.js';
+import { sha256Hex } from './digest.js';
 import {
   MAX_ATTEMPTS,
   OFFICIAL_COMPARISON_PROFILES,
+  canonicalJson,
   validateRun,
   type BenchmarkGeneration,
   type BenchmarkProfile,
@@ -575,6 +577,18 @@ export function judgementProblems(
 }
 
 /**
+ * The exact content of a suite, as a digest.
+ *
+ * Canonicalised so that key order cannot change the answer, then hashed. Must
+ * agree byte for byte with the Rust `suite_content_digest`, which is asserted by
+ * a fixture rather than assumed: the two implementations are separate, so only a
+ * shared expected value proves they compute the same thing.
+ */
+export function suiteContentDigest(suite: BenchmarkSuite): string {
+  return sha256Hex(canonicalJson(suite));
+}
+
+/**
  * Whether the supplied suite is the suite the run was executed against.
  *
  * `taskMismatches` compares ids and task names, which stay stable across an
@@ -596,6 +610,18 @@ export function suiteBindingProblems(suite: BenchmarkSuite, run: BenchmarkRun): 
     problems.push(
       `the run recorded suite schema ${run.metadata.suiteSchemaVersion} but the supplied suite is ` +
         `schema ${suite.schemaVersion}`,
+    );
+  }
+
+  // The version and schema are labels somebody assigned; this is the file. An
+  // expected fact, a constraint or a whole case can change while the version
+  // stays put, and the run would then be scored against a suite it never saw
+  // with the report still naming the version it recorded.
+  const actual = suiteContentDigest(suite);
+  if (run.metadata.suiteContentSha256 !== actual) {
+    problems.push(
+      `the run answered suite content ${run.metadata.suiteContentSha256 || '<absent>'} but the ` +
+        `supplied suite hashes to ${actual}; same version, different contents`,
     );
   }
   return problems;

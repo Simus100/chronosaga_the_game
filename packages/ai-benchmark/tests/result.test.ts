@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { normalizedOutputProblems, validateRun, type BenchmarkGeneration, type BenchmarkRun } from '../src/result.js';
 import { SCORE_AXES, validateScoreSheet, type ScoreSheet } from '../src/scoring.js';
 import { HARD_FAIL_CATEGORIES, tallyHardFails } from '../src/hard-fail.js';
+import { suiteContentDigest } from '../src/report.js';
+import { loadSuite } from '../src/suite.js';
+
+const suite = loadSuite();
 
 const SHA = 'd2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5';
 
@@ -64,6 +68,7 @@ function run(generations: BenchmarkGeneration[]): BenchmarkRun {
       gitDirty: false,
       suiteVersion: 'p0.5-a.1',
       suiteSchemaVersion: 1,
+      suiteContentSha256: suiteContentDigest(suite),
       runnerVersion: '0.1.0',
       runtimeReleaseTag: 'b10343',
       runtimeExecutableSha256: null,
@@ -308,6 +313,85 @@ describe('the normalized output shape is checked at runtime', () => {
       memorySuggestions: [7],
     });
     expect(problems.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('A and B: an empty or whitespace narration is refused', () => {
+    // The application validator rejects a blank narration, so a stored row
+    // marked accepted that carries one did not come from it.
+    expect(normalizedOutputProblems({ ...valid(), narration: '' })).toEqual(['narration is blank']);
+    expect(normalizedOutputProblems({ ...valid(), narration: '   \n\t' })).toEqual([
+      'narration is blank',
+    ]);
+  });
+
+  it('C and D: a blank dialogue line is refused', () => {
+    expect(
+      normalizedOutputProblems({
+        ...valid(),
+        dialogue: [{ speakerId: 'mara_001', text: '   ' }],
+      }),
+    ).toEqual(['dialogue[0].text is blank']);
+    expect(
+      normalizedOutputProblems({ ...valid(), dialogue: [{ speakerId: ' ', text: 'Ciao.' }] }),
+    ).toEqual(['dialogue[0].speakerId is blank']);
+  });
+
+  it('E: a blank proposal field is refused', () => {
+    for (const field of ['subjectId', 'topic', 'rationale'] as const) {
+      const proposal = { subjectId: 's_h', topic: 't', rationale: 'r', [field]: '  ' };
+      expect(
+        normalizedOutputProblems({ ...valid(), eventProposals: [proposal] }),
+        field,
+      ).toEqual([`eventProposals[0].${field} is blank`]);
+    }
+  });
+
+  it('F: a blank memory field is refused', () => {
+    for (const field of ['characterId', 'summary'] as const) {
+      const suggestion = { characterId: 'mara_001', summary: 's', [field]: '' };
+      expect(
+        normalizedOutputProblems({ ...valid(), memorySuggestions: [suggestion] }),
+        field,
+      ).toEqual([`memorySuggestions[0].${field} is blank`]);
+    }
+  });
+
+  it('a blank tone tag is refused', () => {
+    expect(normalizedOutputProblems({ ...valid(), toneTags: ['tense', ' '] })).toEqual([
+      'toneTags[1] is blank',
+    ]);
+  });
+
+  it('G: ordinary non-empty values pass', () => {
+    expect(normalizedOutputProblems(valid())).toEqual([]);
+  });
+
+  it('does not confuse a bad answer with impossible evidence', () => {
+    // An unknown speaker, a tag outside the vocabulary and an ungrounded
+    // proposal are all things the validator could legitimately have accepted;
+    // they are the evaluator's business, not this boundary's. Refusing them here
+    // would refuse to report the very failures the benchmark measures.
+    expect(
+      normalizedOutputProblems({
+        ...valid(),
+        dialogue: [{ speakerId: 'ghost_999', text: 'Non esisto.' }],
+        toneTags: ['epico'],
+        eventProposals: [{ subjectId: 'settlement_fake', topic: 't', rationale: 'r' }],
+      }),
+    ).toEqual([]);
+  });
+
+  it('I: a blank-valued accepted row reaches no aggregate', () => {
+    const broken = runWith({ ...valid(), narration: '  ' });
+    expect(validateRun(broken).map(problem => problem.field)).toContain('normalizedOutput');
+  });
+
+  it('J: the input object is not trimmed or repaired', () => {
+    const output = { ...valid(), narration: '   ' };
+    const before = structuredClone(output);
+    normalizedOutputProblems(output);
+    expect(output).toEqual(before);
+    expect(output.narration).toBe('   ');
   });
 
   it('L: a rejected generation with a null output stays valid', () => {

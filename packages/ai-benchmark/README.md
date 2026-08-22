@@ -147,6 +147,38 @@ against the five locked categories and the generations the run actually
 contains; the comparison reports machine and human disqualifications separately
 and never merges either into a score.
 
+A report is bound to the exact contents of its suite, not to its label.
+`suiteVersion` is assigned by hand, so a constraint, an expected fact, a world
+state slice or a whole case can change while the version stays put — and a stored
+run would then be scored against a suite it never saw, with the report still
+naming the version it recorded. Every run records `suiteContentSha256`, written
+with the metadata before the first generation, and `buildComparison` recomputes
+the digest of the supplied suite and refuses on mismatch.
+
+The digest is taken over the **complete JSON**, canonicalised: object keys sorted
+recursively, array order preserved. Hashing the parsed `BenchmarkSuite` would
+have signed a document with three of its six root fields torn out —
+`outputContract`, `scenario` and `status` are in the file and not in the struct.
+Rust and TypeScript implement the canonicalisation and the hash separately, so
+`tests/fixtures/suite-content-digest.json` carries one expected value they both
+check against; the TypeScript SHA-256 is its own, so that this package keeps
+needing no Node type definitions, and it is verified against the published FIPS
+vectors as well.
+
+The evidence boundary also asks whether a row could have come from the validator
+at all. `normalizedOutputProblems` checked types; a blank narration or a dialogue
+line whose text is `'   '` typechecks perfectly and the application validator
+would never have produced it, so a row marked `accepted` carrying one is not
+evidence of anything. The line is drawn at *impossible*, not at *bad*: an unknown
+speaker, a tag outside the vocabulary and an ungrounded proposal are answers the
+validator could legitimately have accepted, and refusing them here would refuse
+to report the very failures the benchmark measures.
+
+Narration length is counted as Rust counts it. `String.length` counts UTF-16 code
+units, so an emoji is two, while `chars().count()` says one — the report could
+mark a narration over-length that the validator had accepted. One helper,
+`characterCount`, is used by both the verdict and the sentence explaining it.
+
 Coverage means a **finished** history, not an observed row. The retry policy has
 exactly three completed shapes — accepted first try; rejected then accepted;
 rejected twice, which is exhausted and is still an answer. A rejected first
@@ -255,6 +287,26 @@ context it was given. Both sides now walk the slice with the same id shape
 makes them compare case by case rather than each asserting against itself.
 Widened to shape, not abolished: an underscore is not a licence, and an invented
 `settlement_fake` is refused exactly as before.
+
+The worked example is an instance of the contract, not decoration — all of it,
+not just the dialogue. `"..."` stood where the validator checks the value: a tone
+tag outside the vocabulary, a `subjectId` no scene contains, a `characterId`
+nobody has. A small model copies the example, so it was rejected for obeying the
+prompt. Tone tags now show a real allowed tag, a required proposal shows a real
+grounded subject and a required memory a real character; narration is free prose
+and keeps its ellipsis. The invariant that keeps it that way is not a review of
+the format string: every one of the 65 worked examples is parsed and put through
+the **real application validator** with that case's own contract, and must be
+accepted.
+
+Applied consequences are not pending ones. Everything under
+`pendingConsequences` was printed beneath a heading asserting it had not happened,
+and `ai_case_060` carries one marked `applied` whose effects are in its
+authoritative delta — the model was told it had not occurred while the case
+expected it narrated as having occurred. The sections are partitioned by status
+now. The suite states a status only when it is `applied`; an absent status means
+still waiting, and nothing else is invented. Hidden pending consequences keep
+their protection.
 
 The worked example is an instance of the contract, not decoration. The speaker
 instruction was conditional and the example was not, so a zero-speaker case was

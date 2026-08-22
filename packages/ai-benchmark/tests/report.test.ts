@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildComparison, inputParityProblems, renderComparison } from '../src/report.js';
+import {
+  buildComparison,
+  inputParityProblems,
+  renderComparison,
+  suiteContentDigest,
+} from '../src/report.js';
 import type { BenchmarkGeneration, BenchmarkProfile, BenchmarkRun } from '../src/result.js';
 import { loadSuite } from '../src/suite.js';
 
@@ -96,6 +101,7 @@ function twoProfileRun(caseIds: string[]): BenchmarkRun {
       gitDirty: false,
       suiteVersion: suite.suiteVersion,
       suiteSchemaVersion: 1,
+      suiteContentSha256: suiteContentDigest(suite),
       runnerVersion: '0.1.0',
       runtimeReleaseTag: 'b10343',
       runtimeExecutableSha256: '3e8c1a6b5d4f2907c8b1e6a4d7f0b3c5928e1d4a7b0c3f6e9d2a5b8c1e4f7a0d',

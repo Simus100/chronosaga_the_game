@@ -67,6 +67,19 @@ export interface ObjectiveEvaluation {
   heuristicWarnings: number;
 }
 
+/**
+ * Characters as Rust counts them.
+ *
+ * `String.length` counts UTF-16 code units, so an emoji is 2 and a Rust
+ * `chars().count()` says 1. The application validator enforces the narration
+ * limit in Rust, so a narration it accepted could be marked over-length here —
+ * the report contradicting the validator about the same string. Spreading the
+ * string iterates Unicode scalar values, which is what `chars()` yields.
+ */
+export function characterCount(text: string): number {
+  return [...text].length;
+}
+
 /** Entity ids in this project look like `mara_001`, `settlement_helios`. */
 const ENTITY_ID = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
 
@@ -371,11 +384,14 @@ export function evaluateObjectively(
     );
   }
 
+  // One count, used by both the verdict and the sentence that explains it: a
+  // diagnostic reporting a different number from the predicate is its own bug.
+  const narrationLength = characterCount(validated.narration);
   add(
     'narration_within_limit',
-    validated.narration.length <= constraints.maxNarrationChars,
+    narrationLength <= constraints.maxNarrationChars,
     'deterministic',
-    `${validated.narration.length} of ${constraints.maxNarrationChars} characters`,
+    `${narrationLength} of ${constraints.maxNarrationChars} characters`,
   );
 
   // Only speakers the task actually needs. Being permitted to speak is not an

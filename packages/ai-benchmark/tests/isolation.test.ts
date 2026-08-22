@@ -4,6 +4,7 @@ import { buildComparison } from '../src/report.js';
 import { evaluateObjectively } from '../src/objective.js';
 import { loadSuite } from '../src/suite.js';
 import type { BenchmarkGeneration, BenchmarkRun } from '../src/result.js';
+import { suiteContentDigest } from '../src/report.js';
 
 /**
  * The benchmark reads the world; it never writes it.
@@ -108,6 +109,7 @@ describe('benchmark isolation from authoritative state', () => {
         gitDirty: false,
         suiteVersion: frozenSuite.suiteVersion,
         suiteSchemaVersion: 1,
+        suiteContentSha256: suiteContentDigest(suite),
         runnerVersion: '0.1.0',
         runtimeReleaseTag: 'b10343',
         runtimeExecutableSha256:
