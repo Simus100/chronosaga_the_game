@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import rustRun from './fixtures/rust-run.json' with { type: 'json' };
 import { checkoutBindingProblems, type ReportCheckoutIdentity } from '../src/checkout.js';
@@ -218,7 +219,11 @@ describe('a report is bound to the checkout that produced the run', () => {
 
 describe('the trusted adapter', () => {
   it('M: reads the real repository, without a network', () => {
-    const checkout = readLocalCheckout(new URL('../../../', import.meta.url).pathname.slice(1));
+    // `fileURLToPath`, not `pathname.slice(1)`: on Windows a file URL's pathname
+    // is `/D:/...` and dropping the slash is right, on Linux it is `/home/...`
+    // and dropping it yields a relative path that does not exist. The first
+    // version of this test passed here and failed in CI for exactly that.
+    const checkout = readLocalCheckout(fileURLToPath(new URL('../../../', import.meta.url)));
     expect(checkout).not.toBeNull();
     expect(checkout!.gitCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(typeof checkout!.gitDirty).toBe('boolean');
@@ -233,7 +238,7 @@ describe('the trusted adapter', () => {
     // The trust boundary as a property of the tree: everything under src/ except
     // the adapters directory is free of host concerns, and the package entry
     // point does not re-export the adapter.
-    const root = new URL('../src/', import.meta.url).pathname.slice(1);
+    const root = fileURLToPath(new URL('../src/', import.meta.url));
     const offenders: string[] = [];
     const walk = (directory: string, relative: string) => {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
