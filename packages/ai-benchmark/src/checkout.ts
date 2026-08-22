@@ -57,11 +57,24 @@ export function checkoutBindingProblems(
     ];
   }
 
-  if (!FULL_COMMIT.test(checkout.gitCommit)) {
+  // The identity is an object somebody constructed, so its own fields are
+  // established rather than assumed. Found by attacking this boundary:
+  // `if (checkout.gitDirty)` read an absent, `0` or `null` flag as clean, which
+  // is the same mistake as trusting an annotation over a value — one layer up,
+  // and on the field that decides whether the reporting code exists anywhere but
+  // one machine.
+  if (typeof checkout.gitCommit !== 'string' || !FULL_COMMIT.test(checkout.gitCommit)) {
     return [
       `the reporting checkout's commit could not be determined (got ` +
-        `'${checkout.gitCommit}'); without it the report cannot say which code interpreted ` +
-        'the evidence',
+        `${JSON.stringify(checkout.gitCommit) ?? 'undefined'}); without it the report cannot ` +
+        'say which code interpreted the evidence',
+    ];
+  }
+  if (typeof checkout.gitDirty !== 'boolean') {
+    return [
+      `whether the reporting checkout is clean could not be determined (got ` +
+        `${JSON.stringify(checkout.gitDirty) ?? 'undefined'}); not knowing must never read as ` +
+        'clean',
     ];
   }
 

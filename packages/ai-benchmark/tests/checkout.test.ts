@@ -132,6 +132,33 @@ describe('a report is bound to the checkout that produced the run', () => {
     }
   });
 
+  it('an unestablished cleanliness flag is refused, not read as clean', () => {
+    // Found by attacking this boundary rather than by reading it: truthiness
+    // made an absent, 0 or null flag mean "clean", so a report could be produced
+    // from a dirty tree by an identity that simply never said.
+    const run = officialRun(COMMIT_A);
+    for (const gitDirty of [undefined, 0, 1, null, 'false', 'true', {}, []]) {
+      const identity = { gitCommit: COMMIT_A, gitDirty } as unknown as ReportCheckoutIdentity;
+      const problems = checkoutBindingProblems(run, identity);
+      expect(problems.length, JSON.stringify(gitDirty) ?? 'undefined').toBeGreaterThan(0);
+      expect(() =>
+        buildComparison(suite, run, ['lite', 'standard'], null, null, identity),
+      ).toThrow(/refusing to report from a checkout that is not the run's/);
+    }
+    // And a real boolean still works both ways.
+    expect(checkoutBindingProblems(run, { gitCommit: COMMIT_A, gitDirty: false })).toEqual([]);
+    expect(checkoutBindingProblems(run, { gitCommit: COMMIT_A, gitDirty: true })).toHaveLength(1);
+  });
+
+  it('a commit that is not even a string is refused before the regex', () => {
+    const run = officialRun(COMMIT_A);
+    for (const gitCommit of [undefined, null, 42, {}, [COMMIT_A]]) {
+      const identity = { gitCommit, gitDirty: false } as unknown as ReportCheckoutIdentity;
+      expect(() => checkoutBindingProblems(run, identity), String(gitCommit)).not.toThrow();
+      expect(checkoutBindingProblems(run, identity)[0]).toMatch(/could not be determined/);
+    }
+  });
+
   it('the four refusals say different things, because they mean different things', () => {
     const run = officialRun(COMMIT_A);
     const messages = [
