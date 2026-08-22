@@ -44,6 +44,38 @@ pub struct DialogueLine {
     pub text: String,
 }
 
+/// A non-authoritative suggestion that the Simulation Core *might* raise an
+/// event.
+///
+/// Deliberately the smallest useful shape, and deliberately not a second
+/// gameplay schema: no effects, no resource deltas, no numbers of any kind. A
+/// proposal names what it is about and says why; whether anything happens is the
+/// Core's decision and always was. Before this existed the field was
+/// `Vec<serde_json::Value>`, so `[null]`, `[42]` and `[{}]` all counted as
+/// "accepted structured proposals", which made the phrase meaningless.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EventProposal {
+    /// The entity the proposal concerns. Must be one the scene actually names.
+    pub subject_id: String,
+    /// What kind of event is being suggested, in a word or two.
+    pub topic: String,
+    /// Why the model thinks it follows from the scene.
+    pub rationale: String,
+}
+
+/// A non-authoritative suggestion that a character might remember something.
+///
+/// Same rule: it names who and what, and carries no state. Nothing in this crate
+/// can write a memory, and this type gives a suggestion no power to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemorySuggestion {
+    /// Must be a character the scene contains.
+    pub character_id: String,
+    pub summary: String,
+}
+
 /// The structured output contract for P0.
 ///
 /// Deliberately small, and shaped like the schema in the AI documents so the
@@ -57,26 +89,128 @@ pub struct StructuredNarration {
     /// Required and required to be empty in P0.3-C. No `serde(default)`: a model
     /// that omits the field has not followed the contract, and accepting the
     /// omission would let a sloppy generation look compliant.
-    pub event_proposals: Vec<serde_json::Value>,
+    pub event_proposals: Vec<EventProposal>,
     /// Same contract as `event_proposals`.
-    pub memory_suggestions: Vec<serde_json::Value>,
+    pub memory_suggestions: Vec<MemorySuggestion>,
 }
 
 /// What the generation is allowed to contain.
+///
+/// Every permission defaults to the strictest production behaviour, so a caller
+/// that forgets to think about one gets the safe answer. Only a scene that
+/// deliberately permits something may relax it.
 #[derive(Debug, Clone)]
 pub struct OutputContract {
     /// Speakers the scene actually contains.
+    ///
+    /// An empty list means the scene has nobody to speak: a location
+    /// description, or a bare delta narration. `dialogue` remains a required
+    /// field in that case — the model must still produce the key — but the array
+    /// must then be empty, because there is nobody who could legitimately fill
+    /// it. Unknown-speaker rejection is untouched either way.
     pub known_speaker_ids: Vec<String>,
+    /// Speakers the scene actually needs to hear from.
+    ///
+    /// A subset of [`Self::known_speaker_ids`], and the only one that can fail.
+    /// Appearing in the permitted list is permission to speak, not an obligation
+    /// to: the prompt says the dialogue *may* use these ids, so rejecting an
+    /// answer because a permitted character stayed silent punishes obedience to
+    /// the instruction it was given.
+    ///
+    /// Empty means nobody is obliged and empty dialogue is a legitimate answer.
+    /// Production keeps requiring its addressed speaker, so nothing it accepted
+    /// before is accepted differently now.
+    pub required_speaker_ids: Vec<String>,
     /// Tone vocabulary the UI understands.
     pub allowed_tone_tags: Vec<String>,
     /// Upper bound on narration length, in characters.
     pub max_narration_chars: usize,
+    /// Whether the scene invited event proposals.
+    ///
+    /// False everywhere in the product: the plumbing that would apply a proposal
+    /// does not exist, so anything there is the model reaching for authority.
+    /// The P0.5 benchmark turns it on for the cases that ask for one, and even
+    /// then a proposal is a suggestion the Simulation Core may ignore. Nothing
+    /// in this crate can apply one to WorldState.
+    pub allow_event_proposals: bool,
+    /// Whether the scene needs one.
+    ///
+    /// A subset of the permission, and the only one that can fail. False
+    /// everywhere in the product, where nothing is permitted in the first place;
+    /// the P0.5 benchmark sets it for the cases whose whole task is to produce a
+    /// proposal. Without it a case could tell the model it *must* propose
+    /// something, receive an empty array, and have the validator accept — a row
+    /// recorded as accepted that the objective evaluator then failed, with no
+    /// retry in between.
+    pub require_event_proposal: bool,
+    /// Same contract as [`Self::allow_event_proposals`], for memory suggestions.
+    pub allow_memory_suggestions: bool,
+    /// Same contract as [`Self::require_event_proposal`], for memory suggestions.
+    pub require_memory_suggestion: bool,
+    /// Entities a proposal may legitimately be about.
+    ///
+    /// Empty means grounding is not enforced, which is the production case
+    /// because production permits no proposals at all. A benchmark case that
+    /// invites one fills this from its own slice, so a proposal about an
+    /// invented settlement is refused rather than counted.
+    pub allowed_subject_ids: Vec<String>,
+    /// Characters a memory may be attributed to.
+    ///
+    /// A suggestion for somebody who is not in the scene is invented
+    /// attribution, which is one of the five hard-fail categories.
+    pub known_character_ids: Vec<String>,
+}
+
+impl OutputContract {
+    /// Whether the contract asks for something it does not allow.
+    ///
+    /// Requiring a speaker the scene does not contain is unsatisfiable: every
+    /// answer fails, one for staying silent and the other for an unknown
+    /// speaker. That is a defect in whoever built the contract, and saying so is
+    /// the difference between finding a mis-authored benchmark case and
+    /// recording a model failure that never happened.
+    /// Whether the contract asks for anything it does not allow.
+    ///
+    /// The same unsatisfiability as [`Self::speaker_contract_defect`], for the
+    /// structured suggestions: demanding a proposal a scene forbids fails every
+    /// possible answer, one for the empty array and the other for the item.
+    pub fn contract_defect(&self) -> Option<String> {
+        if let Some(defect) = self.speaker_contract_defect() {
+            return Some(defect);
+        }
+        if self.require_event_proposal && !self.allow_event_proposals {
+            return Some(
+                "an event proposal is required but event proposals are not permitted".to_string(),
+            );
+        }
+        if self.require_memory_suggestion && !self.allow_memory_suggestions {
+            return Some(
+                "a memory suggestion is required but memory suggestions are not permitted"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    pub fn speaker_contract_defect(&self) -> Option<String> {
+        self.required_speaker_ids
+            .iter()
+            .find(|required| !self.known_speaker_ids.contains(required))
+            .map(|required| {
+                format!("'{required}' is required to speak but is not a speaker the scene contains")
+            })
+    }
 }
 
 impl Default for OutputContract {
     fn default() -> Self {
         Self {
             known_speaker_ids: vec!["npc_test_01".to_string()],
+            // Nobody, deliberately. This is the base for `..Default::default()`,
+            // and a base that names a speaker contradicts every caller that
+            // overrides the permitted list — an unsatisfiable contract by
+            // omission. Scenes that need a voice say so, as `SmokeScenario` does.
+            required_speaker_ids: Vec::new(),
             allowed_tone_tags: vec![
                 "teso".to_string(),
                 "calmo".to_string(),
@@ -85,6 +219,15 @@ impl Default for OutputContract {
                 "sollevato".to_string(),
             ],
             max_narration_chars: 1200,
+            allow_event_proposals: false,
+            allow_memory_suggestions: false,
+            // Nothing is demanded of the product: it permits neither, so it can
+            // require neither. Requiring what is forbidden is unsatisfiable, and
+            // a default that did it would make every product contract defective.
+            require_event_proposal: false,
+            require_memory_suggestion: false,
+            allowed_subject_ids: Vec::new(),
+            known_character_ids: Vec::new(),
         }
     }
 }
@@ -103,6 +246,8 @@ pub enum ValidationError {
     UnknownToneTag(String),
     /// The model tried to assert something only the Simulation Core may decide.
     AuthoritativeClaim(String),
+    /// The contract itself is unsatisfiable; the model is not at fault.
+    ContractDefect(String),
 }
 
 impl ValidationError {
@@ -113,6 +258,7 @@ impl ValidationError {
             Self::UnknownSpeaker(d) => format!("unknown speaker: {d}"),
             Self::UnknownToneTag(d) => format!("unknown tone tag: {d}"),
             Self::AuthoritativeClaim(d) => format!("model claimed authoritative state: {d}"),
+            Self::ContractDefect(d) => format!("the scene contract is unsatisfiable: {d}"),
         }
     }
 }
@@ -162,8 +308,22 @@ pub fn validate(raw: &str, contract: &OutputContract) -> Result<StructuredNarrat
             contract.max_narration_chars
         )));
     }
-    if parsed.dialogue.is_empty() {
-        return Err(ValidationError::MissingField("dialogue".to_string()));
+    // Before the answer is judged: a contract that requires a speaker it does not
+    // permit fails every possible answer, and blaming the model for that would
+    // record a failure nobody could have avoided.
+    if let Some(defect) = contract.contract_defect() {
+        return Err(ValidationError::ContractDefect(defect));
+    }
+
+    // `dialogue` is always a required JSON field; whether it may be *empty* is a
+    // property of the scene. A scene with nobody in it that produces dialogue has
+    // invented people. A scene that permits speakers but obliges none may
+    // legitimately fall silent — permission is not obligation, and the prompt
+    // only ever says the dialogue may use these ids.
+    if contract.known_speaker_ids.is_empty() && !parsed.dialogue.is_empty() {
+        return Err(ValidationError::UnknownSpeaker(
+            parsed.dialogue[0].speaker_id.clone(),
+        ));
     }
 
     for line in &parsed.dialogue {
@@ -178,23 +338,87 @@ pub fn validate(raw: &str, contract: &OutputContract) -> Result<StructuredNarrat
         }
     }
 
+    // Obligation, checked against the lines that survived: a required speaker
+    // whose only line was blank has not spoken either.
+    for required in &contract.required_speaker_ids {
+        if !parsed
+            .dialogue
+            .iter()
+            .any(|line| &line.speaker_id == required)
+        {
+            return Err(ValidationError::MissingField(format!(
+                "dialogue from {required}"
+            )));
+        }
+    }
+
     for tag in &parsed.tone_tags {
         if !contract.allowed_tone_tags.contains(tag) {
             return Err(ValidationError::UnknownToneTag(tag.clone()));
         }
     }
 
-    // P0.3-C accepts no proposals at all: the plumbing that would apply them
-    // does not exist yet, so anything here is the model reaching for authority.
-    if !parsed.event_proposals.is_empty() {
+    // The product accepts no proposals at all: the plumbing that would apply one
+    // does not exist, so anything there is the model reaching for authority. A
+    // scene may permit them — the P0.5 benchmark does, for the cases that ask —
+    // and even then they stay suggestions. Passing this validator gives a
+    // proposal no power whatsoever; nothing in this crate writes WorldState.
+    if !contract.allow_event_proposals && !parsed.event_proposals.is_empty() {
         return Err(ValidationError::AuthoritativeClaim(
-            "event_proposals are not accepted in P0.3-C".to_string(),
+            "event_proposals are not accepted by this contract".to_string(),
         ));
     }
-    if !parsed.memory_suggestions.is_empty() {
+    if !contract.allow_memory_suggestions && !parsed.memory_suggestions.is_empty() {
         return Err(ValidationError::AuthoritativeClaim(
-            "memory_suggestions are not accepted in P0.3-C".to_string(),
+            "memory_suggestions are not accepted by this contract".to_string(),
         ));
+    }
+
+    // Permission is not a licence to say anything. A permitted proposal still
+    // has to be about something the scene contains and has to say what it is
+    // suggesting; otherwise "accepted structured proposal" means nothing.
+    for proposal in &parsed.event_proposals {
+        if proposal.subject_id.trim().is_empty() {
+            return Err(ValidationError::MissingField("event proposal subjectId".to_string()));
+        }
+        if proposal.topic.trim().is_empty() {
+            return Err(ValidationError::MissingField("event proposal topic".to_string()));
+        }
+        if proposal.rationale.trim().is_empty() {
+            return Err(ValidationError::MissingField("event proposal rationale".to_string()));
+        }
+        if !contract.allowed_subject_ids.is_empty()
+            && !contract.allowed_subject_ids.contains(&proposal.subject_id)
+        {
+            return Err(ValidationError::AuthoritativeClaim(format!(
+                "event proposal is about '{}', which the scene does not contain",
+                proposal.subject_id
+            )));
+        }
+    }
+
+    // Obligation, after the items that survived. Permission said the array may
+    // be filled; this says the scene needs it filled, and an empty array has not
+    // answered. Structural only: whether the proposal is a *good* one is the
+    // benchmark evaluator's question, not this validator's.
+    if contract.require_event_proposal && parsed.event_proposals.is_empty() {
+        return Err(ValidationError::MissingField("event_proposals".to_string()));
+    }
+
+    for suggestion in &parsed.memory_suggestions {
+        if suggestion.summary.trim().is_empty() {
+            return Err(ValidationError::MissingField("memory suggestion summary".to_string()));
+        }
+        if suggestion.character_id.trim().is_empty() {
+            return Err(ValidationError::MissingField("memory suggestion characterId".to_string()));
+        }
+        if !contract.known_character_ids.contains(&suggestion.character_id) {
+            return Err(ValidationError::UnknownSpeaker(suggestion.character_id.clone()));
+        }
+    }
+
+    if contract.require_memory_suggestion && parsed.memory_suggestions.is_empty() {
+        return Err(ValidationError::MissingField("memory_suggestions".to_string()));
     }
 
     Ok(parsed)
@@ -213,6 +437,11 @@ impl SmokeScenario {
     pub fn contract() -> OutputContract {
         OutputContract {
             known_speaker_ids: vec![Self::SPEAKER_ID.to_string()],
+            // The product scene addresses this NPC and an answer in which it
+            // says nothing has not answered. Stated explicitly so the shipped
+            // path stays exactly as strict as it was before the distinction
+            // existed.
+            required_speaker_ids: vec![Self::SPEAKER_ID.to_string()],
             ..OutputContract::default()
         }
     }
@@ -265,6 +494,36 @@ impl SmokeScenario {
 // Local model provider
 // ---------------------------------------------------------------------------
 
+/// The sampling parameters a request actually uses.
+///
+/// Passed explicitly rather than hard-coded inside the request builder, so the
+/// values that reached `llama-server` and the values a benchmark records are the
+/// same values, from one place. `top_p` and `seed` are `Option` because leaving
+/// them to the server default is a legitimate choice for the product smoke — but
+/// then the record has to say so rather than invent a number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GenerationParameters {
+    pub temperature: f64,
+    pub max_output_tokens: u32,
+    pub top_p: Option<f64>,
+    pub seed: Option<i64>,
+}
+
+impl GenerationParameters {
+    /// What the product smoke has always used.
+    ///
+    /// Low temperature: it is a grounding test, not a creativity test. `top_p`
+    /// and `seed` stay at the runtime's defaults, which is why they are `None`.
+    pub const fn smoke() -> Self {
+        Self {
+            temperature: 0.3,
+            max_output_tokens: 400,
+            top_p: None,
+            seed: None,
+        }
+    }
+}
+
 /// Result of one real generation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -279,6 +538,11 @@ pub struct InferenceOutcome {
     pub narration: Option<String>,
     pub dialogue: Vec<DialogueLine>,
     pub tone_tags: Vec<String>,
+    /// Suggestions the scene permitted, carried as evidence. Never applied: no
+    /// code path in this crate writes WorldState from a generation.
+    pub event_proposals: Vec<EventProposal>,
+    /// Same contract as [`Self::event_proposals`].
+    pub memory_suggestions: Vec<MemorySuggestion>,
     pub validation_error: Option<String>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
@@ -402,15 +666,34 @@ impl LocalModelProvider {
 
     /// Run the smoke generation and validate the result.
     pub async fn generate_smoke(&self) -> Result<InferenceOutcome, String> {
-        let contract = SmokeScenario::contract();
-        let request = serde_json::json!({
+        self.generate(
+            &SmokeScenario::system_prompt(),
+            &SmokeScenario::user_prompt(),
+            &SmokeScenario::contract(),
+            GenerationParameters::smoke(),
+        )
+        .await
+    }
+
+    /// One generation against an arbitrary prompt pair and contract.
+    ///
+    /// The single request path: the smoke scenario and the P0.5 benchmark both
+    /// go through here, so a benchmark measures exactly what the product does
+    /// rather than a parallel implementation that drifted.
+    pub async fn generate(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        contract: &OutputContract,
+        parameters: GenerationParameters,
+    ) -> Result<InferenceOutcome, String> {
+        let mut request = serde_json::json!({
             "messages": [
-                { "role": "system", "content": SmokeScenario::system_prompt() },
-                { "role": "user", "content": SmokeScenario::user_prompt() }
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_prompt }
             ],
-            // Low temperature: this is a grounding test, not a creativity test.
-            "temperature": 0.3,
-            "max_tokens": 400,
+            "temperature": parameters.temperature,
+            "max_tokens": parameters.max_output_tokens,
             // Server-side constraint where the runtime honours it. The
             // application validator still runs on the result regardless.
             "response_format": { "type": "json_object" },
@@ -418,6 +701,15 @@ impl LocalModelProvider {
             // from the request instead of the command line.
             "chat_template_kwargs": { "enable_thinking": false }
         });
+
+        // Only sent when explicitly configured. Adding a default here would make
+        // the recorded parameters a lie about what the runtime actually did.
+        if let Some(top_p) = parameters.top_p {
+            request["top_p"] = serde_json::json!(top_p);
+        }
+        if let Some(seed) = parameters.seed {
+            request["seed"] = serde_json::json!(seed);
+        }
 
         let started = std::time::Instant::now();
         let response = self
@@ -462,6 +754,8 @@ impl LocalModelProvider {
             narration: None,
             dialogue: Vec::new(),
             tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
             validation_error: None,
             prompt_tokens: body["usage"]["prompt_tokens"].as_u64(),
             completion_tokens,
@@ -469,12 +763,14 @@ impl LocalModelProvider {
             model: body["model"].as_str().map(str::to_string),
         };
 
-        match validate(&raw, &contract) {
+        match validate(&raw, contract) {
             Ok(valid) => {
                 outcome.accepted = true;
                 outcome.narration = Some(valid.narration);
                 outcome.dialogue = valid.dialogue;
                 outcome.tone_tags = valid.tone_tags;
+                outcome.event_proposals = valid.event_proposals;
+                outcome.memory_suggestions = valid.memory_suggestions;
             }
             Err(error) => outcome.validation_error = Some(error.message()),
         }
@@ -485,6 +781,501 @@ impl LocalModelProvider {
 
 #[cfg(test)]
 mod tests {
+    /// A scene with nobody in it, which is what a location description is.
+    fn empty_scene_contract() -> OutputContract {
+        OutputContract {
+            known_speaker_ids: Vec::new(),
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            ..OutputContract::default()
+        }
+    }
+
+    fn payload(dialogue: &str, proposals: &str, suggestions: &str) -> String {
+        format!(
+            "{{\"narration\": \"Helios Reach tace.\", \"dialogue\": [{dialogue}], \
+             \"tone_tags\": [\"tense\"], \"event_proposals\": [{proposals}], \
+             \"memory_suggestions\": [{suggestions}]}}"
+        )
+    }
+
+    #[test]
+    fn a_scene_with_no_speakers_accepts_an_empty_dialogue_array() {
+        // Before this, a location description was impossible to answer: the
+        // prompt said "produce no dialogue" and the validator rejected every
+        // empty array. The field stays required; only its contents may be empty.
+        let valid = validate(&payload("", "", ""), &empty_scene_contract())
+            .expect("an empty scene must accept empty dialogue");
+        assert!(valid.dialogue.is_empty());
+        assert_eq!(valid.narration, "Helios Reach tace.");
+    }
+
+    #[test]
+    fn a_scene_with_no_speakers_still_rejects_invented_dialogue() {
+        // The permission is "nobody speaks", not "anybody may speak". Unknown
+        // speaker rejection is untouched.
+        let error = validate(
+            &payload("{\"speakerId\": \"mara_001\", \"text\": \"Ciao.\"}", "", ""),
+            &empty_scene_contract(),
+        )
+        .expect_err("nobody is in this scene");
+        assert!(matches!(error, ValidationError::UnknownSpeaker(ref who) if who == "mara_001"));
+    }
+
+    /// A scene that permits `mara_001` to speak and obliges `required` to.
+    fn speaker_contract(permitted: &[&str], required: &[&str]) -> OutputContract {
+        OutputContract {
+            known_speaker_ids: permitted.iter().map(|id| id.to_string()).collect(),
+            required_speaker_ids: required.iter().map(|id| id.to_string()).collect(),
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            ..OutputContract::default()
+        }
+    }
+
+    fn line(speaker: &str) -> String {
+        format!("{{\"speakerId\": \"{speaker}\", \"text\": \"Ciao.\"}}")
+    }
+
+    #[test]
+    fn a_required_speaker_who_stays_silent_is_rejected() {
+        let error = validate(
+            &payload("", "", ""),
+            &speaker_contract(&["mara_001"], &["mara_001"]),
+        )
+        .expect_err("the scene needed this voice");
+        assert!(
+            matches!(error, ValidationError::MissingField(ref field) if field == "dialogue from mara_001"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn b_one_of_two_required_speakers_is_not_enough() {
+        let error = validate(
+            &payload(&line("mara_001"), "", ""),
+            &speaker_contract(&["mara_001", "brann_001"], &["mara_001", "brann_001"]),
+        )
+        .expect_err("brann was required and said nothing");
+        assert!(
+            matches!(error, ValidationError::MissingField(ref field) if field == "dialogue from brann_001"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_permitted_speaker_may_stay_silent() {
+        // The defect this replaces: `mara_001` was permitted to speak, nobody was
+        // obliged to, and the validator rejected the answer anyway — recording a
+        // compliant output as a rejection before the evaluator ever saw it.
+        validate(
+            &payload(&line("mara_001"), "", ""),
+            &speaker_contract(&["mara_001", "brann_001"], &["mara_001"]),
+        )
+        .expect("brann was permitted, not required");
+    }
+
+    #[test]
+    fn c_a_scene_that_obliges_nobody_accepts_empty_dialogue() {
+        validate(
+            &payload("", "", ""),
+            &speaker_contract(&["mara_001", "brann_001"], &[]),
+        )
+        .expect("permission is not obligation");
+    }
+
+    #[test]
+    fn d_an_unknown_speaker_is_still_rejected_however_few_are_required() {
+        let error = validate(
+            &payload(&line("ghost_999"), "", ""),
+            &speaker_contract(&["mara_001"], &[]),
+        )
+        .expect_err("ghost_999 is not in this scene");
+        assert!(matches!(error, ValidationError::UnknownSpeaker(ref who) if who == "ghost_999"));
+    }
+
+    #[test]
+    fn e_requiring_a_speaker_the_scene_forbids_is_a_contract_defect() {
+        // Unsatisfiable: silence fails the requirement, speech fails the
+        // permission. Blaming the model for that would record a failure nobody
+        // could have avoided, so it is named as what it is.
+        let contract = speaker_contract(&["mara_001"], &["brann_001"]);
+        assert!(contract.speaker_contract_defect().is_some());
+
+        let error = validate(&payload(&line("mara_001"), "", ""), &contract)
+            .expect_err("the contract contradicts itself");
+        assert!(
+            matches!(error, ValidationError::ContractDefect(ref detail) if detail.contains("brann_001")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_required_speaker_whose_only_line_is_blank_has_not_spoken() {
+        let error = validate(
+            &payload("{\"speakerId\": \"mara_001\", \"text\": \"   \"}", "", ""),
+            &speaker_contract(&["mara_001"], &["mara_001"]),
+        )
+        .expect_err("whitespace is not dialogue");
+        assert!(matches!(error, ValidationError::MissingField(_)), "{error:?}");
+    }
+
+    #[test]
+    fn the_product_scene_still_requires_its_npc_to_speak() {
+        // Production behaviour is unchanged: the shipped contract names its
+        // speaker as required, so an answer that omits it is refused exactly as
+        // it was before permission and obligation were separated.
+        let contract = SmokeScenario::contract();
+        assert_eq!(contract.required_speaker_ids, vec![SmokeScenario::SPEAKER_ID]);
+        assert!(contract.speaker_contract_defect().is_none());
+        assert!(validate(&payload("", "", ""), &contract).is_err());
+    }
+
+    #[test]
+    fn g_a_scene_with_nobody_in_it_is_valid_and_silent() {
+        validate(&payload("", "", ""), &empty_scene_contract())
+            .expect("a location description has no voices");
+        assert!(empty_scene_contract().required_speaker_ids.is_empty());
+    }
+
+    /// A scene that invites suggestions, grounded on one character.
+    fn inviting_contract(events: bool, memories: bool) -> OutputContract {
+        OutputContract {
+            known_speaker_ids: vec!["mara_001".to_string()],
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            allow_event_proposals: events,
+            allow_memory_suggestions: memories,
+            require_event_proposal: false,
+            require_memory_suggestion: false,
+            required_speaker_ids: Vec::new(),
+            allowed_subject_ids: vec!["settlement_helios".to_string(), "mara_001".to_string()],
+            known_character_ids: vec!["mara_001".to_string()],
+        }
+    }
+
+    const LINE: &str = "{\"speakerId\": \"mara_001\", \"text\": \"Ciao.\"}";
+    const GOOD_PROPOSAL: &str = "{\"subjectId\": \"settlement_helios\", \"topic\": \"razionamento\", \
+                                 \"rationale\": \"L'acqua e' scesa.\"}";
+    const GOOD_MEMORY: &str =
+        "{\"characterId\": \"mara_001\", \"summary\": \"Ha firmato il razionamento.\"}";
+
+    /// A scene that permits and optionally demands structured suggestions.
+    fn suggestion_contract(
+        allow_events: bool,
+        require_event: bool,
+        allow_memories: bool,
+        require_memory: bool,
+    ) -> OutputContract {
+        OutputContract {
+            allow_event_proposals: allow_events,
+            require_event_proposal: require_event,
+            allow_memory_suggestions: allow_memories,
+            require_memory_suggestion: require_memory,
+            ..inviting_contract(allow_events, allow_memories)
+        }
+    }
+
+    #[test]
+    fn a_permitted_proposal_may_be_absent() {
+        // A: permission is not obligation here either.
+        validate(&payload(&line("mara_001"), "", ""), &suggestion_contract(true, false, false, false))
+            .expect("the scene tolerated a proposal; it did not ask for one");
+    }
+
+    #[test]
+    fn b_a_required_proposal_may_not_be_absent() {
+        // The defect: this was accepted, no retry was spent, and the objective
+        // evaluator failed the same row afterwards.
+        let error = validate(
+            &payload(&line("mara_001"), "", ""),
+            &suggestion_contract(true, true, false, false),
+        )
+        .expect_err("the scene asked for a proposal");
+        assert!(
+            matches!(error, ValidationError::MissingField(ref field) if field == "event_proposals"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn c_a_required_proposal_that_is_present_is_accepted() {
+        validate(
+            &payload(&line("mara_001"), GOOD_PROPOSAL, ""),
+            &suggestion_contract(true, true, false, false),
+        )
+        .expect("the scene asked and the model answered");
+    }
+
+    #[test]
+    fn d_requiring_a_forbidden_proposal_is_a_contract_defect() {
+        let contract = suggestion_contract(false, true, false, false);
+        assert!(contract.contract_defect().is_some());
+        let error = validate(&payload(&line("mara_001"), "", ""), &contract)
+            .expect_err("the contract contradicts itself");
+        assert!(
+            matches!(error, ValidationError::ContractDefect(ref detail)
+                if detail.contains("not permitted")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn e_a_permitted_memory_may_be_absent() {
+        validate(&payload(&line("mara_001"), "", ""), &suggestion_contract(false, false, true, false))
+            .expect("the scene tolerated a suggestion; it did not ask for one");
+    }
+
+    #[test]
+    fn f_a_required_memory_may_not_be_absent() {
+        let error = validate(
+            &payload(&line("mara_001"), "", ""),
+            &suggestion_contract(false, false, true, true),
+        )
+        .expect_err("the scene asked for a memory suggestion");
+        assert!(
+            matches!(error, ValidationError::MissingField(ref field) if field == "memory_suggestions"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn g_a_required_memory_that_is_present_is_accepted() {
+        validate(
+            &payload(&line("mara_001"), "", GOOD_MEMORY),
+            &suggestion_contract(false, false, true, true),
+        )
+        .expect("the scene asked and the model answered");
+    }
+
+    #[test]
+    fn h_requiring_a_forbidden_memory_is_a_contract_defect() {
+        let contract = suggestion_contract(false, false, false, true);
+        assert!(contract.contract_defect().is_some());
+        assert!(matches!(
+            validate(&payload(&line("mara_001"), "", ""), &contract),
+            Err(ValidationError::ContractDefect(_))
+        ));
+    }
+
+    #[test]
+    fn a_required_item_is_still_judged_on_its_content() {
+        // Requirement does not soften grounding: an item about something the
+        // scene does not contain is refused as before, not accepted for being
+        // present.
+        let ungrounded = "{\"subjectId\": \"settlement_fake\", \"topic\": \"t\", \"rationale\": \"r\"}";
+        assert!(matches!(
+            validate(
+                &payload(&line("mara_001"), ungrounded, ""),
+                &suggestion_contract(true, true, false, false)
+            ),
+            Err(ValidationError::AuthoritativeClaim(_))
+        ));
+    }
+
+    #[test]
+    fn m_production_defaults_demand_nothing() {
+        // The product permits neither, so it can require neither; requiring what
+        // is forbidden would make every shipped contract defective.
+        let default = OutputContract::default();
+        assert!(!default.require_event_proposal);
+        assert!(!default.require_memory_suggestion);
+        assert!(default.contract_defect().is_none());
+
+        let product = SmokeScenario::contract();
+        assert!(!product.require_event_proposal);
+        assert!(!product.require_memory_suggestion);
+        assert!(product.contract_defect().is_none());
+        // And an answer with empty arrays is still accepted, exactly as before.
+        // Built against the product's own vocabulary rather than the fixture's.
+        let answer = format!(
+            "{{\"narration\": \"Il turno passa.\", \"dialogue\": [{}],              \"tone_tags\": [\"{}\"], \"event_proposals\": [], \"memory_suggestions\": []}}",
+            line(SmokeScenario::SPEAKER_ID),
+            product.allowed_tone_tags[0],
+        );
+        validate(&answer, &product).expect("the product never asked for suggestions");
+    }
+
+    #[test]
+    fn the_default_contract_still_refuses_proposals_and_suggestions() {
+        // Production is unchanged and fail-closed: nothing may reach for
+        // authority, however well-formed it is.
+        let contract = OutputContract {
+            known_speaker_ids: vec!["mara_001".to_string()],
+            allowed_tone_tags: vec!["tense".to_string()],
+            max_narration_chars: 500,
+            ..OutputContract::default()
+        };
+        assert!(!contract.allow_event_proposals);
+        assert!(!contract.allow_memory_suggestions);
+
+        let proposal = validate(&payload(LINE, GOOD_PROPOSAL, ""), &contract)
+            .expect_err("proposals are not accepted by default");
+        assert!(matches!(proposal, ValidationError::AuthoritativeClaim(_)));
+
+        let suggestion = validate(&payload(LINE, "", GOOD_MEMORY), &contract)
+            .expect_err("suggestions are not accepted by default");
+        assert!(matches!(suggestion, ValidationError::AuthoritativeClaim(_)));
+    }
+
+    #[test]
+    fn a_valid_typed_proposal_is_accepted() {
+        let valid = validate(&payload(LINE, GOOD_PROPOSAL, ""), &inviting_contract(true, false))
+            .expect("a permitted, grounded, complete proposal must pass");
+
+        assert_eq!(valid.event_proposals.len(), 1);
+        assert_eq!(valid.event_proposals[0].subject_id, "settlement_helios");
+        assert_eq!(valid.event_proposals[0].topic, "razionamento");
+        assert!(valid.memory_suggestions.is_empty(), "one permission is not the other");
+    }
+
+    #[test]
+    fn a_primitive_is_not_a_proposal() {
+        // The three shapes that used to count as "accepted structured
+        // proposals" while carrying no information at all.
+        for item in ["null", "42", "\"qualcosa\""] {
+            let error = validate(&payload(LINE, item, ""), &inviting_contract(true, false))
+                .unwrap_err();
+            assert!(
+                matches!(error, ValidationError::Malformed(_)),
+                "{item} must be refused, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_object_is_not_a_proposal() {
+        let error =
+            validate(&payload(LINE, "{}", ""), &inviting_contract(true, false)).unwrap_err();
+        assert!(matches!(error, ValidationError::Malformed(_)));
+        assert!(error.message().contains("subjectId"), "{}", error.message());
+    }
+
+    #[test]
+    fn a_proposal_missing_a_required_field_is_refused() {
+        let partial = "{\"subjectId\": \"settlement_helios\", \"topic\": \"razionamento\"}";
+        let error =
+            validate(&payload(LINE, partial, ""), &inviting_contract(true, false)).unwrap_err();
+        assert!(error.message().contains("rationale"), "{}", error.message());
+    }
+
+    #[test]
+    fn a_proposal_with_an_empty_required_string_is_refused() {
+        let blank = "{\"subjectId\": \"settlement_helios\", \"topic\": \"  \", \
+                     \"rationale\": \"perche' si.\"}";
+        let error =
+            validate(&payload(LINE, blank, ""), &inviting_contract(true, false)).unwrap_err();
+        assert!(matches!(error, ValidationError::MissingField(ref f) if f.contains("topic")));
+    }
+
+    #[test]
+    fn a_proposal_with_an_unknown_field_is_refused() {
+        // deny_unknown_fields: a proposal that smuggles an effect alongside the
+        // agreed shape is not the agreed shape.
+        let smuggled = "{\"subjectId\": \"settlement_helios\", \"topic\": \"t\", \
+                        \"rationale\": \"r\", \"resourceDelta\": -3}";
+        let error =
+            validate(&payload(LINE, smuggled, ""), &inviting_contract(true, false)).unwrap_err();
+        assert!(matches!(error, ValidationError::Malformed(_)));
+        assert!(error.message().contains("resourceDelta"), "{}", error.message());
+    }
+
+    #[test]
+    fn a_proposal_about_something_the_scene_does_not_contain_is_refused() {
+        let invented = "{\"subjectId\": \"settlement_borealis\", \"topic\": \"t\", \
+                        \"rationale\": \"r\"}";
+        let error =
+            validate(&payload(LINE, invented, ""), &inviting_contract(true, false)).unwrap_err();
+        assert!(matches!(error, ValidationError::AuthoritativeClaim(ref d) if d.contains("settlement_borealis")));
+    }
+
+    #[test]
+    fn a_valid_typed_memory_suggestion_is_accepted() {
+        let valid = validate(&payload(LINE, "", GOOD_MEMORY), &inviting_contract(false, true))
+            .expect("a permitted suggestion for a present character must pass");
+
+        assert_eq!(valid.memory_suggestions.len(), 1);
+        assert_eq!(valid.memory_suggestions[0].character_id, "mara_001");
+        assert!(valid.event_proposals.is_empty());
+    }
+
+    #[test]
+    fn a_primitive_is_not_a_memory_suggestion() {
+        for item in ["null", "42", "\"ricorda qualcosa\""] {
+            let error = validate(&payload(LINE, "", item), &inviting_contract(false, true))
+                .unwrap_err();
+            assert!(
+                matches!(error, ValidationError::Malformed(_)),
+                "{item} must be refused, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_memory_suggestion_without_a_character_is_refused() {
+        let error = validate(
+            &payload(LINE, "", "{\"summary\": \"qualcosa\"}"),
+            &inviting_contract(false, true),
+        )
+        .unwrap_err();
+        assert!(error.message().contains("characterId"), "{}", error.message());
+    }
+
+    #[test]
+    fn a_memory_suggestion_for_someone_not_in_the_scene_is_refused() {
+        // Invented attribution is one of the five hard-fail categories; the
+        // validator refuses it outright rather than letting it be scored.
+        let foreign = "{\"characterId\": \"brann_001\", \"summary\": \"qualcosa\"}";
+        let error =
+            validate(&payload(LINE, "", foreign), &inviting_contract(false, true)).unwrap_err();
+        assert!(matches!(error, ValidationError::UnknownSpeaker(ref who) if who == "brann_001"));
+    }
+
+    #[test]
+    fn a_memory_suggestion_with_an_empty_summary_is_refused() {
+        let blank = "{\"characterId\": \"mara_001\", \"summary\": \"   \"}";
+        let error =
+            validate(&payload(LINE, "", blank), &inviting_contract(false, true)).unwrap_err();
+        assert!(matches!(error, ValidationError::MissingField(ref f) if f.contains("summary")));
+    }
+
+    #[test]
+    fn an_accepted_suggestion_remains_inert() {
+        // The typed shape carries no effect, no number and no state, and the
+        // boundary that produced it imports nothing that could apply one.
+        let contract = inviting_contract(true, true);
+        let valid = validate(&payload(LINE, GOOD_PROPOSAL, GOOD_MEMORY), &contract)
+            .expect("both permitted");
+
+        assert_eq!(valid.event_proposals.len(), 1);
+        assert_eq!(valid.memory_suggestions.len(), 1);
+
+        // Serialising the accepted suggestions back out shows only the agreed
+        // fields: there is nowhere for a mutation to hide.
+        let serialised = serde_json::to_string(&valid.event_proposals).unwrap();
+        assert_eq!(
+            serialised,
+            "[{\"subjectId\":\"settlement_helios\",\"topic\":\"razionamento\",\
+             \"rationale\":\"L'acqua e' scesa.\"}]"
+        );
+
+        // Access is what imports grant, so imports are what this checks.
+        let imports: Vec<&str> = include_str!("inference.rs")
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("use "))
+            .collect();
+        assert!(!imports.is_empty(), "the scan must actually be looking at something");
+        for import in imports {
+            for forbidden in ["game_core", "game_types", "state", "persistence"] {
+                assert!(
+                    !import.contains(forbidden),
+                    "the inference boundary must not import {forbidden}: {import}"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     /// Unwrap the error side with a message naming the case under test.
@@ -652,12 +1443,23 @@ mod tests {
                 "event_proposals": [],
                 "memory_suggestions": []
             });
-            payload[field] = serde_json::json!([{ "type": "combat_resolved" }]);
+            // Well-formed for its type, so it reaches the permission check
+            // rather than dying in deserialisation: this asserts the production
+            // contract refuses the *permission*, not merely the shape.
+            payload[field] = if field == "event_proposals" {
+                serde_json::json!([{
+                    "subjectId": "npc_test_01",
+                    "topic": "combat",
+                    "rationale": "the fight resolved"
+                }])
+            } else {
+                serde_json::json!([{ "characterId": "npc_test_01", "summary": "ricorda" }])
+            };
 
             let error = validate(&payload.to_string(), &SmokeScenario::contract()).unwrap_err();
             assert!(
                 matches!(error, ValidationError::AuthoritativeClaim(_)),
-                "{field} must be refused"
+                "{field} must be refused, got {error:?}"
             );
         }
     }
@@ -756,6 +1558,8 @@ mod tests {
             narration: None,
             dialogue: Vec::new(),
             tone_tags: Vec::new(),
+            event_proposals: Vec::new(),
+            memory_suggestions: Vec::new(),
             validation_error: Some("rejected".to_string()),
             prompt_tokens: None,
             completion_tokens: None,

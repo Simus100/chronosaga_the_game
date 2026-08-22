@@ -1,0 +1,125 @@
+{
+  "generations": [
+    {
+      "accepted": true,
+      "artifact": {
+        "artifactFilename": "Qwen3-1.7B-Q4_K_M.gguf",
+        "family": "Qwen3-1.7B",
+        "profileId": "lite",
+        "quantization": "Q4_K_M",
+        "releaseApproved": false,
+        "sha256": "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+        "sizeBytes": 1282439264,
+        "source": "user model library"
+      },
+      "attempt": 1,
+      "caseId": "ai_case_001",
+      "context": {
+        "contextSize": 4096,
+        "maxOutputTokens": 400,
+        "reasoning": "off",
+        "seed": 7419,
+        "temperature": 0.3,
+        "topP": 0.9
+      },
+      "fallbackProfile": null,
+      "fallbackUsed": false,
+      "id": "run_001:ai_case_001:lite:1",
+      "inputFingerprint": "311b351d727edc9986f8d1faf851d9fb85bffceacd9b37c4fd3003b677a654f8",
+      "latencyMs": 8916,
+      "normalizedOutput": {
+        "dialogue": [
+          {
+            "speakerId": "mara_001",
+            "text": "Dobbiamo razionare."
+          }
+        ],
+        "eventProposals": [],
+        "memorySuggestions": [],
+        "narration": "La riserva d'acqua scende.",
+        "toneTags": [
+          "tense"
+        ]
+      },
+      "profile": "lite",
+      "rawFormat": {
+        "bareJson": true,
+        "codeFencePresent": false,
+        "wrapperTextPresent": false
+      },
+      "rawOutputPath": "raw/ai_case_001.lite.1.txt",
+      "retryUsed": false,
+      "runId": "run_001",
+      "servedModel": "lite",
+      "task": "single_npc_dialogue",
+      "tokensGenerated": 161,
+      "tokensPerSecond": 18.1,
+      "validatorErrors": []
+    },
+    {
+      "accepted": false,
+      "artifact": {
+        "artifactFilename": "SmolLM3-Q4_K_M.gguf",
+        "family": "SmolLM3-3B",
+        "profileId": "standard",
+        "quantization": "Q4_K_M",
+        "releaseApproved": false,
+        "sha256": "8334b850b7bd46238c16b0c550df2138f0889bf433809008cc17a8b05761863e",
+        "sizeBytes": 1915305312,
+        "source": "user model library"
+      },
+      "attempt": 1,
+      "caseId": "ai_case_001",
+      "context": {
+        "contextSize": 4096,
+        "maxOutputTokens": 400,
+        "reasoning": "off",
+        "seed": 7419,
+        "temperature": 0.3,
+        "topP": 0.9
+      },
+      "fallbackProfile": null,
+      "fallbackUsed": false,
+      "id": "run_001:ai_case_001:standard:1",
+      "inputFingerprint": "311b351d727edc9986f8d1faf851d9fb85bffceacd9b37c4fd3003b677a654f8",
+      "latencyMs": 26326,
+      "normalizedOutput": null,
+      "profile": "standard",
+      "rawFormat": {
+        "bareJson": false,
+        "codeFencePresent": true,
+        "wrapperTextPresent": true
+      },
+      "rawOutputPath": "raw/ai_case_001.standard.1.txt",
+      "retryUsed": false,
+      "runId": "run_001",
+      "servedModel": "standard",
+      "task": "single_npc_dialogue",
+      "tokensGenerated": null,
+      "tokensPerSecond": null,
+      "validatorErrors": [
+        "unknown tone tag: epico"
+      ]
+    }
+  ],
+  "metadata": {
+    "gitCommit": "9599f38d846f29907286e53200f51a703af4f53c",
+    "gitDirty": false,
+    "host": {
+      "arch": "x86_64",
+      "cpu": "i7-13700KF",
+      "logicalCores": 24,
+      "os": "Windows 11",
+      "totalRamMb": 65536
+    },
+    "runId": "run_001",
+    "runKind": "official_comparison",
+    "runnerVersion": "0.1.0",
+    "runtimeExecutableSha256": "7a110e56e47fab319791c1f450321ecb77449a372e4c75db68d69069e7cd531e",
+    "runtimeReleaseTag": "b10343",
+    "startedAt": "2026-08-21T00:00:00Z",
+    "suiteContentSha256": "c7e61a89332b611322565fff6644f2e5207e1ea83e6e529328dec236d158c5c7",
+    "suiteSchemaVersion": 1,
+    "suiteVersion": "p0.5-a.4"
+  }
+}

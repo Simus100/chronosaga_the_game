@@ -9,6 +9,7 @@ mod runtime_watcher;
 
 /// Opt-in lifecycle test against the real llama-server payload.
 #[cfg(test)]
+mod benchmark;
 mod runtime_e2e;
 
 use inference::{InferenceOutcome, LocalModelProvider};

@@ -110,6 +110,28 @@ pub struct RuntimeLock {
     pub release_tag: String,
     pub external_path_relative_to_workspace_root: String,
     pub expected_executable_name: String,
+    /// Digest of the `llama-server.exe` this release is locked to.
+    ///
+    /// Already verified by `pnpm verify:local-ai-runtime`; carried here so a
+    /// benchmark run can record which runtime produced its numbers without
+    /// re-deriving it or, worse, writing it down by hand somewhere else.
+    ///
+    /// The P0.5 benchmark is its only consumer and is test-only for P0.5-A, so
+    /// the field is gated the same way. Promoting the runner to production in
+    /// P0.5-B means deleting this attribute, which is a visible edit rather than
+    /// a silent one.
+    #[cfg(test)]
+    pub executable_sha256: String,
+    /// Every file of the verified distribution, with its exact size and digest.
+    ///
+    /// `llama-server.exe` is a shim; the runtime that actually answers lives in
+    /// the adjacent DLLs. Checking only the executable would let a swapped
+    /// `ggml-cpu-*.dll` produce the measurements while the evidence named the
+    /// locked release. The same 51 entries `pnpm verify:local-ai-runtime`
+    /// checks, read from the same file: this crate adds no second authority.
+    #[cfg(test)]
+    #[serde(default)]
+    pub distribution_files: Vec<DistributionFile>,
 }
 
 /// Which copy of the runtime was resolved.
@@ -128,6 +150,179 @@ impl RuntimeSource {
             Self::DevelopmentWorkspace => "development workspace",
         }
     }
+}
+
+/// One file of the locked llama.cpp distribution.
+#[cfg(test)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DistributionFile {
+    pub path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+/// Why a runtime directory failed to match the lock.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct RuntimeIntegrityError {
+    pub message: String,
+    /// How many files were checked before the failure, for diagnostics.
+    pub checked: usize,
+}
+
+/// A runtime distribution whose bytes were read and matched against the lock.
+///
+/// The only way to obtain one is [`verify_runtime_distribution`], so a value of
+/// this type is itself the evidence. Copying an expected digest out of the lock
+/// cannot produce one, which is the entire point: the previous design recorded
+/// what the runtime *should* have been and called it provenance.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct VerifiedRuntimeIdentity {
+    release_tag: String,
+    executable_sha256: String,
+    directory: PathBuf,
+    files_verified: usize,
+    elapsed_ms: u64,
+}
+
+#[cfg(test)]
+impl VerifiedRuntimeIdentity {
+    pub fn release_tag(&self) -> &str {
+        &self.release_tag
+    }
+    /// The digest of the bytes that were actually hashed on this machine.
+    pub fn executable_sha256(&self) -> &str {
+        &self.executable_sha256
+    }
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+    pub fn files_verified(&self) -> usize {
+        self.files_verified
+    }
+    pub fn elapsed_ms(&self) -> u64 {
+        self.elapsed_ms
+    }
+}
+
+/// Stream a file's SHA-256 without loading it into memory.
+///
+/// The distribution is ~45 MB across 51 files; chunked so the same helper stays
+/// honest if a future release is larger.
+#[cfg(test)]
+fn stream_sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("unable to read {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Verify a resolved runtime directory against the locked distribution.
+///
+/// Every entry in `distributionFiles` is checked for presence, exact size and
+/// exact digest, and the executable's digest must additionally match the lock's
+/// dedicated `executableSha256`. Fails on the first mismatch with the file that
+/// caused it, because a partially-verified runtime is not a verified runtime.
+#[cfg(test)]
+pub fn verify_runtime_distribution(
+    lock: &RuntimeLock,
+    directory: &Path,
+) -> Result<VerifiedRuntimeIdentity, RuntimeIntegrityError> {
+    let started = std::time::Instant::now();
+    let fail = |message: String, checked: usize| RuntimeIntegrityError { message, checked };
+
+    if lock.distribution_files.is_empty() {
+        return Err(fail(
+            "the runtime lock declares no distribution files to verify against".to_string(),
+            0,
+        ));
+    }
+
+    let mut checked = 0usize;
+    let mut executable_digest = None;
+
+    for entry in &lock.distribution_files {
+        let path = directory.join(&entry.path);
+        let metadata = fs::metadata(&path).map_err(|error| {
+            fail(
+                format!("{} is missing from the runtime directory: {error}", entry.path),
+                checked,
+            )
+        })?;
+        if metadata.len() != entry.size_bytes {
+            return Err(fail(
+                format!(
+                    "{} is {} bytes but the lock expects {}",
+                    entry.path,
+                    metadata.len(),
+                    entry.size_bytes
+                ),
+                checked,
+            ));
+        }
+
+        let digest = stream_sha256(&path).map_err(|error| fail(error, checked))?;
+        if digest != entry.sha256 {
+            return Err(fail(
+                format!(
+                    "{} does not match the locked digest; refusing to benchmark an unverified runtime",
+                    entry.path
+                ),
+                checked,
+            ));
+        }
+        if entry.path == lock.expected_executable_name {
+            executable_digest = Some(digest);
+        }
+        checked += 1;
+    }
+
+    let Some(executable_sha256) = executable_digest else {
+        return Err(fail(
+            format!(
+                "the distribution does not contain {}, so nothing was launched from it",
+                lock.expected_executable_name
+            ),
+            checked,
+        ));
+    };
+
+    // The lock states the executable digest twice, in its own field and in the
+    // distribution list. If those ever disagree the lock is wrong, and a
+    // benchmark is not the place to decide which half to believe.
+    if executable_sha256 != lock.executable_sha256 {
+        return Err(fail(
+            format!(
+                "the lock disagrees with itself about {}: distributionFiles says {executable_sha256}, \
+                 executableSha256 says {}",
+                lock.expected_executable_name, lock.executable_sha256
+            ),
+            checked,
+        ));
+    }
+
+    Ok(VerifiedRuntimeIdentity {
+        release_tag: lock.release_tag.clone(),
+        executable_sha256,
+        directory: directory.to_path_buf(),
+        files_verified: checked,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 /// Where the runtime lives, and how we got there.
@@ -199,9 +394,16 @@ pub fn resolve_from(
 
 /// Read the lock, preferring the copy the installer shipped.
 pub fn load_lock(app: &AppHandle) -> Result<RuntimeLock, String> {
-    let path = packaged_metadata_path(app, LOCK_RELATIVE_PATH)?;
+    read_lock(&packaged_metadata_path(app, LOCK_RELATIVE_PATH)?)
+}
 
-    let contents = fs::read_to_string(&path)
+/// Read and parse the runtime lock from a path.
+///
+/// The single interpretation of this file. Test harnesses that need the same
+/// facts call this rather than reaching for `serde_json::Value` and picking out
+/// keys by hand, which is how two readers of one file start to disagree.
+pub fn read_lock(path: &Path) -> Result<RuntimeLock, String> {
+    let contents = fs::read_to_string(path)
         .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
     serde_json::from_str(&contents)
         .map_err(|error| format!("Unable to parse {}: {error}", path.display()))
@@ -230,7 +432,212 @@ mod tests {
             external_path_relative_to_workspace_root:
                 "runtime-assets/runtime/llama.cpp/b10343/win-cpu-x64".to_string(),
             expected_executable_name: "llama-server.exe".to_string(),
+            executable_sha256:
+                "7a110e56e47fab319791c1f450321ecb77449a372e4c75db68d69069e7cd531e".to_string(),
+            distribution_files: Vec::new(),
         }
+    }
+
+    /// A fake distribution on disk, plus a lock that describes it exactly.
+    fn distribution(label: &str, files: &[(&str, &[u8])]) -> (PathBuf, RuntimeLock) {
+        let directory = std::env::temp_dir().join(format!("chronosaga-runtime-{label}"));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+
+        let mut declared = Vec::new();
+        let mut executable_sha256 = String::new();
+        for (name, bytes) in files {
+            let path = directory.join(name);
+            fs::write(&path, bytes).unwrap();
+            let digest = stream_sha256(&path).unwrap();
+            if *name == "llama-server.exe" {
+                executable_sha256 = digest.clone();
+            }
+            declared.push(DistributionFile {
+                path: (*name).to_string(),
+                size_bytes: bytes.len() as u64,
+                sha256: digest,
+            });
+        }
+
+        let lock = RuntimeLock {
+            release_tag: "b10343".to_string(),
+            external_path_relative_to_workspace_root: "runtime-assets".to_string(),
+            expected_executable_name: "llama-server.exe".to_string(),
+            executable_sha256,
+            distribution_files: declared,
+        };
+        (directory, lock)
+    }
+
+    const SHIM: &[u8] = b"llama-server shim bytes";
+    const GGML: &[u8] = b"ggml-cpu implementation bytes";
+    const BASE: &[u8] = b"ggml-base implementation bytes";
+
+    /// Each caller gets its own directory: these tests run in parallel, and a
+    /// shared fixture path makes them fail each other rather than themselves.
+    fn intact(label: &str) -> (PathBuf, RuntimeLock) {
+        distribution(
+            label,
+            &[
+                ("llama-server.exe", SHIM),
+                ("ggml-cpu-haswell.dll", GGML),
+                ("ggml-base.dll", BASE),
+            ],
+        )
+    }
+
+    #[test]
+    fn an_intact_distribution_verifies() {
+        let (directory, lock) = intact("intact-ok");
+        let verified = verify_runtime_distribution(&lock, &directory).expect("must verify");
+
+        assert_eq!(verified.release_tag(), "b10343");
+        assert_eq!(verified.files_verified(), 3, "every declared file is hashed");
+        assert_eq!(verified.directory(), directory.as_path());
+        assert_eq!(verified.executable_sha256().len(), 64);
+    }
+
+    #[test]
+    fn the_recorded_digest_is_the_digest_of_the_bytes_that_were_hashed() {
+        // Not copied from the lock: computed from the file, and equal to an
+        // independent hash of the same bytes.
+        let (directory, lock) = intact("intact-digest");
+        let verified = verify_runtime_distribution(&lock, &directory).unwrap();
+        let independent = stream_sha256(&directory.join("llama-server.exe")).unwrap();
+
+        assert_eq!(verified.executable_sha256(), independent);
+        assert_eq!(verified.executable_sha256(), lock.executable_sha256);
+    }
+
+    #[test]
+    fn a_swapped_executable_fails_verification() {
+        let (directory, lock) = distribution(
+            "swapped-exe",
+            &[("llama-server.exe", SHIM), ("ggml-base.dll", BASE)],
+        );
+        // Same length, different bytes: size alone would not notice, so this
+        // proves the digest is what caught it.
+        let impostor = b"llama-server FAKE bytes";
+        assert_eq!(impostor.len(), SHIM.len(), "the fixture must be same-size");
+        fs::write(directory.join("llama-server.exe"), impostor).unwrap();
+
+        let error = verify_runtime_distribution(&lock, &directory)
+            .expect_err("different bytes must not verify");
+        assert!(error.message.contains("llama-server.exe"), "{}", error.message);
+        assert!(
+            error.message.contains("refusing to benchmark an unverified runtime"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_correct_executable_with_a_corrupted_dll_fails_verification() {
+        // The case that motivated this whole check: llama-server.exe is a shim,
+        // and the runtime that answers lives in the DLLs beside it. Verifying
+        // only the executable would call this distribution genuine.
+        let (directory, lock) = intact("intact-dll");
+        let corrupted = b"ggml-cpu implementation bytez";
+        assert_eq!(corrupted.len(), GGML.len(), "the fixture must be same-size");
+        fs::write(directory.join("ggml-cpu-haswell.dll"), corrupted).unwrap();
+
+        // The executable itself is still perfect.
+        assert_eq!(
+            stream_sha256(&directory.join("llama-server.exe")).unwrap(),
+            lock.executable_sha256
+        );
+
+        let error = verify_runtime_distribution(&lock, &directory)
+            .expect_err("a corrupted DLL must not verify");
+        assert!(error.message.contains("ggml-cpu-haswell.dll"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_missing_distribution_file_fails_verification() {
+        let (directory, lock) = intact("intact-missing");
+        fs::remove_file(directory.join("ggml-base.dll")).unwrap();
+
+        let error = verify_runtime_distribution(&lock, &directory)
+            .expect_err("an incomplete distribution must not verify");
+        assert!(error.message.contains("ggml-base.dll"), "{}", error.message);
+        assert!(error.message.contains("missing"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_file_of_the_wrong_size_fails_before_it_is_hashed() {
+        let (directory, lock) = intact("intact-size");
+        fs::write(directory.join("ggml-base.dll"), b"short").unwrap();
+
+        let error = verify_runtime_distribution(&lock, &directory).expect_err("wrong size");
+        assert!(error.message.contains("bytes but the lock expects"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_lock_with_nothing_to_verify_is_refused() {
+        // An empty declaration would otherwise "verify" every directory.
+        let (directory, mut lock) = intact("intact-empty");
+        lock.distribution_files.clear();
+        let error = verify_runtime_distribution(&lock, &directory).expect_err("nothing to check");
+        assert!(error.message.contains("declares no distribution files"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_distribution_without_the_executable_is_refused() {
+        let (directory, mut lock) = intact("intact-noexe");
+        lock.expected_executable_name = "somethingelse.exe".to_string();
+        let error = verify_runtime_distribution(&lock, &directory).expect_err("no executable");
+        assert!(error.message.contains("does not contain"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_lock_that_disagrees_with_itself_is_refused() {
+        // executableSha256 and the distributionFiles entry must agree; a
+        // benchmark is not the place to decide which half to believe.
+        let (directory, mut lock) = intact("intact-inconsistent");
+        lock.executable_sha256 = "0".repeat(64);
+        let error = verify_runtime_distribution(&lock, &directory).expect_err("inconsistent lock");
+        assert!(error.message.contains("disagrees with itself"), "{}", error.message);
+    }
+
+    #[test]
+    fn the_shipped_lock_declares_every_file_the_node_verifier_checks() {
+        // One authority: the same 51 entries `pnpm verify:local-ai-runtime`
+        // walks, read from the same file rather than restated here.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../config/local-ai-runtime.lock.json");
+        let shipped = read_lock(&path).expect("the shipped runtime lock must parse");
+
+        assert_eq!(shipped.distribution_files.len(), 51);
+        assert!(shipped
+            .distribution_files
+            .iter()
+            .any(|entry| entry.path == "llama-server.exe"));
+        assert!(
+            shipped
+                .distribution_files
+                .iter()
+                .filter(|entry| entry.path.ends_with(".dll"))
+                .count()
+                >= 29,
+            "the DLLs are where the runtime actually lives"
+        );
+        for entry in &shipped.distribution_files {
+            assert_eq!(entry.sha256.len(), 64, "{}", entry.path);
+            assert!(entry.size_bytes > 0, "{}", entry.path);
+        }
+    }
+
+    #[test]
+    fn the_shipped_lock_declares_the_executable_digest() {
+        // Benchmark provenance reads this field, so it has to exist in the real
+        // file rather than only in a fixture.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../config/local-ai-runtime.lock.json");
+        let shipped = read_lock(&path).expect("the shipped runtime lock must parse");
+        assert_eq!(shipped.executable_sha256.len(), 64);
+        assert!(shipped.executable_sha256.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!shipped.release_tag.is_empty());
     }
 
     /// Build a throwaway directory containing a fake executable and DLL, so the

@@ -1,0 +1,11 @@
+[
+  "declared_official",
+  "clean_checkout",
+  "full_commit",
+  "runtime_provenance",
+  "host_facts",
+  "suite_identity",
+  "full_profile_case_coverage",
+  "no_fallback_evidence",
+  "complete_retry_history"
+]

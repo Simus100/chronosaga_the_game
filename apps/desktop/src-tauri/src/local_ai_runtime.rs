@@ -1595,6 +1595,136 @@ mod tests {
         )
     }
 
+    /// The same manager with a caller-chosen startup allowance.
+    fn manager_with_startup_timeout(
+        process: Arc<FakeProcess>,
+        health: Vec<HealthOutcome>,
+        clock: Arc<FakeClock>,
+        startup_timeout_ms: u64,
+    ) -> LocalAiRuntimeManager {
+        LocalAiRuntimeManager::new(
+            RuntimeConfig::new(LOOPBACK_HOST, 8081, startup_timeout_ms).unwrap(),
+            Box::new(SharedProcess(process)),
+            Box::new(FakeHealth::new(health)),
+            Box::new(SharedClock(clock)),
+        )
+    }
+
+    #[test]
+    fn f_a_longer_allowance_keeps_a_slow_model_alive_past_the_product_default() {
+        // The defect the benchmark hit: with the product's 30 seconds the manager
+        // gave up, the watcher stopped polling, and a model that would have been
+        // ready at second 40 was already Failed. The outer loop's 180 seconds
+        // could not rescue it, because there was nothing left to rescue.
+        //
+        // No real waiting: the clock is injected.
+        let clock = Arc::new(FakeClock::new());
+        let manager = manager_with_startup_timeout(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Loading; 4],
+            clock.clone(),
+            crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS,
+        );
+        manager.start().expect("start should succeed");
+
+        clock.advance(DEFAULT_STARTUP_TIMEOUT_MS + 1);
+        assert_eq!(
+            manager.poll().state,
+            RuntimePhase::Loading,
+            "the product default must not end a benchmark startup"
+        );
+
+        clock.advance(crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS / 2);
+        assert_eq!(manager.poll().state, RuntimePhase::Loading);
+    }
+
+    #[test]
+    fn g_the_benchmark_allowance_is_still_an_allowance() {
+        let clock = Arc::new(FakeClock::new());
+        let manager = manager_with_startup_timeout(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Loading; 4],
+            clock.clone(),
+            crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS,
+        );
+        manager.start().expect("start should succeed");
+
+        clock.advance(crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS + 1);
+        let snapshot = manager.poll();
+        assert_eq!(snapshot.state, RuntimePhase::Failed);
+        assert!(snapshot.last_error.is_some(), "a timeout must say why");
+    }
+
+    #[test]
+    fn h_becoming_ready_before_the_deadline_is_ordinary_ready() {
+        let clock = Arc::new(FakeClock::new());
+        let manager = manager_with_startup_timeout(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Loading, HealthOutcome::Ready],
+            clock.clone(),
+            crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS,
+        );
+        manager.start().expect("start should succeed");
+
+        clock.advance(DEFAULT_STARTUP_TIMEOUT_MS + 1);
+        assert_eq!(manager.poll().state, RuntimePhase::Loading);
+        assert_eq!(manager.poll().state, RuntimePhase::Ready);
+    }
+
+    #[test]
+    fn i_a_startup_timeout_still_reaps_the_process() {
+        // Ownership rules are unchanged by the longer allowance.
+        let process = Arc::new(FakeProcess::present());
+        let clock = Arc::new(FakeClock::new());
+        let manager = manager_with_startup_timeout(
+            process.clone(),
+            vec![HealthOutcome::Loading; 4],
+            clock.clone(),
+            crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS,
+        );
+        manager.start().expect("start should succeed");
+        assert_eq!(process.kill_calls(), 0);
+
+        clock.advance(crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS + 1);
+        assert_eq!(manager.poll().state, RuntimePhase::Failed);
+        assert_eq!(
+            manager.stop().state,
+            RuntimePhase::Stopped,
+            "a failed runtime must still be reapable"
+        );
+        assert_eq!(
+            process.kill_calls(),
+            1,
+            "no orphan may survive a startup timeout"
+        );
+    }
+
+    #[test]
+    fn a_and_j_the_product_default_is_untouched() {
+        // The benchmark's allowance is the benchmark's. Nothing the player runs
+        // waits three minutes for a model.
+        assert_eq!(DEFAULT_STARTUP_TIMEOUT_MS, 30_000);
+        assert_eq!(
+            RuntimeConfig::loopback().startup_timeout_ms(),
+            DEFAULT_STARTUP_TIMEOUT_MS
+        );
+        assert!(crate::benchmark::BENCHMARK_STARTUP_TIMEOUT_MS > DEFAULT_STARTUP_TIMEOUT_MS);
+
+        let clock = Arc::new(FakeClock::new());
+        let manager = manager_with(
+            Arc::new(FakeProcess::present()),
+            vec![HealthOutcome::Loading; 2],
+            clock.clone(),
+        );
+        manager.start().expect("start should succeed");
+        clock.advance(DEFAULT_STARTUP_TIMEOUT_MS + 1);
+        assert_eq!(
+            manager.poll().state,
+            RuntimePhase::Failed,
+            "the default path must still give up when it always did"
+        );
+    }
+
     /// Drive a manager all the way to Ready.
     fn ready_manager(process: Arc<FakeProcess>, clock: Arc<FakeClock>) -> LocalAiRuntimeManager {
         let manager = manager_with(process, vec![HealthOutcome::Ready], clock);

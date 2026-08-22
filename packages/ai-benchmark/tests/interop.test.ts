@@ -1,0 +1,334 @@
+import { describe, expect, it } from 'vitest';
+import rustRun from './fixtures/rust-run.json' with { type: 'json' };
+import rustRequirements from './fixtures/official-evidence-requirements.json' with { type: 'json' };
+import rustContracts from './fixtures/case-contracts.json' with { type: 'json' };
+import rustSuiteDigest from './fixtures/suite-content-digest.json' with { type: 'json' };
+import { suiteContentDigest } from '../src/report.js';
+import { sha256Hex } from '../src/digest.js';
+import { lockedRuntime } from '../src/runtime-lock.js';
+import { caseSubjectIds } from '../src/contract.js';
+import { OFFICIAL_EVIDENCE_REQUIREMENTS } from '../src/report.js';
+import {
+  normalizedOutputProblems,
+  validateRun,
+  type BenchmarkRun,
+} from '../src/result.js';
+import { loadSuite } from '../src/suite.js';
+
+/**
+ * The cross-language contract.
+ *
+ * `tests/fixtures/rust-run.json` is produced by the Rust serializer in
+ * `apps/desktop/src-tauri/src/benchmark.rs` (`what_rust_writes_is_what_typescript_validates`,
+ * regenerated with `CHRONOSAGA_UPDATE_FIXTURES=1`) and consumed here. If the Rust
+ * shape drifts, the Rust test fails; if this contract drifts, these tests fail.
+ * Neither side can move on its own, which is the only way a benchmark written in
+ * one language and read in another stays honest.
+ */
+
+const run = rustRun as unknown as BenchmarkRun;
+
+describe('the shared definition of official evidence', () => {
+  it('asks the same questions on both sides of the language boundary', () => {
+    // Rust decides whether a run *is* official evidence as it accumulates;
+    // this side decides whether a stored run *may be published* as one. The
+    // implementations cannot be shared, so the list of requirements is, and a
+    // requirement added or dropped alone fails here.
+    expect([...OFFICIAL_EVIDENCE_REQUIREMENTS]).toEqual(rustRequirements);
+  });
+
+  it('declares each requirement exactly once', () => {
+    expect(new Set(rustRequirements).size).toBe(rustRequirements.length);
+  });
+});
+
+describe('the exact suite both sides bind to', () => {
+  const exported = rustSuiteDigest as { suiteVersion: string; suiteContentSha256: string };
+
+  it('J: Rust and TypeScript digest the shipped suite identically', () => {
+    // Two independent implementations, one expected value. Each asserting
+    // against itself would prove nothing about the other.
+    expect(suiteContentDigest(loadSuite())).toBe(exported.suiteContentSha256);
+  });
+
+  it('names the version it hashed, so a mismatch is legible', () => {
+    expect(exported.suiteVersion).toBe(loadSuite().suiteVersion);
+    expect(exported.suiteContentSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('hashes correctly at all, checked against the published vectors', () => {
+    // The implementation is ours, so it is verified rather than trusted.
+    expect(sha256Hex('')).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+    expect(sha256Hex('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    expect(sha256Hex('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')).toBe(
+      '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+    );
+    // Multi-byte input, since the suite is Italian and the digest must not
+    // depend on how a platform happens to encode it.
+    expect(sha256Hex('perché')).toBe(sha256Hex('perch\u00e9'));
+  });
+});
+
+describe('the case contract both sides derive', () => {
+  // The report boundary must be able to ask whether an accepted row could have
+  // been accepted *for its own case*, which means deriving the same contract the
+  // Rust validator derives. Two derivations, one exported set of answers: drift
+  // on either side fails here or there. ai_case_049 is the case that made this
+  // concrete — it shows settlement.controllingFactionId and has no characters,
+  // so a proposal about that faction is grounded and nothing else would say so.
+  interface ExportedContract {
+    knownSpeakerIds: string[];
+    requiredSpeakerIds: string[];
+    allowedToneTags: string[];
+    maxNarrationChars: number;
+    allowEventProposals: boolean;
+    requireEventProposal: boolean;
+    allowMemorySuggestions: boolean;
+    requireMemorySuggestion: boolean;
+    allowedSubjectIds: string[];
+    knownCharacterIds: string[];
+  }
+  const exported = rustContracts as unknown as Record<string, ExportedContract>;
+
+  it('agrees on the permitted proposal subjects for every case', () => {
+    const suite = loadSuite();
+    expect(Object.keys(exported)).toHaveLength(suite.cases.length);
+    for (const entry of suite.cases) {
+      expect(caseSubjectIds(entry), entry.id).toEqual(exported[entry.id]!.allowedSubjectIds);
+    }
+  });
+
+  it('agrees on every other contract field the report boundary reads', () => {
+    const suite = loadSuite();
+    for (const entry of suite.cases) {
+      const theirs = exported[entry.id]!;
+      const constraints = entry.constraints;
+      expect(constraints.knownSpeakerIds, entry.id).toEqual(theirs.knownSpeakerIds);
+      expect(constraints.requiredSpeakerIds ?? [], entry.id).toEqual(theirs.requiredSpeakerIds);
+      expect(constraints.allowedToneTags, entry.id).toEqual(theirs.allowedToneTags);
+      expect(constraints.maxNarrationChars, entry.id).toBe(theirs.maxNarrationChars);
+      expect(constraints.allowEventProposals ?? false, entry.id).toBe(theirs.allowEventProposals);
+      expect(constraints.requireEventProposal ?? false, entry.id).toBe(theirs.requireEventProposal);
+      expect(constraints.allowMemorySuggestions ?? false, entry.id).toBe(
+        theirs.allowMemorySuggestions,
+      );
+      expect(constraints.requireMemorySuggestion ?? false, entry.id).toBe(
+        theirs.requireMemorySuggestion,
+      );
+      expect(entry.characters.map(character => character.id), entry.id).toEqual(
+        theirs.knownCharacterIds,
+      );
+    }
+  });
+
+  it('grounds the faction the scene names even where no character carries it', () => {
+    const entry = loadSuite().cases.find(candidate => candidate.id === 'ai_case_049')!;
+    expect(entry.characters).toHaveLength(0);
+    expect(caseSubjectIds(entry)).toContain('faction_compact');
+    expect(exported.ai_case_049!.allowedSubjectIds).toContain('faction_compact');
+  });
+
+  it('invents nothing: every permitted subject occurs in the case', () => {
+    const suite = loadSuite();
+    for (const entry of suite.cases) {
+      const serialised = JSON.stringify([entry.worldStateSlice, entry.characters, entry.recentDelta]);
+      for (const id of caseSubjectIds(entry)) {
+        expect(serialised, `${entry.id}: ${id}`).toContain(id);
+      }
+    }
+  });
+});
+
+describe('evidence written by the Rust runner', () => {
+  it('satisfies the declared TypeScript result contract', () => {
+    expect(validateRun(run)).toEqual([]);
+  });
+
+  it('R and I: the fixture\'s numbers and runtime identity are what the boundary demands', () => {
+    for (const generation of run.generations) {
+      expect(typeof generation.latencyMs, generation.id).toBe('number');
+      expect(Number.isSafeInteger(generation.latencyMs), generation.id).toBe(true);
+      for (const field of ['tokensGenerated', 'tokensPerSecond'] as const) {
+        const value = generation[field];
+        expect(value === null || typeof value === 'number', `${generation.id}.${field}`).toBe(true);
+      }
+      expect(Number.isSafeInteger(generation.attempt), generation.id).toBe(true);
+    }
+    // The Rust runner writes its runtime identity from the same committed lock.
+    expect(run.metadata.runtimeReleaseTag).toBe(lockedRuntime().releaseTag);
+    expect(run.metadata.runtimeExecutableSha256).toBe(lockedRuntime().executableSha256);
+    expect(validateRun(run)).toEqual([]);
+  });
+
+  it('P: every recorded raw format satisfies the complete runtime validator', () => {
+    // The fixture is what this contract is checked against; a self-contradictory
+    // observation in it would teach this side that contradictions are normal.
+    for (const generation of run.generations) {
+      const observed = generation.rawFormat as unknown as Record<string, unknown>;
+      for (const flag of ['bareJson', 'codeFencePresent', 'wrapperTextPresent']) {
+        expect(typeof observed[flag], `${generation.id}.${flag}`).toBe('boolean');
+      }
+      if (observed.bareJson === true) {
+        expect(observed.codeFencePresent, generation.id).toBe(false);
+        expect(observed.wrapperTextPresent, generation.id).toBe(false);
+      }
+    }
+    expect(validateRun(run)).toEqual([]);
+  });
+
+  it('L: records acceptance as a real boolean, not a string', () => {
+    // What the Rust serializer emits is what the type check expects; a fixture
+    // carrying "false" would have taught this side that strings are normal.
+    for (const generation of run.generations) {
+      expect(typeof generation.accepted, generation.id).toBe('boolean');
+    }
+    expect(run.generations.some(generation => generation.accepted)).toBe(true);
+    expect(run.generations.some(generation => !generation.accepted)).toBe(true);
+  });
+
+  it('N: every accepted row satisfies the complete output shape', () => {
+    // The fixture is what this contract is checked against, so a row the shape
+    // validator would refuse would mean the two sides disagree about what the
+    // Rust serializer emits.
+    const accepted = run.generations.filter(generation => generation.accepted);
+    expect(accepted.length).toBeGreaterThan(0);
+    for (const generation of accepted) {
+      expect(normalizedOutputProblems(generation.normalizedOutput), generation.id).toEqual([]);
+    }
+    for (const generation of run.generations.filter(entry => !entry.accepted)) {
+      expect(generation.normalizedOutput, generation.id).toBeNull();
+    }
+  });
+
+  it('records no fallback, because an official run never falls back', () => {
+    for (const generation of run.generations) {
+      expect(generation.fallbackUsed, generation.id).toBe(false);
+      expect(generation.fallbackProfile, generation.id).toBeNull();
+    }
+  });
+
+  it('carries the artifact identity, not a filename guess', () => {
+    for (const generation of run.generations) {
+      const artifact = generation.artifact;
+      expect(artifact.profileId).toBe(generation.profile);
+      expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(artifact.artifactFilename).toMatch(/\.gguf$/);
+      expect(artifact.sizeBytes).toBeGreaterThan(0);
+      expect(artifact.family.length).toBeGreaterThan(0);
+      expect(artifact.quantization.length).toBeGreaterThan(0);
+      expect(artifact.source.length).toBeGreaterThan(0);
+      expect(artifact.releaseApproved).toBe(false);
+    }
+  });
+
+  it('carries the generation configuration that was actually requested', () => {
+    for (const generation of run.generations) {
+      const context = generation.context;
+      expect(context.contextSize).toBe(4096);
+      expect(context.maxOutputTokens).toBeGreaterThan(0);
+      expect(context.temperature).toBeGreaterThanOrEqual(0);
+      // Explicitly configured by the benchmark rather than left to the runtime.
+      expect(context.topP).not.toBeNull();
+      expect(context.seed).not.toBeNull();
+      expect(context.reasoning).toBe('off');
+    }
+  });
+
+  it('carries run metadata sufficient to reproduce it', () => {
+    const metadata = run.metadata;
+    expect(metadata.gitCommit).toMatch(/^[0-9a-f]{7,40}$/);
+    expect(metadata.gitDirty).toBe(false);
+    expect(metadata.suiteVersion).toBe(loadSuite().suiteVersion);
+    expect(metadata.suiteSchemaVersion).toBe(1);
+    expect(metadata.runnerVersion.length).toBeGreaterThan(0);
+    expect(metadata.runtimeReleaseTag).toBe('b10343');
+    expect(metadata.host.logicalCores).toBeGreaterThan(0);
+    expect(metadata.host.totalRamMb).toBeGreaterThan(0);
+  });
+
+  it('fingerprints both profiles of one case identically', () => {
+    const byCase = new Map<string, Set<string>>();
+    for (const generation of run.generations) {
+      const bucket = byCase.get(generation.caseId) ?? new Set<string>();
+      bucket.add(generation.inputFingerprint);
+      byCase.set(generation.caseId, bucket);
+    }
+    for (const [caseId, fingerprints] of byCase) {
+      expect(fingerprints.size, `${caseId} was asked two different things`).toBe(1);
+    }
+  });
+
+  it('names a task the committed suite actually declares', () => {
+    const cases = new Map(loadSuite().cases.map(entry => [entry.id, entry]));
+    for (const generation of run.generations) {
+      expect(cases.get(generation.caseId)?.task).toBe(generation.task);
+    }
+  });
+
+  it('would notice a missing artifact block', () => {
+    const broken = structuredClone(run);
+    (broken.generations[0] as unknown as Record<string, unknown>).artifact = {
+      ...broken.generations[0]!.artifact,
+      sha256: '',
+    };
+    expect(validateRun(broken).some(problem => problem.field === 'artifact.sha256')).toBe(true);
+  });
+
+  it('would notice a missing context block', () => {
+    const broken = structuredClone(run);
+    broken.generations[0]!.context.contextSize = 0;
+    broken.generations[0]!.context.reasoning = '';
+    const fields = validateRun(broken).map(problem => problem.field);
+    expect(fields).toContain('context.contextSize');
+    expect(fields).toContain('context.reasoning');
+  });
+
+  it('would notice missing run metadata', () => {
+    const broken = structuredClone(run);
+    broken.metadata.runnerVersion = '';
+    broken.metadata.host.logicalCores = 0;
+    const fields = validateRun(broken).map(problem => problem.field);
+    expect(fields).toContain('metadata.runnerVersion');
+    expect(fields).toContain('metadata.host');
+  });
+
+  it('carries the raw-format evidence the strict check needs', () => {
+    for (const generation of run.generations) {
+      expect(typeof generation.rawFormat.bareJson).toBe('boolean');
+      expect(typeof generation.rawFormat.codeFencePresent).toBe('boolean');
+      expect(typeof generation.rawFormat.wrapperTextPresent).toBe('boolean');
+    }
+    // The fenced fixture row proves the observation survives the round trip.
+    expect(run.generations.some(generation => generation.rawFormat.codeFencePresent)).toBe(true);
+  });
+
+  it('would notice missing raw-format evidence', () => {
+    const broken = structuredClone(run);
+    delete (broken.generations[0] as unknown as Record<string, unknown>).rawFormat;
+    expect(validateRun(broken).some(problem => problem.field === 'rawFormat')).toBe(true);
+  });
+
+  it('carries typed suggestions rather than arbitrary JSON', () => {
+    for (const generation of run.generations) {
+      for (const proposal of generation.normalizedOutput?.eventProposals ?? []) {
+        expect(typeof proposal.subjectId).toBe('string');
+        expect(typeof proposal.topic).toBe('string');
+        expect(typeof proposal.rationale).toBe('string');
+      }
+      for (const suggestion of generation.normalizedOutput?.memorySuggestions ?? []) {
+        expect(typeof suggestion.characterId).toBe('string');
+        expect(typeof suggestion.summary).toBe('string');
+      }
+    }
+  });
+
+  it('would notice a missing input fingerprint', () => {
+    const broken = structuredClone(run);
+    broken.generations[0]!.inputFingerprint = '';
+    expect(validateRun(broken).some(problem => problem.field === 'inputFingerprint')).toBe(true);
+  });
+});

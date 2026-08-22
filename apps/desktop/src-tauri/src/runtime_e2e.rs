@@ -15,7 +15,7 @@
 
 use crate::local_ai_runtime::{
     system_manager_with_config, LocalAiRuntimeManager, RuntimeConfig, RuntimePhase,
-    DEFAULT_PORT, LOOPBACK_HOST,
+    DEFAULT_PORT, DEFAULT_STARTUP_TIMEOUT_MS, LOOPBACK_HOST,
 };
 use crate::runtime_watcher::RuntimeWatcher;
 use std::{
@@ -29,22 +29,40 @@ use std::{
 
 const E2E_ENV: &str = "CHRONOSAGA_RUNTIME_E2E";
 const WORKSPACE_ENV: &str = "CHRONOSAGA_WORKSPACE_ROOT";
+const BENCHMARK_ENV: &str = "CHRONOSAGA_BENCHMARK";
+
+/// Whether the caller has asked to use the real local payload.
+fn opted_in() -> bool {
+    [E2E_ENV, BENCHMARK_ENV]
+        .iter()
+        .any(|name| env::var(name).ok().as_deref() == Some("1"))
+}
+
+/// The runtime lock as it sits in the checkout.
+///
+/// Parsed by [`crate::runtime_lock::read_lock`], the same code the application
+/// uses, so the harness cannot develop its own opinion about this file.
+pub(crate) fn checkout_runtime_lock() -> Option<crate::runtime_lock::RuntimeLock> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../config/local-ai-runtime.lock.json");
+    crate::runtime_lock::read_lock(&path).ok()
+}
 
 /// Resolve the runtime exactly as the application does: from the lock plus the
 /// workspace variable, with nothing hard-coded here.
 fn resolve_from_lock() -> Option<(PathBuf, PathBuf)> {
-    if env::var(E2E_ENV).ok().as_deref() != Some("1") {
+    // Either opt-in flag means the same thing: this machine has the verified
+    // payload and the caller has asked to use it. The P0.5 benchmark drives the
+    // same runtime through this helper, and should not have to claim to be an
+    // end-to-end lifecycle test to do so.
+    if !opted_in() {
         return None;
     }
     let workspace = env::var(WORKSPACE_ENV).ok().filter(|v| !v.trim().is_empty())?;
 
-    let lock_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../config/local-ai-runtime.lock.json");
-    let lock: serde_json::Value = serde_json::from_str(&fs::read_to_string(lock_path).ok()?).ok()?;
-
-    let directory = PathBuf::from(workspace)
-        .join(lock["externalPathRelativeToWorkspaceRoot"].as_str()?);
-    let executable = directory.join(lock["expectedExecutableName"].as_str()?);
+    let lock = checkout_runtime_lock()?;
+    let directory = PathBuf::from(workspace).join(&lock.external_path_relative_to_workspace_root);
+    let executable = directory.join(&lock.expected_executable_name);
     executable.is_file().then_some((directory, executable))
 }
 
@@ -64,8 +82,24 @@ fn manager() -> Option<Arc<LocalAiRuntimeManager>> {
 ///
 /// Generic over the profile id: Lite and Standard travel the identical path,
 /// which is the point of the dual-model architecture.
+/// The directory the runtime actually resolved to.
+///
+/// Shared with [`crate::benchmark`] so integrity is checked against the bytes
+/// that will be launched, not against a path derived a second time.
+pub(crate) fn resolved_runtime_directory() -> Option<PathBuf> {
+    resolve_from_lock().map(|(directory, _)| directory)
+}
+
+/// Shared with [`crate::benchmark`], which needs the same verified identity it
+/// launches with rather than a second resolution that could disagree.
+pub(crate) fn verified_model_for_profile(
+    profile_id: &str,
+) -> Option<crate::model_lock::VerifiedModel> {
+    resolve_model_from_lock(profile_id)
+}
+
 fn resolve_model_from_lock(profile_id: &str) -> Option<crate::model_lock::VerifiedModel> {
-    if env::var(E2E_ENV).ok().as_deref() != Some("1") {
+    if !opted_in() {
         return None;
     }
     let workspace = env::var(WORKSPACE_ENV).ok()?;
@@ -108,12 +142,67 @@ fn manager_with_model() -> Option<Arc<LocalAiRuntimeManager>> {
 }
 
 /// The same manager for any locked profile.
-fn manager_for_profile(profile_id: &str) -> Option<Arc<LocalAiRuntimeManager>> {
-    let (directory, executable) = resolve_from_lock()?;
-    let model = resolve_model_from_lock(profile_id)?;
+/// Shared with [`crate::benchmark`]: both drive the same real runtime, and a
+/// second way of starting it would be a second thing to keep correct.
+pub(crate) fn manager_for_profile(profile_id: &str) -> Option<Arc<LocalAiRuntimeManager>> {
+    manager_for_profile_with_startup_timeout(profile_id, DEFAULT_STARTUP_TIMEOUT_MS)
+}
+
+/// The same manager, with a caller-chosen startup allowance.
+///
+/// The benchmark needs a longer one than the product: a 3B model loading from a
+/// cold page cache on a laptop can take well past the 30 seconds a player should
+/// ever wait. Before this existed the benchmark asked for 180 seconds in its own
+/// polling loop while the lifecycle underneath it was still configured for 30,
+/// so a model that became ready at second 40 had already been marked Failed and
+/// the watcher had stopped polling it. Two clocks, and the shorter one won.
+///
+/// Everything but the number is shared with [`manager_for_profile`]: the same
+/// runtime resolution, the same `VerifiedModel`, the same
+/// `system_manager_with_config`, the same lifecycle manager and watcher, the
+/// same launch contract. Only the allowance differs, and the product default is
+/// untouched.
+pub(crate) fn manager_for_profile_with_startup_timeout(
+    profile_id: &str,
+    startup_timeout_ms: u64,
+) -> Option<Arc<LocalAiRuntimeManager>> {
+    build_manager_for_profile(profile_id, startup_timeout_ms).ok()
+}
+
+/// The same construction, saying *why* it could not be done.
+///
+/// The optional callers above want a skip when this machine has no payload:
+/// an ordinary `cargo test` must not need multiple gigabytes on disk. A caller
+/// that explicitly asked for a benchmark wants the opposite — for it, "no
+/// payload" is the reason the run cannot happen, not a reason to report success.
+///
+/// One construction, two readings of the same failure. Nothing here resolves a
+/// model or a runtime a second time.
+pub(crate) fn build_manager_for_profile(
+    profile_id: &str,
+    startup_timeout_ms: u64,
+) -> Result<Arc<LocalAiRuntimeManager>, String> {
+    let (directory, executable) = resolve_from_lock().ok_or_else(|| {
+        format!(
+            "the locked llama.cpp runtime could not be resolved for profile '{profile_id}'. \
+             Check {WORKSPACE_ENV} points at the workspace holding \
+             runtime-assets/runtime, and that the executable named by \
+             config/local-ai-runtime.lock.json is present. Nothing was run."
+        )
+    })?;
+    let model = resolve_model_from_lock(profile_id).ok_or_else(|| {
+        format!(
+            "the locked model payload for profile '{profile_id}' could not be resolved or failed \
+             its integrity check. The GGUF lives outside the repository; check {WORKSPACE_ENV} \
+             and config/local-ai-models.lock.json. Nothing was run."
+        )
+    })?;
     let log_path = env::temp_dir().join(format!("chronosaga-e2e-{profile_id}.log"));
-    Some(Arc::new(system_manager_with_config(
-        RuntimeConfig::loopback().with_model(&model),
+    let config = RuntimeConfig::new(LOOPBACK_HOST, DEFAULT_PORT, startup_timeout_ms)
+        .expect("the loopback defaults must always be valid")
+        .with_model(&model);
+    Ok(Arc::new(system_manager_with_config(
+        config,
         directory,
         executable,
         log_path,

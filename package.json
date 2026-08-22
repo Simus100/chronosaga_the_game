@@ -11,7 +11,7 @@
     "dev:desktop:ai": "pnpm verify:local-ai-runtime && pnpm dev:desktop",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @paa/game-core test && pnpm --filter @paa/ai-contracts test",
+    "test": "pnpm -r --if-present test",
     "lint": "pnpm -r lint --if-present",
     "verify:local-ai-runtime": "node scripts/verify-local-ai-runtime.mjs",
     "verify:local-ai-models": "node scripts/verify-local-ai-models.mjs",

@@ -141,6 +141,8 @@ pub struct ResolvedModel {
     status: String,
     artifact_repository: String,
     artifact_revision: String,
+    /// The locked filename, carried rather than derived from the path later.
+    artifact_filename: String,
     source: ModelSource,
 }
 
@@ -151,6 +153,22 @@ impl ResolvedModel {
     /// Which of the ordered sources actually held the artifact.
     pub fn source(&self) -> ModelSource {
         self.source
+    }
+    // The benchmark runner is the only consumer of these three, and it is
+    // test-only for P0.5-A. Gated rather than `allow(dead_code)` so that
+    // promoting the runner to production in P0.5-B is a visible edit here.
+    #[cfg(test)]
+    pub fn family(&self) -> &str {
+        &self.family
+    }
+    #[cfg(test)]
+    pub fn quantization(&self) -> &str {
+        &self.quantization
+    }
+    /// The exact filename the lock declares. Not guessed from the path.
+    #[cfg(test)]
+    pub fn artifact_filename(&self) -> &str {
+        &self.artifact_filename
     }
     pub fn path(&self) -> &Path {
         &self.path
@@ -222,6 +240,7 @@ impl ResolvedModel {
             status: "P0_BENCHMARK_CANDIDATE".to_string(),
             artifact_repository: "ggml-org/Qwen3-1.7B-GGUF".to_string(),
             artifact_revision: "daeb8e2d".to_string(),
+            artifact_filename: "Qwen3-1.7B-Q4_K_M.gguf".to_string(),
             source: ModelSource::DevelopmentWorkspace,
         }
     }
@@ -403,6 +422,7 @@ fn located(locked: &LockedModel, path: PathBuf, source: ModelSource) -> Resolved
         status: locked.status.clone(),
         artifact_repository: locked.artifact_repository.clone(),
         artifact_revision: locked.artifact_revision.clone(),
+        artifact_filename: locked.artifact_filename.clone(),
         source,
     }
 }

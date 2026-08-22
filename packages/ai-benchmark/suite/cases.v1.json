@@ -1,0 +1,4877 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "p0.5-a.4",
+  "status": "P0_5_BENCHMARK_SUITE",
+  "scenario": {
+    "fixture": "createSystemicScenario",
+    "package": "@paa/game-core",
+    "seed": 7419,
+    "note": "Every case is grounded in this deterministic M1 scenario. Slices are excerpts of that WorldState, never a second gameplay schema."
+  },
+  "outputContract": {
+    "shape": "StructuredNarration",
+    "owner": "apps/desktop/src-tauri/src/inference.rs",
+    "requiredFields": [
+      "narration",
+      "dialogue",
+      "tone_tags",
+      "event_proposals",
+      "memory_suggestions"
+    ],
+    "note": "The runner validates with the application validator, not with a benchmark-only schema."
+  },
+  "cases": [
+    {
+      "id": "ai_case_001",
+      "task": "single_npc_dialogue",
+      "notes": "Baseline: one speaker, one resource fact, must not restate the pre-delta value.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 3
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_mara_ration",
+          "summary": "Ha firmato l'ultimo ordine di razionamento dell'acqua.",
+          "tags": [
+            "water",
+            "rationing"
+          ],
+          "turn": 2
+        }
+      ],
+      "recentDelta": {
+        "turn": 3,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 17,
+            "after": 14
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001"
+        ]
+      },
+      "expectedFacts": [
+        "water stock is 14",
+        "the water fell from 17"
+      ],
+      "forbiddenClaims": [
+        "water stock is 17",
+        "the shortage is over",
+        "medicine is abundant"
+      ]
+    },
+    {
+      "id": "ai_case_002",
+      "task": "single_npc_dialogue",
+      "notes": "Methodical character reporting a small degradation; must not dramatise into destruction.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 4
+      },
+      "characters": [
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_tarek_recycler",
+          "summary": "Ha riparato il riciclatore due volte questo mese.",
+          "tags": [
+            "recycler_repairs"
+          ],
+          "turn": 2
+        }
+      ],
+      "recentDelta": {
+        "turn": 4,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "PRODUCTION_CONDITION",
+            "key": "prod_recycler_01",
+            "before": 0.73,
+            "after": 0.68
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "tarek_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "tarek_001"
+        ]
+      },
+      "expectedFacts": [
+        "the recycler condition dropped",
+        "condition is 0.68"
+      ],
+      "forbiddenClaims": [
+        "the recycler is destroyed",
+        "condition is 0.73",
+        "a second recycler exists"
+      ]
+    },
+    {
+      "id": "ai_case_003",
+      "task": "single_npc_dialogue",
+      "notes": "No memories supplied: the model must not invent one.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 5
+      },
+      "characters": [
+        {
+          "id": "ira_001",
+          "name": "Ira Venn",
+          "role": "Cartographer",
+          "stress": 18,
+          "morale": 74,
+          "traits": [
+            "analytical",
+            "cautious"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 5,
+        "source": "event",
+        "changes": [
+          {
+            "type": "FLAG_SET",
+            "key": "relay_route_contested",
+            "before": true,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "ira_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "ira_001"
+        ]
+      },
+      "expectedFacts": [
+        "the relay route is contested"
+      ],
+      "forbiddenClaims": [
+        "the relay route is secure",
+        "Ira commands the militia"
+      ]
+    },
+    {
+      "id": "ai_case_004",
+      "task": "single_npc_dialogue",
+      "notes": "Negative-number movement; sign confusion is the trap.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_sela_front",
+          "summary": "Ha tenuto l'ultimo contatto diplomatico col Rimward Front.",
+          "tags": [
+            "front_contact"
+          ],
+          "turn": 3
+        }
+      ],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RELATION_DELTA",
+            "key": "faction_front",
+            "before": -38,
+            "after": -41
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "sela_001"
+        ]
+      },
+      "expectedFacts": [
+        "relations with the Rimward Front worsened",
+        "relation is -41"
+      ],
+      "forbiddenClaims": [
+        "relations improved",
+        "relation is -38",
+        "a truce was signed"
+      ]
+    },
+    {
+      "id": "ai_case_005",
+      "task": "single_npc_dialogue",
+      "notes": "Impulsive character; the trap is escalating a 0.03 drop into a revolt.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.51,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "SATISFACTION_DELTA",
+            "key": "settlement_helios",
+            "before": 0.54,
+            "after": 0.51
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001"
+        ]
+      },
+      "expectedFacts": [
+        "satisfaction fell"
+      ],
+      "forbiddenClaims": [
+        "satisfaction rose",
+        "the settlement is in open revolt"
+      ]
+    },
+    {
+      "id": "ai_case_006",
+      "task": "single_npc_dialogue",
+      "notes": "Two memories, one relevant: using the convoy memory is correct, inverting it is not.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_mara_ration",
+          "summary": "Ha firmato l'ultimo ordine di razionamento dell'acqua.",
+          "tags": [
+            "water",
+            "rationing"
+          ],
+          "turn": 2
+        },
+        {
+          "id": "mem_mara_convoy",
+          "summary": "Un convoglio di medicine non e' mai arrivato.",
+          "tags": [
+            "medicine",
+            "convoy"
+          ],
+          "turn": 5
+        }
+      ],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "medicine",
+            "before": 8,
+            "after": 6
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001"
+        ]
+      },
+      "expectedFacts": [
+        "medicine is 6",
+        "medicine fell"
+      ],
+      "forbiddenClaims": [
+        "medicine is 8",
+        "the convoy arrived",
+        "Mara ordered the convoy destroyed"
+      ]
+    },
+    {
+      "id": "ai_case_007",
+      "task": "single_npc_dialogue",
+      "notes": "Empty delta: a quiet turn must read as quiet, not as an invented event.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [
+        {
+          "id": "ira_001",
+          "name": "Ira Venn",
+          "role": "Cartographer",
+          "stress": 18,
+          "morale": 74,
+          "traits": [
+            "analytical",
+            "cautious"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_ira_001",
+          "summary": "Ha mappato la rotta del relay prima della crisi di rifornimenti.",
+          "tags": [
+            "relay",
+            "supply"
+          ],
+          "turn": 1
+        }
+      ],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "ira_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "ira_001"
+        ]
+      },
+      "expectedFacts": [
+        "nothing changed this turn"
+      ],
+      "forbiddenClaims": [
+        "a battle occurred",
+        "the water ran out"
+      ]
+    },
+    {
+      "id": "ai_case_008",
+      "task": "two_character_conflict",
+      "notes": "Labor vs Security over rationing; both must speak, nobody else may.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 4
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 4,
+        "source": "event",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 17,
+            "after": 14
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001",
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001",
+          "brann_001"
+        ]
+      },
+      "expectedFacts": [
+        "both characters speak",
+        "water is 14"
+      ],
+      "forbiddenClaims": [
+        "a third speaker appears",
+        "one character kills the other"
+      ]
+    },
+    {
+      "id": "ai_case_009",
+      "task": "two_character_conflict",
+      "notes": "Diplomat vs security lead; neither may take an authoritative faction decision.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 5
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 5,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RELATION_DELTA",
+            "key": "faction_front",
+            "before": -38,
+            "after": -41
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ]
+      },
+      "expectedFacts": [
+        "both characters speak",
+        "the disagreement is about the Rimward Front"
+      ],
+      "forbiddenClaims": [
+        "Sela declares war",
+        "Brann surrenders the relay"
+      ]
+    },
+    {
+      "id": "ai_case_010",
+      "task": "two_character_conflict",
+      "notes": "Technician vs quartermaster; the number is read-only.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "PRODUCTION_EFFICIENCY",
+            "key": "prod_recycler_01",
+            "before": 0.68,
+            "after": 0.62
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "tarek_001",
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "tarek_001",
+          "mara_001"
+        ]
+      },
+      "expectedFacts": [
+        "both characters speak",
+        "efficiency fell to 0.62"
+      ],
+      "forbiddenClaims": [
+        "efficiency rose",
+        "a new production node was built"
+      ]
+    },
+    {
+      "id": "ai_case_011",
+      "task": "two_character_conflict",
+      "notes": "Cartographer has no military role; role drift is the trap.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "ira_001",
+          "name": "Ira Venn",
+          "role": "Cartographer",
+          "stress": 18,
+          "morale": 74,
+          "traits": [
+            "analytical",
+            "cautious"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "event",
+        "changes": [
+          {
+            "type": "FLAG_SET",
+            "key": "relay_route_contested",
+            "before": true,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "ira_001",
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "ira_001",
+          "brann_001"
+        ]
+      },
+      "expectedFacts": [
+        "both characters speak",
+        "the relay route is contested"
+      ],
+      "forbiddenClaims": [
+        "the route was retaken",
+        "Ira leads a squad"
+      ]
+    },
+    {
+      "id": "ai_case_012",
+      "task": "two_character_conflict",
+      "notes": "Mara leads the Labor Assembly; dissolving it is an authoritative act.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "APPROVAL_DELTA",
+            "key": "group_labor",
+            "before": 0.48,
+            "after": 0.44
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "sela_001",
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "sela_001",
+          "mara_001"
+        ]
+      },
+      "expectedFacts": [
+        "both characters speak",
+        "labor approval fell"
+      ],
+      "forbiddenClaims": [
+        "approval rose",
+        "the Labor Assembly was dissolved"
+      ]
+    },
+    {
+      "id": "ai_case_013",
+      "task": "two_character_conflict",
+      "notes": "A 4-point energy drop must not become a blackout.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "energy",
+            "before": 42,
+            "after": 38
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001",
+          "tarek_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001",
+          "tarek_001"
+        ]
+      },
+      "expectedFacts": [
+        "both characters speak",
+        "energy is 38"
+      ],
+      "forbiddenClaims": [
+        "energy is 42",
+        "the settlement went dark"
+      ]
+    },
+    {
+      "id": "ai_case_014",
+      "task": "state_delta_narration",
+      "notes": "Two simultaneous changes; no dialogue at all is correct here.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 4
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 4,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 17,
+            "after": 14
+          },
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "food",
+            "before": 33,
+            "after": 31
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "water is 14",
+        "food is 31",
+        "both fell"
+      ],
+      "forbiddenClaims": [
+        "water is 17",
+        "food rose",
+        "medicine changed"
+      ]
+    },
+    {
+      "id": "ai_case_015",
+      "task": "state_delta_narration",
+      "notes": "Single fractional movement, easy to round away.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 5
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 5,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "STABILITY_DELTA",
+            "key": "settlement_helios",
+            "before": 0.61,
+            "after": 0.58
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "stability fell to 0.58"
+      ],
+      "forbiddenClaims": [
+        "stability rose",
+        "stability is 0.61"
+      ]
+    },
+    {
+      "id": "ai_case_016",
+      "task": "state_delta_narration",
+      "notes": "An improving turn: the trap is narrating decline out of habit.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 14,
+            "after": 16
+          },
+          {
+            "type": "PRODUCTION_CONDITION",
+            "key": "prod_recycler_01",
+            "before": 0.68,
+            "after": 0.71
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "water rose to 16",
+        "the recycler improved"
+      ],
+      "forbiddenClaims": [
+        "water fell",
+        "the crisis deepened"
+      ]
+    },
+    {
+      "id": "ai_case_017",
+      "task": "state_delta_narration",
+      "notes": "A boolean going false; inverting it is the failure.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "event",
+        "changes": [
+          {
+            "type": "FLAG_SET",
+            "key": "water_shortage_risk",
+            "before": true,
+            "after": false
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "the water shortage risk was cleared"
+      ],
+      "forbiddenClaims": [
+        "the shortage worsened",
+        "the flag is still set"
+      ]
+    },
+    {
+      "id": "ai_case_018",
+      "task": "state_delta_narration",
+      "notes": "Matches the scenario's delayed consequence con_relay_debt_01 firing.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "credits",
+            "before": 36,
+            "after": 33
+          },
+          {
+            "type": "FLAG_SET",
+            "key": "relay_debt_called",
+            "before": false,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "credits fell to 33",
+        "the relay debt was called"
+      ],
+      "forbiddenClaims": [
+        "credits rose",
+        "the debt was forgiven"
+      ]
+    },
+    {
+      "id": "ai_case_019",
+      "task": "state_delta_narration",
+      "notes": "Empty delta again, this time with no character to hide behind.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 300,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "nothing changed"
+      ],
+      "forbiddenClaims": [
+        "a change occurred",
+        "resources moved"
+      ]
+    },
+    {
+      "id": "ai_case_020",
+      "task": "memory_grounded_reaction",
+      "notes": "Correct memory use: the mapping happened, the fighting did not.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 5
+      },
+      "characters": [
+        {
+          "id": "ira_001",
+          "name": "Ira Venn",
+          "role": "Cartographer",
+          "stress": 18,
+          "morale": 74,
+          "traits": [
+            "analytical",
+            "cautious"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_ira_001",
+          "summary": "Ha mappato la rotta del relay prima della crisi di rifornimenti.",
+          "tags": [
+            "relay",
+            "supply"
+          ],
+          "turn": 1
+        }
+      ],
+      "recentDelta": {
+        "turn": 5,
+        "source": "event",
+        "changes": [
+          {
+            "type": "FLAG_SET",
+            "key": "relay_route_contested",
+            "before": true,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "ira_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Ira refers to having mapped the relay route"
+      ],
+      "forbiddenClaims": [
+        "Ira fought at the relay",
+        "Ira has never seen the relay"
+      ]
+    },
+    {
+      "id": "ai_case_021",
+      "task": "memory_grounded_reaction",
+      "notes": "MEMORY TRAP: Brann carries the memoryTag border_skirmish but no memory record. Narrating a remembered skirmish is invented attribution.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "READINESS_DELTA",
+            "key": "squad_compact_01",
+            "before": 68,
+            "after": 64
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "readiness fell to 64"
+      ],
+      "forbiddenClaims": [
+        "Brann remembers the last skirmish in detail",
+        "readiness rose"
+      ]
+    },
+    {
+      "id": "ai_case_022",
+      "task": "memory_grounded_reaction",
+      "notes": "The memory says the convoy never arrived; 'arrived late' contradicts it.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_mara_convoy",
+          "summary": "Un convoglio di medicine non e' mai arrivato.",
+          "tags": [
+            "medicine",
+            "convoy"
+          ],
+          "turn": 5
+        }
+      ],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "medicine",
+            "before": 8,
+            "after": 6
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Mara refers to the convoy that never arrived",
+        "medicine is 6"
+      ],
+      "forbiddenClaims": [
+        "the convoy arrived late",
+        "Mara escorted the convoy"
+      ]
+    },
+    {
+      "id": "ai_case_023",
+      "task": "memory_grounded_reaction",
+      "notes": "Two memories; conflating them is the trap.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_sela_front",
+          "summary": "Ha tenuto l'ultimo contatto diplomatico col Rimward Front.",
+          "tags": [
+            "front_contact"
+          ],
+          "turn": 3
+        },
+        {
+          "id": "mem_sela_labor",
+          "summary": "Ha mediato una disputa fra Labor Assembly e Security Council.",
+          "tags": [
+            "mediation"
+          ],
+          "turn": 4
+        }
+      ],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "APPROVAL_DELTA",
+            "key": "group_labor",
+            "before": 0.48,
+            "after": 0.44
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Sela refers to having mediated between the two groups"
+      ],
+      "forbiddenClaims": [
+        "Sela leads the Labor Assembly",
+        "Sela negotiated with the Front about labor"
+      ]
+    },
+    {
+      "id": "ai_case_024",
+      "task": "memory_grounded_reaction",
+      "notes": "Count fidelity: 'twice' is in the record, 'three times' is invented.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_tarek_recycler",
+          "summary": "Ha riparato il riciclatore due volte questo mese.",
+          "tags": [
+            "recycler_repairs"
+          ],
+          "turn": 2
+        }
+      ],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "PRODUCTION_CONDITION",
+            "key": "prod_recycler_01",
+            "before": 0.71,
+            "after": 0.66
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "tarek_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Tarek refers to his earlier repairs",
+        "condition fell to 0.66"
+      ],
+      "forbiddenClaims": [
+        "Tarek has never repaired it",
+        "Tarek repaired it three times"
+      ]
+    },
+    {
+      "id": "ai_case_025",
+      "task": "memory_grounded_reaction",
+      "notes": "CROSS-ATTRIBUTION TRAP: only Ira owns the relay memory.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 10
+      },
+      "characters": [
+        {
+          "id": "ira_001",
+          "name": "Ira Venn",
+          "role": "Cartographer",
+          "stress": 18,
+          "morale": 74,
+          "traits": [
+            "analytical",
+            "cautious"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_ira_001",
+          "summary": "Ha mappato la rotta del relay prima della crisi di rifornimenti.",
+          "tags": [
+            "relay",
+            "supply"
+          ],
+          "turn": 1
+        }
+      ],
+      "recentDelta": {
+        "turn": 10,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 16,
+            "after": 13
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "ira_001",
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "the relay memory belongs to Ira",
+        "water is 13"
+      ],
+      "forbiddenClaims": [
+        "Mara mapped the relay route",
+        "water is 16"
+      ]
+    },
+    {
+      "id": "ai_case_026",
+      "task": "faction_political_consequence",
+      "notes": "Influence movement must not become a change of control.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "INFLUENCE_DELTA",
+            "key": "faction_compact",
+            "before": 58,
+            "after": 55
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Compact influence fell to 55"
+      ],
+      "forbiddenClaims": [
+        "influence rose",
+        "the Compact was dissolved",
+        "the Front now controls Helios Reach"
+      ]
+    },
+    {
+      "id": "ai_case_027",
+      "task": "faction_political_consequence",
+      "notes": "Worsening relations are not a declaration of war.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RELATION_DELTA",
+            "key": "faction_front",
+            "before": -41,
+            "after": -45
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "relations worsened to -45"
+      ],
+      "forbiddenClaims": [
+        "war was declared",
+        "relations are positive"
+      ]
+    },
+    {
+      "id": "ai_case_028",
+      "task": "faction_political_consequence",
+      "notes": "An approval rise is not a coup.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "APPROVAL_DELTA",
+            "key": "group_security",
+            "before": 0.59,
+            "after": 0.63
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Security Council approval rose to 0.63"
+      ],
+      "forbiddenClaims": [
+        "approval fell",
+        "the Security Council seized power"
+      ]
+    },
+    {
+      "id": "ai_case_029",
+      "task": "faction_political_consequence",
+      "notes": "Red lines are per-group; Brann leads Security, not Labor.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "event",
+        "changes": [
+          {
+            "type": "REDLINE_TOUCHED",
+            "key": "group_security",
+            "before": false,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "a Security Council red line was touched",
+        "the red line concerns the relay"
+      ],
+      "forbiddenClaims": [
+        "the Labor Assembly red line was touched",
+        "Brann resigned"
+      ]
+    },
+    {
+      "id": "ai_case_030",
+      "task": "faction_political_consequence",
+      "notes": "The Labor red line is water_rationing_without_voice, stated in the scenario.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 10
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 10,
+        "source": "event",
+        "changes": [
+          {
+            "type": "REDLINE_TOUCHED",
+            "key": "group_labor",
+            "before": false,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "a Labor Assembly red line was touched",
+        "it concerns water rationing without voice"
+      ],
+      "forbiddenClaims": [
+        "the Security Council red line was touched",
+        "Mara ordered a strike that ended the shortage"
+      ]
+    },
+    {
+      "id": "ai_case_031",
+      "task": "faction_political_consequence",
+      "notes": "Two opposite movements in one delta; -15 is still negative.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 11
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 11,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "REPUTATION_DELTA",
+            "key": "faction_compact",
+            "before": 12,
+            "after": 9
+          },
+          {
+            "type": "REPUTATION_DELTA",
+            "key": "faction_front",
+            "before": -18,
+            "after": -15
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Compact reputation fell to 9",
+        "Front reputation rose to -15"
+      ],
+      "forbiddenClaims": [
+        "both reputations fell",
+        "the Front is now well regarded"
+      ]
+    },
+    {
+      "id": "ai_case_032",
+      "task": "resource_economic_consequence",
+      "notes": "Falling stock and rising need are consistent; reading them as relief is not.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 14,
+            "after": 11
+          },
+          {
+            "type": "NEED_DELTA",
+            "key": "cohort_industrial.water",
+            "before": 0.92,
+            "after": 0.96
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "water is 11",
+        "industrial cohort water need rose"
+      ],
+      "forbiddenClaims": [
+        "water is 14",
+        "the need was met"
+      ]
+    },
+    {
+      "id": "ai_case_033",
+      "task": "resource_economic_consequence",
+      "notes": "The quartermaster reports, she does not transact.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "supply",
+            "before": 24,
+            "after": 21
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "faction supply fell to 21"
+      ],
+      "forbiddenClaims": [
+        "supply rose",
+        "Mara purchased new supply",
+        "supply is 24"
+      ]
+    },
+    {
+      "id": "ai_case_034",
+      "task": "resource_economic_consequence",
+      "notes": "Output is authoritative; the technician may not raise it by narration.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "PRODUCTION_OUTPUT",
+            "key": "prod_recycler_01.water",
+            "before": 8,
+            "after": 6
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "tarek_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "recycler water output fell to 6"
+      ],
+      "forbiddenClaims": [
+        "output rose",
+        "Tarek doubled the output",
+        "capacity increased to 24"
+      ]
+    },
+    {
+      "id": "ai_case_035",
+      "task": "resource_economic_consequence",
+      "notes": "Mixed movements in one turn.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "credits",
+            "before": 33,
+            "after": 30
+          },
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "energy",
+            "before": 38,
+            "after": 40
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "credits fell to 30",
+        "energy rose to 40"
+      ],
+      "forbiddenClaims": [
+        "both fell",
+        "credits are 36"
+      ]
+    },
+    {
+      "id": "ai_case_036",
+      "task": "resource_economic_consequence",
+      "notes": "Hiring is an authoritative act, not a narrative one.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 10
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 10,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "LABOR_DELTA",
+            "key": "prod_recycler_01",
+            "before": 22,
+            "after": 19
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001",
+          "tarek_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "mara_001",
+          "tarek_001"
+        ]
+      },
+      "expectedFacts": [
+        "labor on the recycler fell to 19",
+        "both characters speak"
+      ],
+      "forbiddenClaims": [
+        "labor rose",
+        "new workers were hired"
+      ]
+    },
+    {
+      "id": "ai_case_037",
+      "task": "warfare_report",
+      "notes": "Only morale moved; casualties are invented.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "warfare",
+        "changes": [
+          {
+            "type": "MORALE_DELTA",
+            "key": "squad_compact_01",
+            "before": 72,
+            "after": 67
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "First Watch morale fell to 67"
+      ],
+      "forbiddenClaims": [
+        "the squad was destroyed",
+        "morale rose",
+        "personnel fell"
+      ]
+    },
+    {
+      "id": "ai_case_038",
+      "task": "warfare_report",
+      "notes": "A loss report; reinforcements are not in the delta.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "warfare",
+        "changes": [
+          {
+            "type": "PERSONNEL_DELTA",
+            "key": "squad_compact_01",
+            "before": 14,
+            "after": 12
+          },
+          {
+            "type": "SUPPLY_DELTA",
+            "key": "squad_compact_01",
+            "before": 61,
+            "after": 55
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "personnel fell to 12",
+        "squad supply fell to 55"
+      ],
+      "forbiddenClaims": [
+        "the squad grew",
+        "reinforcements arrived",
+        "personnel is 14"
+      ]
+    },
+    {
+      "id": "ai_case_039",
+      "task": "warfare_report",
+      "notes": "The movement belongs to the ENEMY squad; attributing it to the Compact is wrong.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "warfare",
+        "changes": [
+          {
+            "type": "INTELLIGENCE_DELTA",
+            "key": "squad_front_01",
+            "before": 64,
+            "after": 69
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Rimward Relay Guard intelligence rose to 69"
+      ],
+      "forbiddenClaims": [
+        "Compact intelligence rose",
+        "the Front squad was defeated"
+      ]
+    },
+    {
+      "id": "ai_case_040",
+      "task": "warfare_report",
+      "notes": "Quiet warfare turn.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 10
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 10,
+        "source": "warfare",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "no engagement occurred"
+      ],
+      "forbiddenClaims": [
+        "a battle was fought",
+        "the relay was taken"
+      ]
+    },
+    {
+      "id": "ai_case_041",
+      "task": "warfare_report",
+      "notes": "Rearming worsens relations; both facts must survive together.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 11
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 11,
+        "source": "warfare",
+        "changes": [
+          {
+            "type": "READINESS_DELTA",
+            "key": "squad_compact_01",
+            "before": 64,
+            "after": 71
+          },
+          {
+            "type": "RELATION_DELTA",
+            "key": "faction_front",
+            "before": -45,
+            "after": -47
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "requiredSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ]
+      },
+      "expectedFacts": [
+        "readiness rose to 71",
+        "relations worsened to -47",
+        "both characters speak"
+      ],
+      "forbiddenClaims": [
+        "readiness fell",
+        "relations improved",
+        "a battle was won"
+      ]
+    },
+    {
+      "id": "ai_case_042",
+      "task": "location_description",
+      "notes": "Pure description grounded in the settlement record.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 5
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 5,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "Helios Reach",
+        "population 1840"
+      ],
+      "forbiddenClaims": [
+        "population 2000",
+        "a second settlement",
+        "an ocean"
+      ]
+    },
+    {
+      "id": "ai_case_043",
+      "task": "location_description",
+      "notes": "Description that must absorb a fresh delta.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.55,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "STABILITY_DELTA",
+            "key": "settlement_helios",
+            "before": 0.58,
+            "after": 0.55
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "stability is 0.55",
+        "Helios Reach"
+      ],
+      "forbiddenClaims": [
+        "stability is 0.61",
+        "the settlement is abandoned"
+      ]
+    },
+    {
+      "id": "ai_case_044",
+      "task": "location_description",
+      "notes": "Exactly one production node exists in the scenario.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "the recycler prod_recycler_01 is present",
+        "Helios Reach"
+      ],
+      "forbiddenClaims": [
+        "three production nodes",
+        "a spaceport"
+      ]
+    },
+    {
+      "id": "ai_case_045",
+      "task": "location_description",
+      "notes": "Control is authoritative and unchanged.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 10
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 10,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "controlled by the Helios Civic Compact"
+      ],
+      "forbiddenClaims": [
+        "controlled by the Rimward Front",
+        "independent"
+      ]
+    },
+    {
+      "id": "ai_case_046",
+      "task": "structured_event_proposal",
+      "notes": "Proposals are suggestions for the Core, never applied effects.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 14,
+            "after": 11
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowEventProposals": true,
+        "requireEventProposal": true
+      },
+      "expectedFacts": [
+        "at least one event proposal",
+        "the proposal concerns water"
+      ],
+      "forbiddenClaims": [
+        "the proposal changes a resource directly",
+        "empty proposals"
+      ]
+    },
+    {
+      "id": "ai_case_047",
+      "task": "structured_event_proposal",
+      "notes": "A proposal may not carry an authoritative numeric result.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "READINESS_DELTA",
+            "key": "squad_compact_01",
+            "before": 68,
+            "after": 62
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowEventProposals": true,
+        "requireEventProposal": true
+      },
+      "expectedFacts": [
+        "at least one event proposal",
+        "the proposal concerns readiness or the relay"
+      ],
+      "forbiddenClaims": [
+        "the proposal sets readiness to a number",
+        "the proposal declares war"
+      ]
+    },
+    {
+      "id": "ai_case_048",
+      "task": "structured_event_proposal",
+      "notes": "Mediation proposals must stay reversible suggestions.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "APPROVAL_DELTA",
+            "key": "group_labor",
+            "before": 0.48,
+            "after": 0.42
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowEventProposals": true,
+        "requireEventProposal": true
+      },
+      "expectedFacts": [
+        "at least one event proposal",
+        "the proposal concerns mediation or labor"
+      ],
+      "forbiddenClaims": [
+        "the proposal dissolves the Labor Assembly"
+      ]
+    },
+    {
+      "id": "ai_case_049",
+      "task": "structured_event_proposal",
+      "notes": "Proposal without any speaker present.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "FLAG_SET",
+            "key": "relay_debt_called",
+            "before": false,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowEventProposals": true,
+        "requireEventProposal": true
+      },
+      "expectedFacts": [
+        "at least one event proposal",
+        "the proposal concerns the relay debt"
+      ],
+      "forbiddenClaims": [
+        "the proposal cancels the debt"
+      ]
+    },
+    {
+      "id": "ai_case_050",
+      "task": "memory_suggestion",
+      "notes": "Suggested memories must be attributable and grounded.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 14,
+            "after": 11
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
+      },
+      "expectedFacts": [
+        "at least one memory suggestion",
+        "the suggestion is attributed to mara_001"
+      ],
+      "forbiddenClaims": [
+        "the suggestion is attributed to a character not present",
+        "the suggestion asserts a fact absent from the delta"
+      ]
+    },
+    {
+      "id": "ai_case_051",
+      "task": "memory_suggestion",
+      "notes": "Attribution trap with a single character present.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "PRODUCTION_CONDITION",
+            "key": "prod_recycler_01",
+            "before": 0.66,
+            "after": 0.6
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "tarek_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
+      },
+      "expectedFacts": [
+        "at least one memory suggestion",
+        "the suggestion is attributed to tarek_001"
+      ],
+      "forbiddenClaims": [
+        "the suggestion is attributed to ira_001",
+        "the suggestion invents a repair that did not happen"
+      ]
+    },
+    {
+      "id": "ai_case_052",
+      "task": "memory_suggestion",
+      "notes": "Two present characters; a third attribution is invalid.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "warfare",
+        "changes": [
+          {
+            "type": "MORALE_DELTA",
+            "key": "squad_compact_01",
+            "before": 67,
+            "after": 63
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
+      },
+      "expectedFacts": [
+        "at least one memory suggestion",
+        "every suggestion is attributed to a present character"
+      ],
+      "forbiddenClaims": [
+        "a suggestion is attributed to mara_001"
+      ]
+    },
+    {
+      "id": "ai_case_053",
+      "task": "memory_suggestion",
+      "notes": "New memory must add something, not echo the existing record.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [
+        {
+          "id": "ira_001",
+          "name": "Ira Venn",
+          "role": "Cartographer",
+          "stress": 18,
+          "morale": 74,
+          "traits": [
+            "analytical",
+            "cautious"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [
+        {
+          "id": "mem_ira_001",
+          "summary": "Ha mappato la rotta del relay prima della crisi di rifornimenti.",
+          "tags": [
+            "relay",
+            "supply"
+          ],
+          "turn": 1
+        }
+      ],
+      "recentDelta": {
+        "turn": 9,
+        "source": "event",
+        "changes": [
+          {
+            "type": "FLAG_SET",
+            "key": "relay_route_contested",
+            "before": true,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "ira_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "allowMemorySuggestions": true,
+        "requireMemorySuggestion": true
+      },
+      "expectedFacts": [
+        "at least one memory suggestion",
+        "the suggestion does not duplicate mem_ira_001"
+      ],
+      "forbiddenClaims": [
+        "the suggestion restates the existing memory verbatim"
+      ]
+    },
+    {
+      "id": "ai_case_054",
+      "task": "constrained_json_repair",
+      "notes": "Truncated prior output; the model must return a complete object.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 5
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 5,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 14,
+            "after": 12
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 300,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "strictJsonOnly": true,
+        "priorInvalidOutput": "{\"narration\": \"L'acqua cala.\", \"dialogue\": []"
+      },
+      "expectedFacts": [
+        "valid JSON",
+        "all five contract fields present"
+      ],
+      "forbiddenClaims": [
+        "prose outside the JSON object",
+        "markdown fences"
+      ]
+    },
+    {
+      "id": "ai_case_055",
+      "task": "constrained_json_repair",
+      "notes": "Prior output wrapped in fences and prose.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "READINESS_DELTA",
+            "key": "squad_compact_01",
+            "before": 68,
+            "after": 65
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 300,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "strictJsonOnly": true,
+        "priorInvalidOutput": "Ecco la scena:\n```json\n{\"narration\": \"...\"}\n```"
+      },
+      "expectedFacts": [
+        "valid JSON",
+        "no markdown fences"
+      ],
+      "forbiddenClaims": [
+        "a fenced code block",
+        "an explanatory sentence"
+      ]
+    },
+    {
+      "id": "ai_case_056",
+      "task": "constrained_json_repair",
+      "notes": "Missing required empty arrays: the most common Lite failure mode.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "APPROVAL_DELTA",
+            "key": "group_labor",
+            "before": 0.44,
+            "after": 0.41
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 300,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "strictJsonOnly": true,
+        "priorInvalidOutput": "{\"narration\": \"...\", \"dialogue\": [], \"tone_tags\": [\"tense\"]}"
+      },
+      "expectedFacts": [
+        "valid JSON",
+        "event_proposals present",
+        "memory_suggestions present"
+      ],
+      "forbiddenClaims": [
+        "missing required fields"
+      ]
+    },
+    {
+      "id": "ai_case_057",
+      "task": "constrained_json_repair",
+      "notes": "Wrong key name in a nested object.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "tarek_001",
+          "name": "Tarek Oss",
+          "role": "Field Technician",
+          "stress": 21,
+          "morale": 72,
+          "traits": [
+            "methodical",
+            "stubborn"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "PRODUCTION_EFFICIENCY",
+            "key": "prod_recycler_01",
+            "before": 0.62,
+            "after": 0.59
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "tarek_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 300,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "strictJsonOnly": true,
+        "priorInvalidOutput": "{\"narration\": \"...\", \"dialogue\": [{\"speaker\": \"tarek_001\", \"text\": \"...\"}], \"tone_tags\": [], \"event_proposals\": [], \"memory_suggestions\": []}"
+      },
+      "expectedFacts": [
+        "valid JSON",
+        "dialogue entries use speakerId"
+      ],
+      "forbiddenClaims": [
+        "dialogue entries use speaker"
+      ]
+    },
+    {
+      "id": "ai_case_058",
+      "task": "constrained_json_repair",
+      "notes": "Structurally valid but semantically out of contract.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [
+        {
+          "id": "ira_001",
+          "name": "Ira Venn",
+          "role": "Cartographer",
+          "stress": 18,
+          "morale": 74,
+          "traits": [
+            "analytical",
+            "cautious"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "ira_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 300,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "strictJsonOnly": true,
+        "priorInvalidOutput": "{\"narration\": \"...\", \"dialogue\": [], \"tone_tags\": [\"epico\"], \"event_proposals\": [], \"memory_suggestions\": []}"
+      },
+      "expectedFacts": [
+        "valid JSON",
+        "tone tags are drawn from the allowed vocabulary"
+      ],
+      "forbiddenClaims": [
+        "a tone tag outside the vocabulary"
+      ]
+    },
+    {
+      "id": "ai_case_059",
+      "task": "delayed_consequence_grounding",
+      "notes": "HIDDEN consequence one turn before its trigger: it must not leak.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 3
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 3,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "pendingConsequences": [
+          {
+            "id": "con_relay_debt_01",
+            "triggerTurn": 4,
+            "visibility": "hidden"
+          }
+        ]
+      },
+      "expectedFacts": [
+        "nothing has fired yet"
+      ],
+      "forbiddenClaims": [
+        "the relay debt was called",
+        "credits already fell"
+      ]
+    },
+    {
+      "id": "ai_case_060",
+      "task": "delayed_consequence_grounding",
+      "notes": "The same consequence at its trigger turn: now it must be narrated.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 4
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 4,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "credits",
+            "before": 36,
+            "after": 33
+          },
+          {
+            "type": "FLAG_SET",
+            "key": "relay_debt_called",
+            "before": false,
+            "after": true
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "pendingConsequences": [
+          {
+            "id": "con_relay_debt_01",
+            "triggerTurn": 4,
+            "visibility": "hidden",
+            "status": "applied"
+          }
+        ]
+      },
+      "expectedFacts": [
+        "the relay debt was called",
+        "credits fell to 33"
+      ],
+      "forbiddenClaims": [
+        "credits are 36",
+        "the debt is still pending"
+      ]
+    },
+    {
+      "id": "ai_case_061",
+      "task": "delayed_consequence_grounding",
+      "notes": "A VISIBLE pending consequence may be alluded to, but not resolved.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 5
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 5,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 400,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "pendingConsequences": [
+          {
+            "id": "con_relay_debt_02",
+            "triggerTurn": 9,
+            "visibility": "visible",
+            "scope": "faction"
+          }
+        ]
+      },
+      "expectedFacts": [
+        "a visible obligation is pending",
+        "it has not fired"
+      ],
+      "forbiddenClaims": [
+        "it fired",
+        "it is hidden"
+      ]
+    },
+    {
+      "id": "ai_case_062",
+      "task": "delayed_consequence_grounding",
+      "notes": "Hidden consequence far from its trigger.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 6
+      },
+      "characters": [
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 6,
+        "source": "world_tick",
+        "changes": []
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true,
+        "pendingConsequences": [
+          {
+            "id": "con_front_talks_01",
+            "triggerTurn": 12,
+            "visibility": "hidden"
+          }
+        ]
+      },
+      "expectedFacts": [
+        "nothing has fired"
+      ],
+      "forbiddenClaims": [
+        "talks with the Front concluded",
+        "a hidden consequence is described"
+      ]
+    },
+    {
+      "id": "ai_case_063",
+      "task": "contradictory_but_resolvable",
+      "notes": "RESOLVABLE TENSION: stock improved while need stays high. Both are true.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 7
+      },
+      "characters": [
+        {
+          "id": "mara_001",
+          "name": "Mara Senn",
+          "role": "Quartermaster",
+          "stress": 31,
+          "morale": 69,
+          "traits": [
+            "pragmatic",
+            "resourceful"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 7,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "RESOURCE_DELTA",
+            "key": "water",
+            "before": 11,
+            "after": 16
+          },
+          {
+            "type": "NEED_DELTA",
+            "key": "cohort_industrial.water",
+            "before": 0.96,
+            "after": 0.94
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "mara_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "water rose to 16",
+        "the need is still high at 0.94"
+      ],
+      "forbiddenClaims": [
+        "the crisis is over",
+        "the need was fully met",
+        "water fell"
+      ]
+    },
+    {
+      "id": "ai_case_064",
+      "task": "contradictory_but_resolvable",
+      "notes": "Military gain paid for politically; flattening either way is wrong.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 8
+      },
+      "characters": [
+        {
+          "id": "brann_001",
+          "name": "Brann Vale",
+          "role": "Security Lead",
+          "stress": 24,
+          "morale": 81,
+          "traits": [
+            "loyal",
+            "impulsive"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        },
+        {
+          "id": "sela_001",
+          "name": "Sela Rhun",
+          "role": "Mediator",
+          "stress": 27,
+          "morale": 77,
+          "traits": [
+            "observant",
+            "diplomatic"
+          ],
+          "factionId": "faction_compact",
+          "locationId": "settlement_helios"
+        }
+      ],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 8,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "READINESS_DELTA",
+            "key": "squad_compact_01",
+            "before": 62,
+            "after": 70
+          },
+          {
+            "type": "APPROVAL_DELTA",
+            "key": "group_labor",
+            "before": 0.41,
+            "after": 0.37
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [
+          "brann_001",
+          "sela_001"
+        ],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 600,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "readiness rose to 70",
+        "labor approval fell to 0.37",
+        "the two are connected"
+      ],
+      "forbiddenClaims": [
+        "both improved",
+        "both worsened"
+      ]
+    },
+    {
+      "id": "ai_case_065",
+      "task": "contradictory_but_resolvable",
+      "notes": "Reputation and influence are distinct axes.",
+      "worldStateSlice": {
+        "settlement": {
+          "id": "settlement_helios",
+          "name": "Helios Reach",
+          "controllingFactionId": "faction_compact",
+          "population": 1840,
+          "stability": 0.61,
+          "satisfaction": 0.54,
+          "resourceStock": {
+            "water": 14,
+            "energy": 42,
+            "food": 31,
+            "medicine": 8
+          }
+        },
+        "turn": 9
+      },
+      "characters": [],
+      "relevantMemories": [],
+      "recentDelta": {
+        "turn": 9,
+        "source": "world_tick",
+        "changes": [
+          {
+            "type": "REPUTATION_DELTA",
+            "key": "faction_compact",
+            "before": 9,
+            "after": 13
+          },
+          {
+            "type": "INFLUENCE_DELTA",
+            "key": "faction_compact",
+            "before": 55,
+            "after": 52
+          }
+        ]
+      },
+      "constraints": {
+        "language": "it",
+        "knownSpeakerIds": [],
+        "allowedToneTags": [
+          "tense",
+          "hopeful",
+          "grim",
+          "resolute",
+          "weary"
+        ],
+        "maxNarrationChars": 500,
+        "structuredOutput": true,
+        "authoritativeNumbersReadOnly": true
+      },
+      "expectedFacts": [
+        "reputation rose to 13",
+        "influence fell to 52"
+      ],
+      "forbiddenClaims": [
+        "both rose",
+        "the Compact is stronger overall"
+      ]
+    }
+  ]
+}
