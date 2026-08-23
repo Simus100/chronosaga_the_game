@@ -148,7 +148,7 @@ describe('the Lite vs Standard comparison', () => {
     }
   });
 
-  it('refuses to compare profiles that did not see identical inputs', () => {
+  it('refuses to compare profiles that were not asked attempt 1 identically', () => {
     // Same cases for both, different question asked. Coverage is intact, so this
     // reaches the parity check rather than being caught earlier as a hole.
     const run = twoProfileRun(caseIds);
@@ -157,7 +157,7 @@ describe('the Lite vs Standard comparison', () => {
     )!;
     lite.inputFingerprint = 'f'.repeat(64);
     expect(inputParityProblems(run, ['lite', 'standard'])).toHaveLength(1);
-    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/not asked attempt 1 identically/);
   });
 
   it('catches a missing row as a coverage hole, not as a parity mismatch', () => {

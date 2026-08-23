@@ -132,8 +132,13 @@ export interface BenchmarkGeneration {
   /**
    * SHA-256 over the suite identity, the case and both prompts verbatim.
    *
-   * Two profiles that answered the same case must carry the same fingerprint.
-   * That turns "they saw identical inputs" from an assumption into evidence.
+   * On **attempt 1** — the comparison — two profiles answering the same case
+   * must carry the same fingerprint, which turns "they saw identical inputs"
+   * from an assumption into evidence.
+   *
+   * On **attempt 2** they need not: a retry quotes that profile's own validator
+   * rejection, so profiles that failed differently are asked differently. The
+   * fingerprint is what makes that visible instead of hiding it.
    */
   inputFingerprint: string;
   /** 1 for the first try; a retry is a second row, never a mutation. */

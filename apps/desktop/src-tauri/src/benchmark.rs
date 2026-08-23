@@ -1215,14 +1215,21 @@ pub fn record_generation(
 ///
 /// Covers the suite identity, the case id and the two prompts **verbatim as
 /// sent**. The prompts are parameters rather than something this function
-/// regenerates, and that is the whole point: P0.5-B introduces retry prompts,
-/// and a fingerprint that quietly recomputed the original wording would claim
+/// regenerates, and that is the whole point: the retry prompt is not the
+/// original wording, and a fingerprint that quietly recomputed it would claim
 /// two attempts were identical when they were not.
 ///
-/// Two profiles answering the same case on the same attempt number must carry
-/// the same fingerprint. A retry is allowed to differ from attempt 1 — that is
-/// what makes it a retry — but if both profiles retried, they must have been
-/// retried with the same words.
+/// **Attempt 1 is the comparison**: both profiles are asked the same question in
+/// the same words, so their attempt-1 fingerprints must match, and the report
+/// refuses the run if they do not.
+///
+/// **Attempt 2 is not.** A retry repairs a model's own rejected output and
+/// quotes that model's own validator errors, so two profiles that failed
+/// differently are retried differently — which is the fair treatment, since
+/// telling Lite to fix a mistake Standard made would be neither fair nor
+/// informative. What is identical across profiles is the retry *policy*:
+/// [`retry_user_prompt`] is never given a profile, exactly one retry may follow
+/// a rejection, and there is no attempt 3.
 pub fn input_fingerprint(case: &BenchmarkCase, system: &str, user: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1247,6 +1254,117 @@ pub fn first_attempt_fingerprint(case: &BenchmarkCase) -> String {
     input_fingerprint(case, &system_prompt(case), &user_prompt(case))
 }
 
+/// How many cases a run was asked for.
+///
+/// `CHRONOSAGA_BENCHMARK_CASES` used to be read as
+/// `parse::<usize>().ok()`, which turns every malformed value into `None` — and
+/// `None` means *the whole suite*. An operator who typed `CASES=one` intending
+/// a quick check would have launched 65 x 2 generations instead, which is hours
+/// of work and a directory of evidence nobody asked for. A request that cannot
+/// be honoured is now refused rather than reinterpreted as its own opposite.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CaseLimit {
+    /// The variable was absent: run everything.
+    WholeSuite,
+    /// The variable named exactly this many cases.
+    Exactly(usize),
+}
+
+/// Read an explicit case count, refusing anything that is not one.
+///
+/// Nothing is trimmed or coerced into validity. `" 3 "` is not the number three
+/// asked for badly, it is a value this runner will not guess at, and guessing is
+/// how `CASES=one` came to mean sixty-five.
+pub fn case_limit(raw: Option<&str>, suite_size: usize) -> Result<CaseLimit, String> {
+    let Some(value) = raw else {
+        return Ok(CaseLimit::WholeSuite);
+    };
+    let refuse = |reason: &str| {
+        Err(format!(
+            "CHRONOSAGA_BENCHMARK_CASES={value:?} {reason}. Unset it to run the whole suite \
+             ({suite_size} cases), or set it to a whole number from 1 to {suite_size}. \
+             Nothing was run."
+        ))
+    };
+
+    if value.is_empty() {
+        return refuse("is empty");
+    }
+    if !value.chars().all(|character| character.is_ascii_digit()) {
+        return refuse("is not a whole number");
+    }
+    let Ok(count) = value.parse::<usize>() else {
+        return refuse("is too large to be a case count");
+    };
+    if count == 0 {
+        return refuse("asks for no cases at all");
+    }
+    if count > suite_size {
+        return refuse("asks for more cases than the suite holds");
+    }
+    Ok(CaseLimit::Exactly(count))
+}
+
+/// The identity of the checkout an official run is about to be produced from.
+///
+/// Official evidence from a dirty tree is refused at publication, and finding
+/// that out afterwards costs the whole run. `git status` is milliseconds; 130
+/// generations are hours.
+///
+/// There is deliberately no override. "Official" means somebody else can check
+/// it out and run it again, and a flag that waived that would only ever be used
+/// to make an unreproducible run look official.
+pub fn official_checkout_verdict(commit: Option<&str>, dirty: bool) -> Result<String, String> {
+    let Some(commit) = commit.filter(|value| !value.is_empty()) else {
+        return Err(
+            "refusing to start an official run: this checkout has no commit, so no evidence \
+             produced here could be traced to source. Nothing was run."
+                .to_string(),
+        );
+    };
+    if commit.len() != 40 || !commit.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(format!(
+            "refusing to start an official run: '{commit}' is not a full 40-character commit. \
+             Nothing was run."
+        ));
+    }
+    if dirty {
+        return Err(format!(
+            "refusing to start an official run: the checkout at {commit} has uncommitted \
+             changes, so nobody else could reproduce this run. Commit or stash them and start \
+             again. Nothing was run."
+        ));
+    }
+    Ok(commit.to_string())
+}
+
+/// Take ownership of a run directory, or refuse.
+///
+/// The guard this replaces asked whether `metadata.json` was present, which is a
+/// question about one file rather than about the directory. An empty directory,
+/// or one holding a stale `generations.jsonl`, or a `raw/` tree from an
+/// abandoned run, all passed it — and the run would then have appended its rows
+/// to whatever was already there.
+///
+/// `fs::create_dir` is the whole check: it creates the path or it fails because
+/// something already occupies it, in one syscall, so there is no window between
+/// asking and claiming. Nothing existing is read, merged or removed.
+pub fn claim_run_directory(workspace_root: &str, run_id: &str) -> Result<PathBuf, String> {
+    let directory = run_directory(workspace_root, run_id);
+    if let Some(parent) = directory.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("unable to create {}: {error}", parent.display()))?;
+    }
+    fs::create_dir(&directory).map_err(|error| {
+        format!(
+            "unable to claim {}: {error}. An existing run directory is never reused, merged \
+             into or written over. Nothing was run.",
+            directory.display()
+        )
+    })?;
+    Ok(directory)
+}
+
 /// Write the run metadata beside the rows it describes.
 ///
 /// A run directory without this is unattributable, so it is written before the
@@ -1260,7 +1378,23 @@ pub fn persist_metadata(
     let path = run_directory.join("metadata.json");
     let body = serde_json::to_string_pretty(metadata)
         .map_err(|error| format!("unserialisable metadata: {error}"))?;
-    fs::write(&path, body).map_err(|error| format!("unable to write {}: {error}", path.display()))
+
+    // Written once. This file is what makes a directory a run; replacing it
+    // would re-attribute evidence that already exists, and there is no honest
+    // reason to describe the same rows twice.
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            format!(
+                "unable to write {}: {error} (a run is described once and never re-described)",
+                path.display()
+            )
+        })?;
+    file.write_all(body.as_bytes())
+        .map_err(|error| format!("unable to write {}: {error}", path.display()))
 }
 
 /// One retry after a rejection, and no more.
@@ -5405,18 +5539,29 @@ mod tests {
         };
 
         let suite = load_suite().expect("the suite must parse");
-        let selected_ids: Vec<String> = match env::var("CHRONOSAGA_BENCHMARK_CASES")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-        {
-            Some(limit) => cases_to_run(&suite, limit)
+
+        // The request is resolved before anything is verified, started or
+        // written, so a mistake in it costs nothing and leaves nothing behind.
+        let requested = env::var("CHRONOSAGA_BENCHMARK_CASES").ok();
+        let selected_ids: Vec<String> =
+            match case_limit(requested.as_deref(), suite.cases.len())
                 .unwrap_or_else(|error| panic!("{error}"))
-                .iter()
-                .map(|case| case.id.clone())
-                .collect(),
-            None => suite.cases.iter().map(|case| case.id.clone()).collect(),
-        };
+            {
+                CaseLimit::Exactly(limit) => cases_to_run(&suite, limit)
+                    .unwrap_or_else(|error| panic!("{error}"))
+                    .iter()
+                    .map(|case| case.id.clone())
+                    .collect(),
+                CaseLimit::WholeSuite => suite.cases.iter().map(|case| case.id.clone()).collect(),
+            };
         assert!(!selected_ids.is_empty(), "nothing to run");
+
+        // And the checkout, before the expensive part. A dirty tree is refused
+        // at publication anyway; discovering that after 130 generations would
+        // waste hours and produce evidence that can only be thrown away.
+        let commit = official_checkout_verdict(git_commit().as_deref(), git_dirty())
+            .unwrap_or_else(|error| panic!("{error}"));
+        eprintln!("official checkout: {commit}, clean");
 
         // The runtime is shared by both blocks, so it is verified once, before
         // either starts and before any evidence exists.
@@ -5445,12 +5590,6 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or_default()
-        );
-        let directory = run_directory(&workspace, &run_id);
-        assert!(
-            !directory.join("metadata.json").exists(),
-            "{} already holds a run; official evidence is never overwritten",
-            directory.display()
         );
 
         // Every artifact, digested before any of them answers.
@@ -5486,13 +5625,20 @@ mod tests {
         // and handed to both blocks. A per-profile context would be tuning.
         let context = benchmark_context(verified_models[0].model().context_target());
 
+        // Claimed, not checked-then-created: `fs::create_dir` succeeds only if
+        // nothing is at that path, in one syscall. Everything that could refuse
+        // the run has already refused it, so this is the first byte written.
+        let directory = claim_run_directory(&workspace, &run_id)
+            .unwrap_or_else(|error| panic!("{error}"));
+
         let metadata = new_run_metadata(
             &run_id,
             RunKind::OfficialComparison,
             &started_at(),
             &suite,
-            &git_commit().unwrap_or_default(),
-            git_dirty(),
+            // The commit this run already refused to start without.
+            &commit,
+            false,
             verified_runtime.release_tag(),
             Some(verified_runtime.executable_sha256().to_string()),
             host_facts(),
@@ -5846,9 +5992,9 @@ mod tests {
         // One run id and one metadata write, handed to both blocks.
         assert_eq!(runner.matches(concat!("let run_", "id = format!")).count(), 1);
         assert_eq!(runner.matches(concat!("persist_", "metadata(")).count(), 1);
-        // One directory, derived once, and one call site that runs twice: both
+        // One directory, claimed once, and one call site that runs twice: both
         // blocks write into the same place under the same id.
-        assert_eq!(runner.matches("let directory = run_directory(").count(), 1);
+        assert_eq!(runner.matches("claim_run_directory(&workspace,").count(), 1);
         // The block is given a directory rather than deriving one, so it can
         // only ever write where the run already is.
         assert!(block_body().contains("directory: &std::path::Path"));
@@ -5979,113 +6125,356 @@ mod tests {
         assert!(resolver.contains("PAYLOAD_OPT_INS"), "{resolver}");
     }
 
-    #[test]
-    fn an_existing_run_directory_is_never_overwritten() {
-        // 23. Official evidence accumulates; it does not get edited into shape.
-        assert!(
-            official_body().contains("official evidence is never overwritten"),
-            "the runner must refuse to write into an existing run"
-        );
-        let guard = official_body();
-        let check = guard.find("already holds a run").expect("the check exists");
-        let first_start = guard
-            .find(concat!("execute_profile_", "block("))
-            .expect("the runner runs a profile");
-        assert!(check < first_start, "and it must refuse before anything starts");
+    /// A fresh workspace root under the temporary directory.
+    fn scratch_workspace(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("chronosaga-b1-{name}"));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("the scratch workspace must exist");
+        root
     }
 
     #[test]
-    fn a_mismatched_artifact_or_runtime_stops_the_run_before_any_generation() {
-        // 17, 18 and 19. The order is the claim: the runtime distribution and
-        // both artifacts are checked before the first block is entered, so a
-        // wrong SHA-256 or a wrong size costs nothing rather than costing a
-        // completed Lite block that can never be published.
-        let runner = official_body();
+    fn an_absent_run_directory_is_claimed() {
+        // A: the ordinary case, and the only one that succeeds.
+        let root = scratch_workspace("claim-absent");
+        let workspace = root.to_string_lossy().to_string();
 
-        let runtime = runner
-            .find(concat!("verify_runtime_", "distribution("))
-            .expect("the runtime is verified");
-        let artifacts = runner
-            .find("Every artifact, digested before any of them answers")
-            .expect("the artifacts are verified");
-        let first_block = runner
-            .find(concat!("execute_profile_", "block("))
-            .expect("a profile eventually runs");
-        assert!(runtime < artifacts, "the runtime is verified first");
-        assert!(artifacts < first_block, "and nothing generates before both are");
+        let claimed = claim_run_directory(&workspace, "official_1").expect("must claim");
+        assert_eq!(claimed, run_directory(&workspace, "official_1"));
+        assert!(claimed.is_dir());
+        assert_eq!(fs::read_dir(&claimed).unwrap().count(), 0, "claimed empty");
 
-        // Both, not just the one the context happens to come from.
-        assert_eq!(
-            runner
-                .matches(concat!("verified_model_for_", "profile(profile)"))
-                .count(),
-            1,
-            "one resolution, applied to every locked profile"
-        );
-        assert!(!runner.contains(concat!("verified_model_for_", "profile(crate::")));
-        // And the block trusts what it was handed instead of digesting again.
-        assert!(!block_body().contains(concat!("verified_model_for_", "profile(")));
+        // And claiming it a second time is refused, which is the whole point.
+        let error = claim_run_directory(&workspace, "official_1").expect_err("already claimed");
+        assert!(error.contains("never reused"), "{error}");
+        assert!(error.contains("Nothing was run"), "{error}");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn a_failed_integrity_check_is_never_read_as_an_absent_artifact() {
-        // The resolver answers `None` for both, so the runner must say which it
-        // refused on. "Nothing to benchmark" and "these are the wrong bytes"
-        // are different facts and only one of them is a skip.
-        let runner = official_body();
-        let at = runner
-            .find("its artifact is absent or failed")
-            .expect("the artifact refusal exists");
-        // And it is a different sentence from the runtime's, which refuses the
-        // same run for a different reason.
-        assert!(runner.contains("refusing to benchmark an unverified runtime"), "{runner}");
+    fn an_existing_run_directory_is_never_reused_whatever_is_in_it() {
+        // B, C, D, E and F. The guard this replaced asked whether
+        // `metadata.json` existed, which is a question about one file: an empty
+        // directory, a stale `generations.jsonl` and an abandoned `raw/` tree
+        // all passed it, and the run would have appended to whatever was there.
+        let root = scratch_workspace("claim-occupied");
+        let workspace = root.to_string_lossy().to_string();
 
-        // The failure is a panic, not a return: the official lane never reports
-        // success without evidence. Read backwards from the refusal to the call
-        // that produced the `None`, with no newline in any needle — this file is
-        // checked out CRLF on Windows.
-        let resolver = runner[..at]
-            .rfind(concat!("verified_model_for_", "profile("))
-            .expect("the refusal follows the resolution it refuses");
-        assert!(
-            runner[resolver..at].contains("panic!("),
-            "{}",
-            &runner[resolver..at]
-        );
-    }
+        // Each case: what to put in the directory first, and what must survive.
+        let occupations: Vec<(&str, Vec<(&str, &str)>)> = vec![
+            ("empty", Vec::new()),
+            ("rows-only", vec![("generations.jsonl", "{\"id\":\"stale\"}\n")]),
+            ("raw-only", vec![("raw/ai_case_001.lite.1.txt", "stale prose")]),
+            ("metadata", vec![("metadata.json", "{\"runId\":\"stale\"}")]),
+            (
+                "everything",
+                vec![
+                    ("metadata.json", "{\"runId\":\"stale\"}"),
+                    ("generations.jsonl", "{\"id\":\"stale\"}\n"),
+                    ("raw/ai_case_001.lite.1.txt", "stale prose"),
+                ],
+            ),
+        ];
 
-    #[test]
-    fn raw_output_paths_stay_inside_the_run_they_belong_to() {
-        // 27. A row points at its evidence with a run-relative path, so a run
-        // directory can be moved, copied or read from another machine and still
-        // resolve. An absolute path would bind the evidence to one disk, and a
-        // traversal would let a row name a file outside the run entirely.
-        let suite = load_suite().unwrap();
-        for case in &suite.cases {
-            for profile in crate::model_lock::KNOWN_PROFILE_IDS {
-                for attempt in 1..=MAX_ATTEMPTS as u32 {
-                    let path = raw_output_path(&case.id, profile, attempt);
-                    assert!(path.starts_with("raw/"), "{path}");
-                    assert!(!path.contains(".."), "{path}");
-                    assert!(!path.contains(':'), "{path}");
-                    assert!(!path.starts_with('/') && !path.starts_with('\\'), "{path}");
-                    assert!(!std::path::Path::new(&path).is_absolute(), "{path}");
-                    // Forward slashes, on Windows too: the path is written into
-                    // JSON that is read on other platforms.
-                    assert!(!path.contains('\\'), "{path}");
-                }
+        for (run_id, contents) in occupations {
+            let directory = run_directory(&workspace, run_id);
+            fs::create_dir_all(&directory).unwrap();
+            for (relative, body) in &contents {
+                let path = directory.join(relative);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, body).unwrap();
+            }
+
+            let outcome = claim_run_directory(&workspace, run_id);
+            assert!(
+                outcome.is_err(),
+                "{run_id}: an occupied directory was claimed, giving {outcome:?}"
+            );
+            let error = outcome.unwrap_err();
+            assert!(error.contains("never reused"), "{run_id}: {error}");
+            assert!(error.contains("Nothing was run"), "{run_id}: {error}");
+
+            // And every byte that was there is still there.
+            for (relative, body) in &contents {
+                assert_eq!(
+                    &fs::read_to_string(directory.join(relative)).unwrap(),
+                    body,
+                    "{run_id}: {relative} was disturbed"
+                );
             }
         }
 
-        // And it is the same string the runner writes and the row records, so
-        // the two cannot drift apart.
-        let case = &suite.cases[0];
-        let outcome = accepted_outcome("lite");
-        let record = record_generation(
-            "r", case, "lite", 2, test_artifact("lite"), benchmark_context(4096),
-            first_attempt_fingerprint(case), &outcome,
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_refused_claim_leaves_every_existing_byte_alone() {
+        // F. Refusing must not be destructive: the evidence that is already
+        // there belongs to a run somebody may still want.
+        let root = scratch_workspace("claim-untouched");
+        let workspace = root.to_string_lossy().to_string();
+        let directory = run_directory(&workspace, "official_prior");
+        fs::create_dir_all(directory.join("raw")).unwrap();
+        fs::write(directory.join("metadata.json"), "{\"runId\":\"prior\"}").unwrap();
+        fs::write(directory.join("generations.jsonl"), "{\"id\":\"prior\"}\n").unwrap();
+        fs::write(directory.join("raw/ai_case_001.lite.1.txt"), "prior prose").unwrap();
+
+        claim_run_directory(&workspace, "official_prior").expect_err("must refuse");
+
+        assert_eq!(
+            fs::read_to_string(directory.join("metadata.json")).unwrap(),
+            "{\"runId\":\"prior\"}"
         );
-        assert_eq!(record.raw_output_path, raw_output_path(&case.id, "lite", 2));
+        assert_eq!(
+            fs::read_to_string(directory.join("generations.jsonl")).unwrap(),
+            "{\"id\":\"prior\"}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("raw/ai_case_001.lite.1.txt")).unwrap(),
+            "prior prose"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_sitting_where_the_run_should_go_is_refused_too() {
+        // Not a directory at all, which `create_dir` also refuses. Checking for
+        // `metadata.json` inside it would have been an error rather than a
+        // refusal, and an error in a different place says a different thing.
+        let root = scratch_workspace("claim-file");
+        let workspace = root.to_string_lossy().to_string();
+        let directory = run_directory(&workspace, "official_file");
+        fs::create_dir_all(directory.parent().unwrap()).unwrap();
+        fs::write(&directory, "not a run").unwrap();
+
+        let error = claim_run_directory(&workspace, "official_file").expect_err("must refuse");
+        assert!(error.contains("Nothing was run"), "{error}");
+        assert_eq!(fs::read_to_string(&directory).unwrap(), "not a run");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_run_is_described_once_and_never_re_described() {
+        // The directory claim owns "this run is new". This owns "and its
+        // description is not rewritten afterwards" — replacing it would
+        // re-attribute rows that already exist.
+        let root = scratch_workspace("metadata-once");
+        let directory = root.join("run");
+
+        persist_metadata(&directory, &test_metadata(false)).expect("the first write succeeds");
+        let error =
+            persist_metadata(&directory, &test_metadata(true)).expect_err("the second is refused");
+        assert!(error.contains("never re-described"), "{error}");
+
+        let written = fs::read_to_string(directory.join("metadata.json")).unwrap();
+        assert!(written.contains("\"gitDirty\": false"), "{written}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_official_run_claims_its_directory_before_it_writes_anything() {
+        // The claim is the first byte written, and everything that could refuse
+        // the run has already had its turn.
+        let runner = official_body();
+        let claim = runner.find("claim_run_directory(&workspace,").expect("the claim exists");
+        for earlier in [
+            "case_limit(",
+            "official_checkout_verdict(",
+            concat!("verify_runtime_", "distribution("),
+            "Every artifact, digested before any of them answers",
+        ] {
+            let at = runner.find(earlier).unwrap_or_else(|| panic!("{earlier} is missing"));
+            assert!(at < claim, "{earlier} must be settled before the directory is claimed");
+        }
+        for later in [concat!("persist_", "metadata("), concat!("execute_profile_", "block(")] {
+            let at = runner.find(later).unwrap_or_else(|| panic!("{later} is missing"));
+            assert!(claim < at, "{later} must follow the claim");
+        }
+
+        // And the old shape is gone: asking whether a file exists and then
+        // creating the directory is two syscalls with a gap in the middle.
+        assert!(!runner.contains("metadata.json\").exists()"), "{runner}");
+    }
+
+    // ---------------------------------------------------------------------
+    // The case limit fails closed
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn an_absent_case_limit_means_the_whole_suite() {
+        assert_eq!(case_limit(None, 65), Ok(CaseLimit::WholeSuite));
+    }
+
+    #[test]
+    fn a_valid_case_limit_is_taken_exactly() {
+        assert_eq!(case_limit(Some("1"), 65), Ok(CaseLimit::Exactly(1)));
+        assert_eq!(case_limit(Some("3"), 65), Ok(CaseLimit::Exactly(3)));
+        assert_eq!(case_limit(Some("65"), 65), Ok(CaseLimit::Exactly(65)));
+    }
+
+    #[test]
+    fn a_malformed_case_limit_can_never_become_the_whole_suite() {
+        // This is the bug, stated as a test: `parse().ok()` turned every bad
+        // value into `None`, and `None` means run everything. An operator who
+        // typed CASES=one intending a quick check would have launched 65 x 2.
+        for value in [
+            "",
+            " ",
+            "  ",
+            "one",
+            "3.0",
+            "3,0",
+            "-1",
+            "0",
+            "66",
+            "1000",
+            " 3",
+            "3 ",
+            "3x",
+            "0x3",
+            "+3",
+            "1e2",
+            "99999999999999999999999999",
+            "\\t2",
+        ] {
+            let outcome = case_limit(Some(value), 65);
+            assert!(
+                outcome.is_err(),
+                "{value:?} was accepted as {outcome:?} instead of being refused"
+            );
+            assert_ne!(
+                outcome,
+                Ok(CaseLimit::WholeSuite),
+                "{value:?} fell through to the whole suite"
+            );
+            let error = outcome.unwrap_err();
+            assert!(error.contains("Nothing was run"), "{value:?}: {error}");
+            assert!(error.contains("65 cases"), "{value:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_refused_case_limit_says_what_was_wrong_with_it() {
+        // Each refusal names its own reason, because "invalid" sends an
+        // operator back to guess which of six rules they broke.
+        let reason = |value: &str| case_limit(Some(value), 65).unwrap_err();
+        assert!(reason("").contains("is empty"));
+        assert!(reason("one").contains("is not a whole number"));
+        assert!(reason("0").contains("asks for no cases at all"));
+        assert!(reason("66").contains("more cases than the suite holds"));
+        // And every one of them quotes what was actually typed.
+        assert!(reason("one").contains(&format!("{:?}", "one")), "{}", reason("one"));
+    }
+
+    #[test]
+    fn the_case_limit_is_settled_before_anything_is_verified_or_written() {
+        // A mistake in the request must cost nothing and leave nothing behind.
+        let runner = official_body();
+        let limit = runner.find("case_limit(").expect("the limit is parsed");
+        for later in [
+            concat!("verify_runtime_", "distribution("),
+            concat!("verified_model_for_", "profile("),
+            "claim_run_directory(",
+            concat!("persist_", "metadata("),
+            concat!("execute_profile_", "block("),
+        ] {
+            let at = runner.find(later).unwrap_or_else(|| panic!("{later} is missing"));
+            assert!(limit < at, "{later} must come after the limit is settled");
+        }
+
+        // And the fallible read is gone: `parse().ok()` is what made a typo mean
+        // the whole suite.
+        assert!(!runner.contains("parse::<usize>().ok()"), "{runner}");
+    }
+
+    // ---------------------------------------------------------------------
+    // An official run starts from a clean, committed checkout
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_clean_committed_checkout_may_produce_official_evidence() {
+        let commit = "9599f38d846f29907286e53200f51a703af4f53c";
+        assert_eq!(official_checkout_verdict(Some(commit), false), Ok(commit.to_string()));
+    }
+
+    #[test]
+    fn a_dirty_checkout_cannot_start_an_official_run() {
+        // 14 and P2-4. The publication boundary already refuses dirty evidence;
+        // this refuses it before the hours rather than after them.
+        let commit = "9599f38d846f29907286e53200f51a703af4f53c";
+        let error = official_checkout_verdict(Some(commit), true).unwrap_err();
+        assert!(error.contains("uncommitted changes"), "{error}");
+        assert!(error.contains("nobody else could reproduce"), "{error}");
+        assert!(error.contains("Nothing was run"), "{error}");
+
+        // No bypass exists, and none can be added without changing the shape
+        // of this function: it is told a commit and a boolean, and reads
+        // nothing else. An environment variable waiving the check would only
+        // ever be used to make an unreproducible run look official.
+        let source = include_str!("benchmark.rs");
+        let at = source
+            .find("pub fn official_checkout_verdict(")
+            .expect("the verdict exists");
+        let body = &source[at..at + 1800];
+        assert!(!body.contains("env::var"), "{body}");
+        assert!(!body.contains("std::env"), "{body}");
+
+        // And the runner calls it unconditionally, with nothing between the
+        // call and the panic that could decline to make it.
+        let runner = official_body();
+        let call = runner
+            .find("official_checkout_verdict(")
+            .expect("the runner judges its checkout");
+        let tail = &runner[call..call + 220];
+        assert!(tail.contains("unwrap_or_else"), "{tail}");
+        assert!(tail.contains("panic!"), "{tail}");
+        assert!(!tail.contains("if "), "{tail}");
+    }
+
+    #[test]
+    fn an_untraceable_checkout_cannot_start_an_official_run() {
+        for (commit, expected) in [
+            (None, "has no commit"),
+            (Some(""), "has no commit"),
+            (Some("9599f38"), "not a full 40-character commit"),
+            (Some("not-a-commit"), "not a full 40-character commit"),
+            (Some("9599f38d846f29907286e53200f51a703af4f53"), "not a full"),
+            (Some("zzz9f38d846f29907286e53200f51a703af4f53c"), "not a full"),
+        ] {
+            let outcome = official_checkout_verdict(commit, false);
+            assert!(outcome.is_err(), "{commit:?} was accepted as {outcome:?}");
+            let error = outcome.unwrap_err();
+            assert!(error.contains(expected), "{commit:?}: {error}");
+            assert!(error.contains("Nothing was run"), "{commit:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_checkout_is_judged_before_the_expensive_work_begins() {
+        let runner = official_body();
+        let verdict = runner
+            .find("official_checkout_verdict(")
+            .expect("the checkout is judged");
+        for later in [
+            concat!("verify_runtime_", "distribution("),
+            concat!("verified_model_for_", "profile("),
+            "claim_run_directory(",
+            concat!("persist_", "metadata("),
+            concat!("execute_profile_", "block("),
+        ] {
+            let at = runner.find(later).unwrap_or_else(|| panic!("{later} is missing"));
+            assert!(verdict < at, "{later} must come after the checkout is judged");
+        }
+
+        // And the metadata records the commit that was judged, rather than
+        // asking Git a second time and possibly getting a different answer.
+        assert!(runner.contains("// The commit this run already refused to start without."));
+        assert_eq!(runner.matches("git_commit()").count(), 1);
+        assert_eq!(runner.matches("git_dirty()").count(), 1);
     }
 
     // ---------------------------------------------------------------------

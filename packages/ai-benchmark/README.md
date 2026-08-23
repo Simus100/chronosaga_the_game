@@ -1,7 +1,13 @@
 # @paa/ai-benchmark
 
-P0.5 local AI benchmark harness. **Infrastructure only** — running the full
-Lite-versus-Standard comparison is P0.5-B and is deliberately not done here.
+P0.5 local AI benchmark harness: the versioned case suite, the schemas, the
+deterministic evaluator, the Lite-versus-Standard report, and the lane the
+official comparison runs through.
+
+The lane is built and reproducible — one command runs both profiles, another
+turns the resulting evidence into a report. **The official 65 x 2 comparison
+has not been run**, and no run in this repository is official evidence. When it
+is run, it will be from a clean checkout, by the command below.
 
 ## What lives where
 
@@ -33,16 +39,57 @@ benchmark-only rule.
 One command produces the whole thing: Lite over the suite, a full stop and reap,
 Standard over the suite, into one run directory under one run id.
 
+This is a Windows-first project, so PowerShell is the documented form.
+
+**The full official run**, from the repository root:
+
+```powershell
+$env:CHRONOSAGA_WORKSPACE_ROOT = "D:\Chronosaga"
+$env:CHRONOSAGA_BENCHMARK_OFFICIAL = "1"
+Remove-Item Env:\CHRONOSAGA_BENCHMARK_CASES -ErrorAction SilentlyContinue
+cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml `
+  benchmark::tests::official_quality_comparison -- --nocapture --test-threads=1
 ```
-CHRONOSAGA_WORKSPACE_ROOT=D:\Chronosaga CHRONOSAGA_BENCHMARK_OFFICIAL=1 \
+
+**A narrowed orchestration smoke** — one case per profile, which proves the
+lane and is not official evidence:
+
+```powershell
+$env:CHRONOSAGA_WORKSPACE_ROOT = "D:\Chronosaga"
+$env:CHRONOSAGA_BENCHMARK_OFFICIAL = "1"
+$env:CHRONOSAGA_BENCHMARK_CASES = "1"
+cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml `
+  benchmark::tests::official_quality_comparison -- --nocapture --test-threads=1
+```
+
+`Remove-Item Env:\...` is in the first block on purpose: an environment variable
+set in an earlier session sticks around, and `CASES` left at `1` from a smoke
+would produce a two-row "official" run. Clearing it is cheaper than noticing
+afterwards.
+
+The same thing under Git Bash, if that is what is open:
+
+```bash
+CHRONOSAGA_WORKSPACE_ROOT='D:\Chronosaga' CHRONOSAGA_BENCHMARK_OFFICIAL=1 \
 cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml \
   benchmark::tests::official_quality_comparison -- --nocapture --test-threads=1
 ```
 
 Nothing is edited between the two profiles: no source change, no model filename,
-no stitching of JSON afterwards. Adding `CHRONOSAGA_BENCHMARK_CASES=1` narrows it
-to one case per profile for proving the orchestration; official evidence is
-produced without it.
+no stitching of JSON afterwards.
+
+**A clean, committed checkout is required.** The run refuses to start otherwise —
+before the runtime is verified, before 3 GB of model is hashed, before anything
+is launched and before the evidence directory exists. Official evidence from a
+dirty tree is refused at publication anyway, and discovering that after two
+hours of generation is two hours wasted. There is no override; a flag waiving it
+would only ever be used to make an unreproducible run look official.
+
+`CHRONOSAGA_BENCHMARK_CASES` fails closed. Absent means the whole suite; a whole
+number from 1 to 65 means exactly that many; **anything else refuses the run**.
+It used to be read as `parse().ok()`, so `CASES=one` became `None` and `None`
+means the whole suite — an operator asking for one case would have launched 130
+generations.
 
 The opt-in is its own variable. `CHRONOSAGA_BENCHMARK=1` runs a smoke pass and
 `CHRONOSAGA_BENCHMARK_OFFICIAL=1` runs the comparison, so the command that
@@ -71,25 +118,61 @@ connection, a wrong serving model, a failed digest or an unwritable directory
 ends the run where it stands: those are infrastructure failures, not outputs to
 repair.
 
-**Reading the evidence back.** `loadRunDirectory` parses `metadata.json` and
-`generations.jsonl` and returns `unknown`, which is the only honest type for a
-file nobody validated. From there it is the usual boundary —
-`structuralBenchmarkRunProblems`, `validateRun`, the suite, model, runtime and
-checkout bindings, then `buildLocalOfficialComparison`. A line that is not JSON
-is handed on as the string it was, so the boundary names the row; dropping it
-would silently shrink the run.
+**Where the run lands.** Outside Git, under the workspace root:
+`D:\Chronosaga\benchmarks\p0.5\official_<epoch>\`, holding `metadata.json`,
+`generations.jsonl` and `raw/`. The directory is *claimed* rather than checked
+for — `fs::create_dir` succeeds only if nothing is at that path — so an existing
+run is never reused, merged into or written over, whatever it happens to
+contain. Raw files and metadata are written once and never replaced.
+
+## Turning a run into a report
+
+```powershell
+pnpm --filter @paa/ai-benchmark build
+node packages/ai-benchmark/dist/adapters/report-cli.js D:\Chronosaga\benchmarks\p0.5\official_1787445526
+```
+
+The report goes to stdout as JSON and the human-readable summary to stderr, so
+`... > report.json` produces a file that is only ever JSON. The command exits
+non-zero on any refusal: malformed evidence, an incomplete official run, a suite
+/ artifact / runtime mismatch, or a dirty or foreign reporting checkout.
+
+The path it walks:
+
+```text
+run directory
+  -> loadRunDirectory                  parse, repair nothing, return `unknown`
+  -> structuralBenchmarkRunProblems    is it even a run?
+  -> validateRun                       every cross-field rule
+  -> buildLocalOfficialComparison      suite, artifacts, runtime, coverage,
+                                       executing checkout, judgement, parity
+  -> the report, or a refusal
+```
+
+**The run directory is the only thing the caller may name.** There is no
+repository argument, no commit to trust, no "the tree is clean, honestly" flag
+and no suite override — a second argument is refused rather than ignored,
+because a command that quietly dropped `--repository ../elsewhere` would look
+like it had honoured it. The checkout identity comes from the location of the
+evaluating code itself, so the invariant stays *the code evaluates itself*.
+
+Nothing is coerced, repaired or dropped. A line that is not JSON is handed on as
+the string it was, so the boundary names the row; dropping it would silently
+shrink the run, and a report over a shrunken run describes evidence nobody has.
 
 A partial run loads and reads perfectly well. It simply cannot be published: an
 interrupted run is evidence of an interruption, and the coverage gates say so.
 
 ## Running a smoke pass
 
-The runner is opt-in and needs the verified payload:
+The single-profile runner is opt-in and needs the verified payload:
 
-```
-CHRONOSAGA_WORKSPACE_ROOT=D:\Chronosaga CHRONOSAGA_BENCHMARK=1 \
-CHRONOSAGA_BENCHMARK_PROFILE=lite CHRONOSAGA_BENCHMARK_CASES=3 \
-cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml \
+```powershell
+$env:CHRONOSAGA_WORKSPACE_ROOT = "D:\Chronosaga"
+$env:CHRONOSAGA_BENCHMARK = "1"
+$env:CHRONOSAGA_BENCHMARK_PROFILE = "lite"
+$env:CHRONOSAGA_BENCHMARK_CASES = "3"
+cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml `
   benchmark::tests::smoke -- --nocapture --test-threads=1
 ```
 

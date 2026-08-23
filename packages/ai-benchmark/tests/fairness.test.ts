@@ -1664,7 +1664,7 @@ describe('comparison fairness', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('asked differently'))).toBe(true);
-    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/not asked attempt 1 identically/);
   });
 
   it('refuses a profile that swapped artifacts halfway through', () => {
@@ -1786,7 +1786,7 @@ describe('retries and fairness', () => {
 
     const problems = inputParityProblems(run, ['lite', 'standard']);
     expect(problems.some(problem => problem.includes('attempt 1 was asked differently'))).toBe(true);
-    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
+    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/not asked attempt 1 identically/);
   });
 
   it('E: a retry may legitimately differ from attempt 1', () => {
@@ -2202,7 +2202,7 @@ describe('a structurally invalid run never reaches an aggregate', () => {
       message = String(error);
     }
     expect(message).toMatch(/structurally invalid run/);
-    expect(message).not.toMatch(/identical case inputs/);
+    expect(message).not.toMatch(/not asked attempt 1 identically/);
   });
 
   it('F: a malformed run cannot influence any aggregate', () => {

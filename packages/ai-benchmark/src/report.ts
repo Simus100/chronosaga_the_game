@@ -1,9 +1,14 @@
 /**
- * Lite against Standard, on identical inputs.
+ * Lite against Standard, on the same question.
  *
  * The comparison only means anything if both profiles saw exactly the same
  * cases, so that is checked rather than assumed: a report over mismatched case
  * sets refuses to be built.
+ *
+ * "The same question" is attempt 1, exactly. A retry repairs a model's own
+ * rejected output and names that model's own validator errors, so attempt 2
+ * differs between profiles that failed differently — deliberately, and by a
+ * policy that is itself identical for both.
  */
 
 import type { BenchmarkCase, BenchmarkSuite, BenchmarkTask } from './case.js';
@@ -1155,8 +1160,8 @@ function summarise(
  * should follow from the API a caller can reach, not from remembering which
  * helper to call.
  *
- * Throws when the profiles did not see identical inputs, because a report that
- * quietly compares different work is worse than no report.
+ * Throws when the profiles were not asked attempt 1 identically, because a
+ * report that quietly compares different work is worse than no report.
  */
 export function buildComparisonWithTrustedCheckout(
   suite: BenchmarkSuite,
@@ -1317,7 +1322,8 @@ export function buildComparisonWithTrustedCheckout(
   const parity = inputParityProblems(run, compared);
   if (parity.length > 0) {
     throw new Error(
-      `profiles did not see identical case inputs, so they cannot be compared: ${parity.join('; ')}`,
+      'profiles were not asked attempt 1 identically, so they cannot be compared: ' +
+        parity.join('; '),
     );
   }
 
