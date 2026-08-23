@@ -94,7 +94,7 @@ Both models remain P0 benchmark candidates. Neither is approved for release.
 - production profile UX and the `SAFE MODE` recovery presentation;
 - `STANDARD -> LITE -> SAFE/PROCEDURAL` fallback chain;
 - GPU/VRAM acceleration probe;
-- the P0.5 benchmark: hardware matrix, context matrix, 50-case quality suite;
+- the P0.5 benchmark: hardware matrix, context matrix, complete versioned quality suite (P0 minimum 50 cases; current suite 65);
 - multi-GB Full Offline packaging of both model payloads;
 - clean-machine NSIS installer validation with models included.
 
