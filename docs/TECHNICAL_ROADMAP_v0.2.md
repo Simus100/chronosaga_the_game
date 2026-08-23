@@ -176,7 +176,7 @@ Documento operativo: `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md`.
 - CPU-only baseline;
 - GPU accelerated test where available;
 - 2k/4k/8k contexts;
-- 50-case qualitative suite;
+- suite qualitativa versionata (minimo P0 50 casi; suite corrente 65);
 - JSON compliance;
 - Italian quality;
 - repetition/contradiction;

@@ -12,7 +12,7 @@
 6. Benchmark Lite ~1.7B Q4/Q5.
 7. Benchmark Standard ~3B Q4/Q5.
 8. Test 2k / 4k / 8k context.
-9. Eseguire 50-case AI quality suite in italiano.
+9. Eseguire l'intera AI quality suite versionata in italiano (minimo P0: 50 casi; suite corrente: 65).
 10. Verificare schema validation + retry + fallback.
 11. Verificare model switching senza cambiare save/game state.
 12. Registrare RAM, TTFT, tok/s, startup, peak memory, crash/OOM.

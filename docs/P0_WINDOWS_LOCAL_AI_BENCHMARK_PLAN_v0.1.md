@@ -240,9 +240,29 @@ Per entrambi i profili testare almeno:
 
 ---
 
-# 7. P0-D — 50-case AI quality suite
+# 7. P0-D — AI quality suite (minimo 50 casi)
 
 Preparare almeno 50 scenari rappresentativi, versionati nel repository.
+
+**50 è un minimo di gate, non una dimensione fissa della suite.** La suite
+versionata può contenerne di più, e oggi ne contiene di più.
+
+La comparazione ufficiale non seleziona un sottoinsieme: esegue **l'intera
+suite lockata** nella versione usata dalla run. Un confronto su un campione
+scelto a posteriori non è la stessa misura.
+
+Stato corrente:
+
+```text
+minimo normativo P0            50 casi
+suite versionata corrente      65 casi
+popolazione run ufficiale      65 Lite + 65 Standard
+                               piu' i soli retry legittimi (uno per rifiuto)
+```
+
+65 è la popolazione *corrente*, non un limite architetturale permanente. Una
+versione futura della suite può contenerne di più; **non può scendere sotto il
+minimo normativo di 50** senza una nuova decisione di prodotto esplicita.
 
 Ogni scenario deve contenere:
 
@@ -530,7 +550,7 @@ Il gate produce:
 3. working llama.cpp sidecar lifecycle;
 4. Lite benchmark report;
 5. Standard benchmark report;
-6. 50-case quality results;
+6. risultati di qualità sull'intera suite versionata (minimo P0: 50 casi; suite corrente: 65);
 7. selected quantization recommendations;
 8. measured hardware recommendation table;
 9. model profile selector;

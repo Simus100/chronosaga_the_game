@@ -102,6 +102,20 @@ L'infrastruttura di esecuzione esiste ed è mergiata. Contiene:
 **Mergiato non significa eseguito.** Vedi il gate seguente.
 
 ### P0.5 — risultato qualità ufficiale Lite vs Standard — NOT RUN
+
+Popolazione della comparazione, decisa e lockata:
+
+```text
+minimo normativo P0            50 casi
+suite versionata corrente      65 casi
+run ufficiale corrente         intera suite: 65 Lite + 65 Standard
+                               piu' i soli retry legittimi
+```
+
+50 è il minimo di gate, non un sottoinsieme selezionabile: la run ufficiale
+esegue la suite lockata per intero. 65 è la popolazione corrente, non un limite
+permanente.
+
 La comparazione 65 × 2 **non è stata eseguita**. Nessuna evidenza in questo
 repository o nel workspace è evidenza ufficiale comparabile.
 

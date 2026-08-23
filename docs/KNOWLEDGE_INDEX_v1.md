@@ -134,7 +134,7 @@ Fonte operativa prevalente per il gate tecnico immediato:
 - Lite ~1.7B e Standard ~3B;
 - hardware matrix;
 - 2k/4k/8k context matrix;
-- 50-case AI quality suite;
+- AI quality suite versionata (minimo P0 50 casi; suite corrente 65);
 - schema validation/retry/fallback;
 - model selector funzionale;
 - packaging experiment;
@@ -301,7 +301,7 @@ Priorità consigliata dopo/parallelamente al P0:
 
 1. `AI_DM_PROTOCOL_v0.1.md`
 2. `DATA_SCHEMA_v0.1.md`
-3. test fixtures per la 50-case AI quality suite
+3. test fixtures per la AI quality suite versionata
 4. report risultati P0 desktop/local AI
 5. asset-pack manifest/schema definitivo dopo il primo visual prototype
 6. benchmark VPS in una fase successiva
