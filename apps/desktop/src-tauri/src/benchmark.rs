@@ -1528,11 +1528,29 @@ pub fn persist(
     if let Some(parent) = raw_path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("unable to create {}: {error}", parent.display()))?;
     }
-    fs::write(&raw_path, raw).map_err(|error| format!("unable to write {}: {error}", raw_path.display()))?;
+    // Created, never overwritten. `fs::write` would truncate whatever was
+    // already there, so a repeated (case, profile, attempt) would quietly
+    // replace one model's answer with another's while the row for the first
+    // stayed in the JSONL, still pointing at the file. The row count would look
+    // right and the evidence would be wrong, which is the worst shape a
+    // benchmark can take. Attempt 2 has its own path and is unaffected.
+    use std::io::Write;
+    let mut raw_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&raw_path)
+        .map_err(|error| {
+            format!(
+                "unable to write {}: {error} (raw evidence is written once and never replaced)",
+                raw_path.display()
+            )
+        })?;
+    raw_file
+        .write_all(raw.as_bytes())
+        .map_err(|error| format!("unable to write {}: {error}", raw_path.display()))?;
 
     let line = serde_json::to_string(record).map_err(|error| format!("unserialisable record: {error}"))?;
     let rows = run_directory.join("generations.jsonl");
-    use std::io::Write;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -5874,6 +5892,51 @@ mod tests {
             Ok(BenchmarkRequest::Disabled)
         );
         assert!(benchmark_request(Some("1"), None).is_err());
+    }
+
+    #[test]
+    fn raw_evidence_is_written_once_and_never_replaced() {
+        // N. Attempt 2 has its own path, so a retry cannot land on attempt 1's
+        // file — but the write itself must also refuse, or a repeated
+        // (case, profile, attempt) would replace one answer with another while
+        // the row describing the first stayed in the JSONL, still pointing at
+        // it. The count would look right and the evidence would be wrong.
+        let directory = std::env::temp_dir().join("chronosaga-b1-raw-once");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = accepted_outcome("lite");
+        let record = |attempt: u32| {
+            record_generation(
+                "run_001",
+                case,
+                "lite",
+                attempt,
+                test_artifact("lite"),
+                benchmark_context(4096),
+                first_attempt_fingerprint(case),
+                &outcome,
+            )
+        };
+
+        persist(&directory, &record(1), "the first answer").expect("the first write succeeds");
+
+        // The retry writes its own file and leaves attempt 1 alone.
+        persist(&directory, &record(2), "the retry").expect("the retry writes beside it");
+        let first = fs::read_to_string(directory.join(raw_output_path(&case.id, "lite", 1))).unwrap();
+        assert_eq!(first, "the first answer");
+
+        // A repeat of an attempt already on disk is refused, and says why.
+        let error = persist(&directory, &record(1), "a different answer")
+            .expect_err("raw evidence must never be replaced");
+        assert!(error.contains("never replaced"), "{error}");
+        let unchanged =
+            fs::read_to_string(directory.join(raw_output_path(&case.id, "lite", 1))).unwrap();
+        assert_eq!(unchanged, "the first answer");
+
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
