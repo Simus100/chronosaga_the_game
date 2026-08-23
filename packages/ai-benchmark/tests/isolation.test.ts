@@ -110,6 +110,10 @@ function generation(caseId: string): BenchmarkGeneration {
     tokensPerSecond: 12,
     servedModel: 'lite',
     rawOutputPath: `raw/${caseId}.lite.1.txt`,
+    // Shape only: these fixtures have no files on disk, and the bytes are
+    // the run-directory adapter's business. Two rows may legitimately share
+    // a digest — two models can emit the same raw text.
+    rawOutputSha256: '0'.repeat(64),
     rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
       narration: 'Nulla di rilevante.',
@@ -213,10 +217,10 @@ describe('benchmark isolation from authoritative state', () => {
     }
     expect(offenders).toEqual([]);
 
-    // The one module that touches the filesystem imports exactly the read it
-    // needs.
+    // The one module that touches the filesystem imports exactly the reads it
+    // needs, and nothing that could change a byte.
     const adapter = readFileSync(join(root, 'adapters/run-directory.ts'), 'utf8');
-    expect(importedFrom(adapter, 'node:fs')).toEqual(['readFileSync']);
+    expect(importedFrom(adapter, 'node:fs')).toEqual(['readFileSync', 'statSync']);
   });
 
   it('32: the only process it starts is a read-only git query', () => {

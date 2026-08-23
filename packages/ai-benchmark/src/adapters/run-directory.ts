@@ -17,8 +17,10 @@
  * object` — the row named and the file left alone. Dropping it would silently
  * shrink the run; parsing around it would invent a row nobody wrote.
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
+import { rawOutputPathProblems, type BenchmarkRun } from '../result.js';
 
 /**
  * The run recorded in `directory`, unvalidated.
@@ -68,4 +70,75 @@ function parseOrKeep(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+/**
+ * What is wrong with the raw evidence a run points at.
+ *
+ * `validateRun` proves a row *claims* a digest of the right shape. This proves
+ * the file is there and still holds those bytes. Without it a run could be
+ * copied with one raw file deleted, truncated, or swapped for another
+ * generation's, and every row would still point somewhere plausible — the row
+ * count would be right, the coverage gates would pass, and the report would
+ * describe text nobody can produce any more.
+ *
+ * This lives in an adapter because it is the only check that needs the
+ * directory: the pure library is handed a parsed run and cannot open a file.
+ *
+ * The threat model is loss and accident, not forgery. Somebody who edits both
+ * `generations.jsonl` and the raw file can make them agree again, and no digest
+ * stored beside the thing it describes can prevent that — it would take signing
+ * and a key this project does not have. What this does guarantee is that the
+ * two sides cannot disagree silently.
+ */
+export function rawEvidenceProblems(directory: string, run: BenchmarkRun): string[] {
+  const problems: string[] = [];
+  // Resolved once. Every path below is compared against this, so a row cannot
+  // widen the boundary by being read relative to somewhere else.
+  const root = resolve(directory);
+
+  for (const generation of run.generations) {
+    const at = (message: string) => problems.push(`${generation.id}: ${message}`);
+
+    // The string first, and the filesystem only if the string survives. A path
+    // out of a run directory is data, and opening it before checking it would
+    // make it an instruction.
+    const malformed = rawOutputPathProblems(generation.rawOutputPath);
+    if (malformed.length > 0) {
+      at(malformed.join('; '));
+      continue;
+    }
+
+    // Belt and braces: the string check already refuses traversal, absolute
+    // paths and separator tricks, but the value that gets opened is this one,
+    // so this one is what is proven to be inside the run.
+    const path = resolve(root, generation.rawOutputPath);
+    if (path !== root && !path.startsWith(root + sep)) {
+      at(`'${generation.rawOutputPath}' resolves outside the run directory`);
+      continue;
+    }
+
+    let bytes: Buffer;
+    try {
+      const entry = statSync(path);
+      if (!entry.isFile()) {
+        at(`'${generation.rawOutputPath}' is not a regular file`);
+        continue;
+      }
+      bytes = readFileSync(path);
+    } catch (error) {
+      at(`'${generation.rawOutputPath}' cannot be read: ${(error as Error).message}`);
+      continue;
+    }
+
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    if (digest !== generation.rawOutputSha256) {
+      at(
+        `'${generation.rawOutputPath}' holds ${bytes.length} bytes hashing to ${digest}, ` +
+          `but the row records ${generation.rawOutputSha256}`,
+      );
+    }
+  }
+
+  return problems;
 }

@@ -1048,6 +1048,15 @@ pub fn new_run_metadata(
     }
 }
 
+/// Lowercase hex SHA-256, the digest form this project uses everywhere.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// The generation id used in results: stable, sortable, and unique per attempt.
 pub fn generation_id(run_id: &str, case_id: &str, profile: &str, attempt: u32) -> String {
     format!("{run_id}:{case_id}:{profile}:{attempt}")
@@ -1104,6 +1113,17 @@ pub struct GenerationRecord {
     /// claimed, so a swap mid-run would still leave a trace in the evidence.
     pub served_model: Option<String>,
     pub raw_output_path: String,
+    /// SHA-256 of the exact bytes written to `raw_output_path`.
+    ///
+    /// A path is a promise about a file; this is what makes the promise
+    /// checkable. Without it a run could be copied with one raw file deleted,
+    /// truncated or swapped for another generation's, and every row would still
+    /// point somewhere plausible. Nothing else in the record could tell.
+    ///
+    /// Over the raw bytes exactly as persisted — not the normalised output, not
+    /// a reparsed object, not trimmed or reformatted text. The point is to
+    /// detect a change to the file, so it has to be the file that is hashed.
+    pub raw_output_sha256: String,
     /// Deterministic observation of the bytes at `raw_output_path`.
     pub raw_format: RawFormat,
     pub normalized_output: Option<NormalizedOutput>,
@@ -1198,8 +1218,10 @@ pub fn record_generation(
         tokens_per_second: outcome.tokens_per_second,
         served_model: outcome.model.clone(),
         raw_output_path: raw_output_path(&case.id, profile, attempt),
-        // Derived from the same string that is about to be written to disk, so
-        // the observation and the file can never describe different bytes.
+        // Both derived from the same string that is about to be written to
+        // disk, so the observation, the digest and the file can never describe
+        // different bytes.
+        raw_output_sha256: sha256_hex(outcome.raw.as_bytes()),
         raw_format: observe_raw_format(&outcome.raw),
         normalized_output: outcome.accepted.then(|| NormalizedOutput {
             narration: outcome.narration.clone().unwrap_or_default(),
@@ -1303,6 +1325,31 @@ pub fn case_limit(raw: Option<&str>, suite_size: usize) -> Result<CaseLimit, Str
         return refuse("asks for more cases than the suite holds");
     }
     Ok(CaseLimit::Exactly(count))
+}
+
+/// Why an explicit case selection cannot be honoured, if it cannot.
+///
+/// `CHRONOSAGA_BENCHMARK_CASE_IDS` narrows a run to named cases, but only
+/// `cases_to_run` consults it, and the official lane only reaches
+/// `cases_to_run` when a count was also given. Setting the ids alone therefore
+/// used to select **the whole suite** — 65 x 2 generations and hours of work,
+/// from an operator who had just written down the one case they wanted.
+///
+/// That is the same shape as the malformed-count bug: an explicit narrowing
+/// request quietly becoming its opposite. Rather than guess which of the two
+/// the operator meant, the run refuses and says what to add.
+pub fn case_selection_problem(cases: Option<&str>, case_ids: Option<&str>) -> Option<String> {
+    let named = case_ids.is_some_and(|value| !value.trim().is_empty());
+    if named && cases.is_none() {
+        return Some(
+            "CHRONOSAGA_BENCHMARK_CASE_IDS was set without CHRONOSAGA_BENCHMARK_CASES. \
+             Refusing to reinterpret a case-id selection as a full official suite: set \
+             CHRONOSAGA_BENCHMARK_CASES to the number of cases you want, or unset the ids to \
+             run the whole suite. Nothing was run."
+                .to_string(),
+        );
+    }
+    None
 }
 
 /// The identity of the checkout an official run is about to be produced from.
@@ -1658,6 +1705,18 @@ pub fn persist(
     record: &GenerationRecord,
     raw: &str,
 ) -> Result<(), String> {
+    // The row and the bytes arrive separately, so they are checked against each
+    // other before either is committed. `record_generation` digests the same
+    // string this is normally handed; if a caller ever passes something else,
+    // the run stops here rather than writing a file its own row misdescribes.
+    let digest = sha256_hex(raw.as_bytes());
+    if digest != record.raw_output_sha256 {
+        return Err(format!(
+            "refusing to persist {}: the row records raw digest {} but the bytes hash to {}",
+            record.id, record.raw_output_sha256, digest
+        ));
+    }
+
     let raw_path = run_directory.join(&record.raw_output_path);
     if let Some(parent) = raw_path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("unable to create {}: {error}", parent.display()))?;
@@ -5300,7 +5359,7 @@ mod tests {
         assert!(rows.contains("rawOutputPath"));
 
         // A second attempt appends rather than replacing the first.
-        persist(&directory, &record_generation("run_001", case, "lite", 2, test_artifact("lite"), benchmark_context(4096), first_attempt_fingerprint(case), &outcome), "second")
+        persist(&directory, &record_generation("run_001", case, "lite", 2, test_artifact("lite"), benchmark_context(4096), first_attempt_fingerprint(case), &outcome), &outcome.raw)
             .unwrap();
         let rows = fs::read_to_string(directory.join("generations.jsonl")).unwrap();
         assert_eq!(rows.lines().count(), 2);
@@ -5543,6 +5602,12 @@ mod tests {
         // The request is resolved before anything is verified, started or
         // written, so a mistake in it costs nothing and leaves nothing behind.
         let requested = env::var("CHRONOSAGA_BENCHMARK_CASES").ok();
+        if let Some(problem) = case_selection_problem(
+            requested.as_deref(),
+            env::var("CHRONOSAGA_BENCHMARK_CASE_IDS").ok().as_deref(),
+        ) {
+            panic!("{problem}");
+        }
         let selected_ids: Vec<String> =
             match case_limit(requested.as_deref(), suite.cases.len())
                 .unwrap_or_else(|error| panic!("{error}"))
@@ -6067,22 +6132,105 @@ mod tests {
             )
         };
 
-        persist(&directory, &record(1), "the first answer").expect("the first write succeeds");
+        persist(&directory, &record(1), &outcome.raw).expect("the first write succeeds");
 
         // The retry writes its own file and leaves attempt 1 alone.
-        persist(&directory, &record(2), "the retry").expect("the retry writes beside it");
+        persist(&directory, &record(2), &outcome.raw).expect("the retry writes beside it");
         let first = fs::read_to_string(directory.join(raw_output_path(&case.id, "lite", 1))).unwrap();
-        assert_eq!(first, "the first answer");
+        assert_eq!(first, outcome.raw);
 
         // A repeat of an attempt already on disk is refused, and says why.
-        let error = persist(&directory, &record(1), "a different answer")
+        let error = persist(&directory, &record(1), &outcome.raw)
             .expect_err("raw evidence must never be replaced");
         assert!(error.contains("never replaced"), "{error}");
         let unchanged =
             fs::read_to_string(directory.join(raw_output_path(&case.id, "lite", 1))).unwrap();
-        assert_eq!(unchanged, "the first answer");
+        assert_eq!(unchanged, outcome.raw);
 
         let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_row_carries_the_digest_of_the_bytes_it_describes() {
+        // A path is a promise about a file; the digest is what makes the promise
+        // checkable. It is taken from the same string the record's other
+        // observations come from, so the row cannot describe one set of bytes
+        // and point at another.
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = accepted_outcome("lite");
+        let record = record_generation(
+            "run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &outcome,
+        );
+
+        assert_eq!(record.raw_output_sha256, sha256_hex(outcome.raw.as_bytes()));
+        assert_eq!(record.raw_output_sha256.len(), 64);
+        assert!(record
+            .raw_output_sha256
+            .chars()
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character)));
+
+        // The empty string has a digest too: an empty raw response is evidence
+        // of an empty response, not an excuse to leave the field blank.
+        let mut empty = accepted_outcome("lite");
+        empty.raw = String::new();
+        let blank = record_generation(
+            "run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &empty,
+        );
+        assert_eq!(blank.raw_output_sha256.len(), 64);
+        assert_ne!(blank.raw_output_sha256, record.raw_output_sha256);
+    }
+
+    #[test]
+    fn the_written_bytes_must_be_the_bytes_the_row_claims() {
+        // The row and the bytes reach `persist` as separate arguments, so they
+        // are checked against each other before either is committed. Otherwise
+        // the one place that could produce a file its own row misdescribes
+        // would be the place that writes them both.
+        let root = scratch_workspace("digest-mismatch");
+        let directory = root.join("run");
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = accepted_outcome("lite");
+        let record = record_generation(
+            "run_001", case, "lite", 1, test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &outcome,
+        );
+
+        let error = persist(&directory, &record, "different bytes entirely")
+            .expect_err("a mismatch must refuse");
+        assert!(error.contains("the row records raw digest"), "{error}");
+        assert!(error.contains(&record.raw_output_sha256), "{error}");
+
+        // And nothing was written: a refused row leaves no file behind for a
+        // later reader to find and trust.
+        assert!(!directory.join(&record.raw_output_path).exists());
+        assert!(!directory.join("generations.jsonl").exists());
+
+        // Even a single byte more is a different answer.
+        let nearly = format!("{} ", outcome.raw);
+        assert!(persist(&directory, &record, &nearly).is_err());
+
+        persist(&directory, &record, &outcome.raw).expect("the true bytes persist");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_raw_file_is_written_before_the_row_that_points_at_it() {
+        // Order matters on failure. If the row went first, a failed raw write
+        // would leave evidence claiming a file that does not exist; this way a
+        // failed row append leaves an unreferenced file, which no reader can
+        // mistake for a generation.
+        let source = include_str!("benchmark.rs");
+        let at = source.find("pub fn persist(").expect("persist exists");
+        let body = &source[at..at + 2200];
+        let digest_check = body.find("refusing to persist").expect("the digest is checked");
+        let raw_write = body.find("create_new(true)").expect("the raw file is created");
+        let row_append = body.find("generations.jsonl").expect("the row is appended");
+        assert!(digest_check < raw_write, "the digest is checked before anything is written");
+        assert!(raw_write < row_append, "the raw file is written before its row");
     }
 
     #[test]
@@ -6389,6 +6537,71 @@ mod tests {
         // And the fallible read is gone: `parse().ok()` is what made a typo mean
         // the whole suite.
         assert!(!runner.contains("parse::<usize>().ok()"), "{runner}");
+    }
+
+    #[test]
+    fn naming_cases_without_a_count_refuses_rather_than_running_everything() {
+        // C and D. Only `cases_to_run` consults the ids, and the official lane
+        // only reaches it when a count was given — so the ids alone used to
+        // select the whole suite: 130 generations, from an operator who had
+        // just written down the one case they wanted.
+        for ids in ["ai_case_001", "ai_case_001,ai_case_002", "ai_case_does_not_exist"] {
+            let problem = case_selection_problem(None, Some(ids))
+                .unwrap_or_else(|| panic!("{ids} alone was accepted"));
+            assert!(problem.contains("without CHRONOSAGA_BENCHMARK_CASES"), "{problem}");
+            assert!(problem.contains("Refusing to reinterpret"), "{problem}");
+            assert!(problem.contains("Nothing was run"), "{problem}");
+        }
+
+        // A bogus id is refused for the same reason as a real one: which ids
+        // they are is a question for the selector, and the selector is not
+        // reached. Guessing intent is what caused the bug.
+        assert_eq!(
+            case_selection_problem(None, Some("ai_case_001")),
+            case_selection_problem(None, Some("ai_case_does_not_exist"))
+        );
+    }
+
+    #[test]
+    fn the_two_selection_variables_are_honoured_together() {
+        // A and B. Neither set is the whole suite; both set is the existing
+        // named-case behaviour, unchanged.
+        assert_eq!(case_selection_problem(None, None), None);
+        assert_eq!(case_selection_problem(Some("1"), Some("ai_case_001")), None);
+        assert_eq!(case_selection_problem(Some("3"), Some("ai_case_001,ai_case_002")), None);
+
+        // An empty or blank id list is not a selection, so it is not a request
+        // the runner has to refuse — `cases_to_run` already treats it as unset.
+        assert_eq!(case_selection_problem(None, Some("")), None);
+        assert_eq!(case_selection_problem(None, Some("   ")), None);
+
+        // And the count alone still means the whole suite when absent.
+        assert_eq!(case_limit(None, 65), Ok(CaseLimit::WholeSuite));
+    }
+
+    #[test]
+    fn the_selection_is_refused_before_any_expensive_work() {
+        // E. Cheap enough to be free, and early enough to leave nothing behind.
+        let runner = official_body();
+        let check = runner
+            .find("case_selection_problem(")
+            .expect("the selection is checked");
+        for later in [
+            "case_limit(",
+            "official_checkout_verdict(",
+            concat!("verify_runtime_", "distribution("),
+            concat!("verified_model_for_", "profile("),
+            "claim_run_directory(",
+            concat!("persist_", "metadata("),
+            concat!("execute_profile_", "block("),
+        ] {
+            let at = runner.find(later).unwrap_or_else(|| panic!("{later} is missing"));
+            assert!(check < at, "{later} must come after the selection is settled");
+        }
+
+        // And it is a panic, not a branch that could fall through to the suite.
+        let tail = &runner[check..check + 200];
+        assert!(tail.contains("panic!"), "{tail}");
     }
 
     // ---------------------------------------------------------------------

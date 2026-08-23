@@ -105,6 +105,10 @@ function generationFor(
     tokensPerSecond: 15,
     servedModel: profile,
     rawOutputPath: `raw/${caseId}.${profile}.1.txt`,
+    // Shape only: these fixtures have no files on disk, and the bytes are
+    // the run-directory adapter's business. Two rows may legitimately share
+    // a digest — two models can emit the same raw text.
+    rawOutputSha256: '0'.repeat(64),
     rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
       narration: 'Nulla di rilevante.',

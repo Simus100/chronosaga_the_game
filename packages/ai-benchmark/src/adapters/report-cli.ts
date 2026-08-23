@@ -6,6 +6,7 @@
  *   -> loadRunDirectory        parse, repair nothing, return `unknown`
  *   -> structuralBenchmarkRunProblems   is it even a run?
  *   -> validateRun             every cross-field rule
+ *   -> rawEvidenceProblems     the raw files are there and unaltered
  *   -> buildLocalOfficialComparison     suite, artifacts, runtime, coverage,
  *                                       checkout, judgement, parity
  *   -> the report, or a refusal and a non-zero exit
@@ -26,7 +27,7 @@
  * Nothing is coerced, repaired or dropped. A malformed row is reported as the
  * row it is, and the command exits non-zero.
  */
-import { loadRunDirectory } from './run-directory.js';
+import { loadRunDirectory, rawEvidenceProblems } from './run-directory.js';
 import { loadSuite } from '../suite.js';
 import { structuralBenchmarkRunProblems } from '../structure.js';
 import { validateRun, type BenchmarkRun } from '../result.js';
@@ -84,6 +85,15 @@ export function reportOnRunDirectory(directory: string): ReportOutcome {
         ),
       )}`,
     );
+  }
+
+  // The raw files, before anything reads a number off a row. This is the one
+  // gate that needs the directory: the library is handed a parsed run and
+  // cannot open a file, so a deleted or altered raw response would otherwise
+  // pass every check and be aggregated as though the text still existed.
+  const raw = rawEvidenceProblems(directory, run);
+  if (raw.length > 0) {
+    return refuse(`raw evidence does not match the run that recorded it: ${describe(raw)}`);
   }
 
   // Everything else — the suite binding, the locked artifacts, the runtime

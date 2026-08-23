@@ -91,6 +91,12 @@ It used to be read as `parse().ok()`, so `CASES=one` became `None` and `None`
 means the whole suite — an operator asking for one case would have launched 130
 generations.
 
+`CHRONOSAGA_BENCHMARK_CASE_IDS` narrows a run to named cases, and in the
+official lane it must be accompanied by `CHRONOSAGA_BENCHMARK_CASES`. Set alone
+it is refused, because only the counted path consults the ids: the ids by
+themselves used to select the whole suite, which is the same accident by a
+different door.
+
 The opt-in is its own variable. `CHRONOSAGA_BENCHMARK=1` runs a smoke pass and
 `CHRONOSAGA_BENCHMARK_OFFICIAL=1` runs the comparison, so the command that
 produces publishable evidence cannot be typed by accident while reaching for a
@@ -123,7 +129,10 @@ repair.
 `generations.jsonl` and `raw/`. The directory is *claimed* rather than checked
 for — `fs::create_dir` succeeds only if nothing is at that path — so an existing
 run is never reused, merged into or written over, whatever it happens to
-contain. Raw files and metadata are written once and never replaced.
+contain. Raw files and metadata are written once and never replaced, and a row
+whose recorded digest does not match the bytes being written is refused before
+either is committed — the one place that could produce a file its own row
+misdescribes is the place that writes them both.
 
 ## Turning a run into a report
 
@@ -144,10 +153,28 @@ run directory
   -> loadRunDirectory                  parse, repair nothing, return `unknown`
   -> structuralBenchmarkRunProblems    is it even a run?
   -> validateRun                       every cross-field rule
+  -> rawEvidenceProblems               the raw files are there and unaltered
   -> buildLocalOfficialComparison      suite, artifacts, runtime, coverage,
                                        executing checkout, judgement, parity
   -> the report, or a refusal
 ```
+
+**The raw files are checked, not just referenced.** Every row records
+`rawOutputSha256`, the SHA-256 of the exact bytes written for that generation,
+and the reporter reads each file back and compares. A path on its own is only a
+promise: without the digest, a run could be handed over with one raw file
+deleted, truncated, or holding another generation's answer, and every row would
+still point somewhere plausible — right row count, passing coverage, a report
+describing text nobody can produce any more.
+
+The threat model is loss and accident, not forgery. Somebody who edits both the
+row and the file can make them agree again, and no digest stored beside the
+thing it describes can prevent that. What is guaranteed is that the two cannot
+disagree *silently*.
+
+Runs recorded before this field existed have no digest and are refused as
+structurally incomplete. That is the intended outcome: there is no shim to let
+unverifiable evidence through.
 
 **The run directory is the only thing the caller may name.** There is no
 repository argument, no commit to trust, no "the tree is clean, honestly" flag

@@ -170,6 +170,20 @@ export interface BenchmarkGeneration {
    */
   rawOutputPath: string;
   /**
+   * SHA-256 of the exact bytes at `rawOutputPath`, lowercase hex.
+   *
+   * A path is a promise about a file. This is what makes the promise
+   * checkable: without it, a run could be handed over with one raw file
+   * deleted, truncated, or swapped for another generation's, and every row
+   * would still point somewhere plausible.
+   *
+   * Over the bytes as persisted — not the normalised output, not a reparsed
+   * object, not trimmed text. The point is to detect a change to the file, so
+   * the file is what is hashed. Verified by the adapter that has the run
+   * directory; this package stays pure and cannot open it.
+   */
+  rawOutputSha256: string;
+  /**
    * What the raw response looked like before the validator normalised it.
    *
    * The application validator unwraps ```json fences on purpose, which is right
@@ -266,7 +280,7 @@ export interface NormalizedOutput {
  * The runner already writes exactly `raw/<case>.<profile>.<attempt>.txt`, so
  * requiring that shape costs an honest run nothing.
  */
-function rawOutputPathProblems(path: string): string[] {
+export function rawOutputPathProblems(path: string): string[] {
   if (!path) return ['raw evidence must be referenced'];
   const problems: string[] = [];
   if (!path.startsWith('raw/')) {
@@ -493,6 +507,13 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
 
     for (const problem of rawOutputPathProblems(generation.rawOutputPath)) {
       at('rawOutputPath', problem);
+    }
+    if (!SHA256.test(generation.rawOutputSha256)) {
+      at(
+        'rawOutputSha256',
+        `'${generation.rawOutputSha256}' is not a lowercase SHA-256; raw evidence that ` +
+          'cannot be checked is raw evidence nobody has to keep intact',
+      );
     }
     // Acceptance is a proven boolean by now, so this reads what it means rather
     // than what it is.
