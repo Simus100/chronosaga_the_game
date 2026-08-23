@@ -1762,12 +1762,30 @@ describe('retries and fairness', () => {
     expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
   });
 
-  it('D: both profiles retried with different wording is refused', () => {
+  it('D: both profiles may retry with their own wording', () => {
+    // A retry repairs a model's *own* rejected output, so its prompt names that
+    // model's own validator errors. Requiring identical retry text across
+    // profiles would mean telling Lite to fix a mistake Standard made — neither
+    // fair nor informative. It is the retry *policy* that must be identical, and
+    // everything enforcing it still applies: only after a rejection, never after
+    // an acceptance, never a third attempt, same controlled settings.
     const run = runWithRejectedFirst('lite', 'standard');
     run.generations.push(retryRow('lite'), retryRow('standard', 'c'.repeat(64)));
 
+    expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
+  });
+
+  it('D: attempt 1 must still be the same question for both', () => {
+    // The comparison itself is unchanged and stays strict.
+    const run = runWithRejectedFirst('lite', 'standard');
+    run.generations.push(retryRow('lite'), retryRow('standard', 'c'.repeat(64)));
+    const liteFirst = run.generations.find(
+      generation => generation.profile === 'lite' && generation.attempt === 1,
+    )!;
+    liteFirst.inputFingerprint = 'd'.repeat(64);
+
     const problems = inputParityProblems(run, ['lite', 'standard']);
-    expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
+    expect(problems.some(problem => problem.includes('attempt 1 was asked differently'))).toBe(true);
     expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
   });
 
@@ -1876,19 +1894,22 @@ describe('attempt histories must be coherent', () => {
     expect(inputParityProblems(historyRun([1, 2], [1, 2]), ['lite', 'standard'])).toEqual([]);
   });
 
-  it('G: a retry both profiles made with different wording is refused', () => {
-    // Both profiles finished their histories; only the wording of the second
-    // attempt differs, so this reaches the parity check rather than the
-    // completeness one.
+  it('G: a retry both profiles made with their own wording is evidence, not a defect', () => {
+    // Both profiles finished their histories and repaired their own failures.
+    // That is what a rejection-derived retry looks like, and it is what the
+    // official runner produces.
     const run = historyRun([1, 2], [1, 2]);
     const standardRetry = run.generations.find(
       generation => generation.profile === 'standard' && generation.attempt === 2,
     )!;
     standardRetry.inputFingerprint = 'c'.repeat(64);
 
-    const problems = inputParityProblems(run, ['lite', 'standard']);
-    expect(problems.some(problem => problem.includes('attempt 2 was asked differently'))).toBe(true);
-    expect(() => reportedFromItsOwnCheckout(suite, run)).toThrow(/identical case inputs/);
+    expect(inputParityProblems(run, ['lite', 'standard'])).toEqual([]);
+
+    // And the retry rules around it are untouched: a third attempt is still
+    // impossible, and a retry still may not follow an acceptance.
+    expect(inputParityProblems(historyRun([1, 2, 3], [1]), ['lite', 'standard']).length)
+      .toBeGreaterThan(0);
   });
 
   it('holds for a single profile too, before anything is compared', () => {

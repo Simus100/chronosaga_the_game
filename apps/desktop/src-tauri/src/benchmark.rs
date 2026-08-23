@@ -44,6 +44,12 @@ use std::{env, fs, path::PathBuf};
 pub const BENCHMARK_STARTUP_TIMEOUT_MS: u64 = 180_000;
 
 const BENCHMARK_ENV: &str = "CHRONOSAGA_BENCHMARK";
+
+/// Opt-in for the official comparison, separate from the smoke opt-in.
+///
+/// Two variables rather than one so that the command that produces publishable
+/// evidence cannot be typed by accident while reaching for a three-case smoke.
+const OFFICIAL_ENV: &str = "CHRONOSAGA_BENCHMARK_OFFICIAL";
 const WORKSPACE_ENV: &str = "CHRONOSAGA_WORKSPACE_ROOT";
 
 /// Repository-relative location of the versioned suite.
@@ -578,6 +584,34 @@ pub fn system_prompt(case: &BenchmarkCase) -> String {
         proposal_example = proposal_example,
         memory_example = memory_example,
         envelope = envelope,
+    )
+}
+
+/// The user turn for the one permitted retry.
+///
+/// A repair, not a different question. The original scene is repeated verbatim,
+/// then the model is told what its own answer failed on, in the validator's own
+/// words, and asked for the corrected object and nothing else.
+///
+/// Derived from the rejection because that is what makes a retry worth having:
+/// "your output was invalid" teaches a model nothing it can act on, while
+/// "unknown tone tag: epico" does. Two profiles that failed differently
+/// therefore receive different retry text, and that is the fair treatment —
+/// telling Lite to fix an error Standard made would be neither.
+///
+/// Profile-neutral all the same. Nothing here reads the profile, so the same
+/// case and the same rejection produce the same retry whichever model is being
+/// measured; it is the policy that is identical, not the wording. Deterministic,
+/// so the recorded fingerprint reproduces.
+pub fn retry_user_prompt(base_user: &str, validator_error: &str) -> String {
+    format!(
+        "{base_user}\n\n\
+         CORREZIONE RICHIESTA\n\
+         La risposta precedente e' stata rifiutata dal validatore per questo motivo:\n\
+         {validator_error}\n\n\
+         Correggi solo quel problema. Non cambiare i fatti, non aggiungere entita', \
+         non riaprire cio' che e' chiuso. Rispondi di nuovo con l'oggetto JSON completo \
+         e nient'altro."
     )
 }
 
@@ -5124,6 +5158,369 @@ mod tests {
     ///
     /// P0.5-A smoke only. The full Lite-versus-Standard comparison is P0.5-B and
     /// is deliberately not run here: this is about the plumbing, not the verdict.
+    /// What one profile's block of an official run produced.
+    struct ProfileBlock {
+        attempted: usize,
+        accepted_first: usize,
+        retried: usize,
+        recovered: usize,
+        exhausted: usize,
+        rows: usize,
+    }
+
+    /// Run every selected case against one profile, start to reaped.
+    ///
+    /// The whole of a profile's participation in an official comparison lives
+    /// here: its port, its verified artifact, its sidecar, its 65 cases with the
+    /// one retry each may earn, and its shutdown. The orchestrator calls this
+    /// twice and does nothing else, which is what keeps *one model resident at a
+    /// time* a property of the structure rather than of remembering to.
+    ///
+    /// `run_id`, `directory` and `context` come from the caller because they
+    /// belong to the run, not to the profile. Two blocks writing into one
+    /// directory under one run id is what makes this one experiment instead of
+    /// two runs stapled together afterwards.
+    fn execute_profile_block(
+        profile: &str,
+        verified: &crate::model_lock::VerifiedModel,
+        suite: &BenchmarkSuite,
+        selected_ids: &[String],
+        run_id: &str,
+        directory: &std::path::Path,
+        context: &ContextConfiguration,
+    ) -> ProfileBlock {
+        // Nothing else may hold the port this block needs to own. Checked again
+        // per profile: the first block released it, and something may have taken
+        // it in between.
+        occupied_port_verdict(
+            crate::local_ai_runtime::LOOPBACK_HOST,
+            crate::local_ai_runtime::DEFAULT_PORT,
+            port_is_occupied(
+                crate::local_ai_runtime::LOOPBACK_HOST,
+                crate::local_ai_runtime::DEFAULT_PORT,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("{profile}: {error}"));
+
+        let manager =
+            crate::runtime_e2e::build_manager_for_profile(profile, BENCHMARK_STARTUP_TIMEOUT_MS)
+                .unwrap_or_else(|error| panic!("{error}"));
+
+        // Identity comes from the model that passed its digest, so a row names
+        // the exact file that produced it. The digest itself was taken by the
+        // caller, before any profile was allowed to answer.
+        assert_eq!(
+            verified.model().profile_id(),
+            profile,
+            "a block must be given its own verified artifact"
+        );
+        let artifact = artifact_identity(verified);
+
+        let mut guard = BenchmarkRuntimeGuard::start(manager)
+            .unwrap_or_else(|error| panic!("{profile}: the runtime must start: {error}"));
+        assert!(
+            guard.wait_until_ready(std::time::Duration::from_millis(
+                BENCHMARK_STARTUP_TIMEOUT_MS
+            )),
+            "{profile}: the runtime never became ready"
+        );
+
+        let spec = guard.manager().launch_spec();
+        let provider =
+            crate::inference::LocalModelProvider::new(spec.base_url(), spec.api_key().to_string())
+                .expect("the loopback provider must build");
+
+        let served = tauri::async_runtime::block_on(provider.loaded_models())
+            .expect("a ready endpoint must answer /v1/models");
+        serving_identity_verdict(profile, &served).unwrap_or_else(|error| panic!("{error}"));
+        eprintln!("[{profile}] serving identity confirmed");
+
+        let mut block = ProfileBlock {
+            attempted: 0,
+            accepted_first: 0,
+            retried: 0,
+            recovered: 0,
+            exhausted: 0,
+            rows: 0,
+        };
+
+        for case in suite
+            .cases
+            .iter()
+            .filter(|case| selected_ids.iter().any(|id| id == &case.id))
+        {
+            let contract = case_contract(case);
+            let system = system_prompt(case);
+            let user = user_prompt(case);
+
+            // Attempt 1: the comparison. Identical for both profiles, which is
+            // why its fingerprint is computed from the case alone.
+            let first_fingerprint = input_fingerprint(case, &system, &user);
+            let first = tauri::async_runtime::block_on(provider.generate(
+                &system,
+                &user,
+                &contract,
+                request_parameters(context),
+            ))
+            .expect("the request must reach the local runtime");
+            response_identity_verdict(profile, first.model.as_deref())
+                .unwrap_or_else(|error| panic!("{} {error}", case.id));
+
+            let first_record = record_generation(
+                run_id,
+                case,
+                profile,
+                1,
+                artifact.clone(),
+                context.clone(),
+                first_fingerprint,
+                &first,
+            );
+            persist(directory, &first_record, &first.raw).expect("evidence must persist");
+            block.attempted += 1;
+            block.rows += 1;
+
+            if first_record.accepted {
+                block.accepted_first += 1;
+                eprintln!("[{profile}] {} ACCEPTED in {} ms", case.id, first_record.latency_ms);
+                continue;
+            }
+
+            // Rejected, so the policy owes exactly one retry. Anything other
+            // than a validator rejection has already ended the run above: a lost
+            // connection, a wrong model or an unwritable directory is an
+            // infrastructure failure, not an output to repair.
+            let rejection = first_record
+                .validator_errors
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "output rejected".to_string());
+            let retry_user = retry_user_prompt(&user, &rejection);
+            let retry_fingerprint = input_fingerprint(case, &system, &retry_user);
+            assert_ne!(
+                retry_fingerprint, first_record.input_fingerprint,
+                "a retry asks something new and must fingerprint as such"
+            );
+
+            let second = tauri::async_runtime::block_on(provider.generate(
+                &system,
+                &retry_user,
+                &contract,
+                request_parameters(context),
+            ))
+            .expect("the retry must reach the local runtime");
+            response_identity_verdict(profile, second.model.as_deref())
+                .unwrap_or_else(|error| panic!("{} retry {error}", case.id));
+
+            let mut second_record = record_generation(
+                run_id,
+                case,
+                profile,
+                2,
+                artifact.clone(),
+                context.clone(),
+                retry_fingerprint,
+                &second,
+            );
+            second_record.retry_used = true;
+            persist(directory, &second_record, &second.raw).expect("evidence must persist");
+            block.retried += 1;
+            block.rows += 1;
+
+            if second_record.accepted {
+                block.recovered += 1;
+            } else {
+                block.exhausted += 1;
+            }
+            eprintln!(
+                "[{profile}] {} REJECTED ({rejection}) -> retry {}",
+                case.id,
+                if second_record.accepted { "RECOVERED" } else { "EXHAUSTED" }
+            );
+        }
+
+        // Explicit, so a cleanup failure is an error rather than a line on
+        // stderr from Drop. The next block cannot start until this returns.
+        guard
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{profile}: the block must leave no process: {error}"));
+
+        // And proven, not assumed: the port is the resource the next profile
+        // needs, and "one model resident at a time" is only true if this holds.
+        assert!(
+            !port_is_occupied(
+                crate::local_ai_runtime::LOOPBACK_HOST,
+                crate::local_ai_runtime::DEFAULT_PORT
+            ),
+            "{profile}: the port is still held after shutdown; the next profile cannot own it"
+        );
+        eprintln!("[{profile}] stopped, port released");
+
+        block
+    }
+
+    /// The official Lite-versus-Standard comparison.
+    ///
+    /// One run id, one metadata block, one evidence directory, both profiles —
+    /// because two separately-produced runs stapled together afterwards are not
+    /// a controlled experiment, whatever the report says. Sequential, never
+    /// interleaved: alternating per case would mean 65 model swaps and would
+    /// measure swapping.
+    ///
+    /// Opt-in like every other real-runtime path, and by default it runs the
+    /// whole suite. `CHRONOSAGA_BENCHMARK_CASES` narrows it for orchestration
+    /// smoke; the official evidence is produced without it.
+    #[test]
+    fn official_quality_comparison() {
+        let workspace = match benchmark_request(
+            env::var(OFFICIAL_ENV).ok().as_deref(),
+            env::var(WORKSPACE_ENV).ok().as_deref(),
+        ) {
+            Ok(BenchmarkRequest::Disabled) => {
+                eprintln!(
+                    "skipped: set {WORKSPACE_ENV} and {OFFICIAL_ENV}=1 to run the official comparison"
+                );
+                return;
+            }
+            Ok(BenchmarkRequest::Enabled { workspace_root }) => workspace_root,
+            Err(error) => panic!("{error}"),
+        };
+
+        let suite = load_suite().expect("the suite must parse");
+        let selected_ids: Vec<String> = match env::var("CHRONOSAGA_BENCHMARK_CASES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            Some(limit) => cases_to_run(&suite, limit)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .iter()
+                .map(|case| case.id.clone())
+                .collect(),
+            None => suite.cases.iter().map(|case| case.id.clone()).collect(),
+        };
+        assert!(!selected_ids.is_empty(), "nothing to run");
+
+        // The runtime is shared by both blocks, so it is verified once, before
+        // either starts and before any evidence exists.
+        let runtime_lock =
+            crate::runtime_e2e::checkout_runtime_lock().expect("the runtime lock must parse");
+        let runtime_directory = crate::runtime_e2e::resolved_runtime_directory()
+            .unwrap_or_else(|| panic!("the locked runtime is not present on this machine"));
+        let verified_runtime =
+            crate::runtime_lock::verify_runtime_distribution(&runtime_lock, &runtime_directory)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "refusing to benchmark an unverified runtime: {} (after {} files)",
+                        error.message, error.checked
+                    )
+                });
+        eprintln!(
+            "runtime verified: {} files, {} @ {}",
+            verified_runtime.files_verified(),
+            verified_runtime.release_tag(),
+            &verified_runtime.executable_sha256()[..16]
+        );
+
+        let run_id = format!(
+            "official_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or_default()
+        );
+        let directory = run_directory(&workspace, &run_id);
+        assert!(
+            !directory.join("metadata.json").exists(),
+            "{} already holds a run; official evidence is never overwritten",
+            directory.display()
+        );
+
+        // Every artifact, digested before any of them answers.
+        //
+        // Verifying inside each block would still precede that profile's own
+        // first generation, but a corrupt Standard artifact would then be found
+        // only after Lite had produced 65 rows: an hour of evidence that can
+        // never be published, and a run directory to throw away. A mismatched
+        // size or SHA-256 costs nothing here, and costs a whole Lite block
+        // there.
+        let verified_models: Vec<crate::model_lock::VerifiedModel> =
+            crate::model_lock::KNOWN_PROFILE_IDS
+                .iter()
+                .map(|profile| {
+                    crate::runtime_e2e::verified_model_for_profile(profile).unwrap_or_else(|| {
+                        panic!(
+                            "refusing to benchmark {profile}: its artifact is absent or failed \
+                             its integrity check (see the REFUSED line above)"
+                        )
+                    })
+                })
+                .collect();
+        for verified in &verified_models {
+            eprintln!(
+                "artifact verified: {} {} bytes, {}",
+                verified.model().artifact_filename(),
+                verified.model().size_bytes(),
+                &verified.model().expected_sha256()[..16]
+            );
+        }
+
+        // Both profiles are measured under one context, so it is derived once
+        // and handed to both blocks. A per-profile context would be tuning.
+        let context = benchmark_context(verified_models[0].model().context_target());
+
+        let metadata = new_run_metadata(
+            &run_id,
+            RunKind::OfficialComparison,
+            &started_at(),
+            &suite,
+            &git_commit().unwrap_or_default(),
+            git_dirty(),
+            verified_runtime.release_tag(),
+            Some(verified_runtime.executable_sha256().to_string()),
+            host_facts(),
+        );
+        persist_metadata(&directory, &metadata).expect("metadata must persist");
+        eprintln!("official run {run_id}: {} cases x 2 profiles", selected_ids.len());
+
+        // Lite, entirely, then Standard, entirely. The order is fixed so two
+        // runs of the same suite are comparable with each other as well.
+        let mut blocks = Vec::new();
+        for (profile, verified) in crate::model_lock::KNOWN_PROFILE_IDS
+            .iter()
+            .zip(verified_models.iter())
+        {
+            let block = execute_profile_block(
+                profile,
+                verified,
+                &suite,
+                &selected_ids,
+                &run_id,
+                &directory,
+                &context,
+            );
+            eprintln!(
+                "[{profile}] {}/{} accepted first try, {} retried ({} recovered, {} exhausted)",
+                block.accepted_first, block.attempted, block.retried, block.recovered, block.exhausted
+            );
+            blocks.push((profile, block));
+        }
+
+        // What the evidence must contain for the report boundary to accept it:
+        // every pair attempted once, and one row per attempt actually made.
+        let rows = fs::read_to_string(directory.join("generations.jsonl")).expect("rows");
+        let expected: usize = blocks.iter().map(|(_, block)| block.rows).sum();
+        assert_eq!(rows.lines().count(), expected, "every attempt must be on disk");
+        for (profile, block) in &blocks {
+            assert_eq!(
+                block.attempted,
+                selected_ids.len(),
+                "{profile} did not attempt every case"
+            );
+        }
+
+        eprintln!("evidence in {}", directory.display());
+    }
+
     #[test]
     fn smoke_run_executes_real_cases_through_the_application_boundary() {
         // First, before the suite is read, before the runtime is verified, before
@@ -5377,6 +5774,351 @@ mod tests {
                 .filter(|c| c.is_ascii_digit())
                 .count()
                 == 14
+    }
+
+    // ---------------------------------------------------------------------
+    // The official comparison lane
+    // ---------------------------------------------------------------------
+
+    /// The official runner's own body, for the order assertions below.
+    fn official_body() -> &'static str {
+        let source = include_str!("benchmark.rs");
+        let start = source
+            .find(concat!("fn official_quality_", "comparison()"))
+            .expect("the official runner exists");
+        let end = source[start..]
+            .find("    #[test]")
+            .map(|offset| start + offset)
+            .expect("another test follows it");
+        &source[start..end]
+    }
+
+    /// The per-profile block's body.
+    fn block_body() -> &'static str {
+        let source = include_str!("benchmark.rs");
+        let start = source
+            .find(concat!("fn execute_profile_", "block("))
+            .expect("the profile block exists");
+        // No newline in the needle: this file is checked out CRLF on Windows,
+        // and a needle spelling a bare line feed would never match there. The
+        // slice would run to the end of the file and quietly swallow every
+        // test below it.
+        let end = source[start..]
+            .find("/// The official Lite-versus-Standard comparison.")
+            .map(|offset| start + offset)
+            .expect("the orchestrator follows it");
+        &source[start..end]
+    }
+
+    #[test]
+    fn one_run_covers_both_profiles_under_one_identity() {
+        // 3 and 4: one runId, one metadata block, both profiles. Two runs
+        // stapled together afterwards are not a controlled experiment.
+        let runner = official_body();
+        assert!(runner.contains("RunKind::OfficialComparison"), "{runner}");
+        assert!(
+            runner.contains("for (profile, verified) in crate::model_lock::KNOWN_PROFILE_IDS"),
+            "both profiles come from the lock, in one loop"
+        );
+        assert_eq!(
+            crate::model_lock::KNOWN_PROFILE_IDS.len(),
+            2,
+            "and the lock names exactly the two the comparison compares"
+        );
+        // One run id and one metadata write, handed to both blocks.
+        assert_eq!(runner.matches(concat!("let run_", "id = format!")).count(), 1);
+        assert_eq!(runner.matches(concat!("persist_", "metadata(")).count(), 1);
+        // One directory, derived once, and one call site that runs twice: both
+        // blocks write into the same place under the same id.
+        assert_eq!(runner.matches("let directory = run_directory(").count(), 1);
+        // The block is given a directory rather than deriving one, so it can
+        // only ever write where the run already is.
+        assert!(block_body().contains("directory: &std::path::Path"));
+        assert!(!block_body().contains("run_directory("));
+        assert_eq!(runner.matches(concat!("execute_profile_", "block(")).count(), 1);
+    }
+
+    #[test]
+    fn the_profiles_run_sequentially_and_the_port_is_released_between_them() {
+        // 13 and 14: one model resident at a time is a property of the
+        // structure — the loop body starts, runs and reaps a profile before the
+        // next iteration can begin — and the release is proven, not assumed.
+        let block = block_body();
+        let start = block.find(concat!("BenchmarkRuntimeGuard::", "start(")).expect("starts");
+        let shutdown = block.find(".shutdown()").expect("stops");
+        let port_check = block.rfind(concat!("port_is_", "occupied(")).expect("checks the port");
+        assert!(start < shutdown, "the block starts before it stops");
+        assert!(shutdown < port_check, "the port is checked after shutdown");
+        assert!(
+            block.contains("the port is still held after shutdown"),
+            "the release must be asserted, not hoped for"
+        );
+        // And the orchestrator owns no runtime of its own.
+        assert!(!official_body().contains(concat!("BenchmarkRuntimeGuard::", "start(")));
+    }
+
+    #[test]
+    fn the_official_lane_has_its_own_opt_in() {
+        // The command that produces publishable evidence cannot be typed by
+        // accident while reaching for a three-case smoke.
+        assert_ne!(OFFICIAL_ENV, BENCHMARK_ENV);
+        assert_eq!(OFFICIAL_ENV, "CHRONOSAGA_BENCHMARK_OFFICIAL");
+        assert!(official_body().contains("OFFICIAL_ENV"));
+        assert!(!official_body().contains("BENCHMARK_ENV,"));
+
+        // Not opted in is still a skip; opted in without a workspace is still a
+        // failure. The official lane reuses that decision rather than restating
+        // it.
+        assert_eq!(
+            benchmark_request(None, Some(r"D:\Chronosaga")),
+            Ok(BenchmarkRequest::Disabled)
+        );
+        assert!(benchmark_request(Some("1"), None).is_err());
+    }
+
+    #[test]
+    fn an_existing_run_directory_is_never_overwritten() {
+        // 23. Official evidence accumulates; it does not get edited into shape.
+        assert!(
+            official_body().contains("official evidence is never overwritten"),
+            "the runner must refuse to write into an existing run"
+        );
+        let guard = official_body();
+        let check = guard.find("already holds a run").expect("the check exists");
+        let first_start = guard
+            .find(concat!("execute_profile_", "block("))
+            .expect("the runner runs a profile");
+        assert!(check < first_start, "and it must refuse before anything starts");
+    }
+
+    #[test]
+    fn a_mismatched_artifact_or_runtime_stops_the_run_before_any_generation() {
+        // 17, 18 and 19. The order is the claim: the runtime distribution and
+        // both artifacts are checked before the first block is entered, so a
+        // wrong SHA-256 or a wrong size costs nothing rather than costing a
+        // completed Lite block that can never be published.
+        let runner = official_body();
+
+        let runtime = runner
+            .find(concat!("verify_runtime_", "distribution("))
+            .expect("the runtime is verified");
+        let artifacts = runner
+            .find("Every artifact, digested before any of them answers")
+            .expect("the artifacts are verified");
+        let first_block = runner
+            .find(concat!("execute_profile_", "block("))
+            .expect("a profile eventually runs");
+        assert!(runtime < artifacts, "the runtime is verified first");
+        assert!(artifacts < first_block, "and nothing generates before both are");
+
+        // Both, not just the one the context happens to come from.
+        assert_eq!(
+            runner
+                .matches(concat!("verified_model_for_", "profile(profile)"))
+                .count(),
+            1,
+            "one resolution, applied to every locked profile"
+        );
+        assert!(!runner.contains(concat!("verified_model_for_", "profile(crate::")));
+        // And the block trusts what it was handed instead of digesting again.
+        assert!(!block_body().contains(concat!("verified_model_for_", "profile(")));
+    }
+
+    #[test]
+    fn a_failed_integrity_check_is_never_read_as_an_absent_artifact() {
+        // The resolver answers `None` for both, so the runner must say which it
+        // refused on. "Nothing to benchmark" and "these are the wrong bytes"
+        // are different facts and only one of them is a skip.
+        let runner = official_body();
+        let at = runner
+            .find("its artifact is absent or failed")
+            .expect("the artifact refusal exists");
+        // And it is a different sentence from the runtime's, which refuses the
+        // same run for a different reason.
+        assert!(runner.contains("refusing to benchmark an unverified runtime"), "{runner}");
+
+        // The failure is a panic, not a return: the official lane never reports
+        // success without evidence. Read backwards from the refusal to the call
+        // that produced the `None`, with no newline in any needle — this file is
+        // checked out CRLF on Windows.
+        let resolver = runner[..at]
+            .rfind(concat!("verified_model_for_", "profile("))
+            .expect("the refusal follows the resolution it refuses");
+        assert!(
+            runner[resolver..at].contains("panic!("),
+            "{}",
+            &runner[resolver..at]
+        );
+    }
+
+    #[test]
+    fn raw_output_paths_stay_inside_the_run_they_belong_to() {
+        // 27. A row points at its evidence with a run-relative path, so a run
+        // directory can be moved, copied or read from another machine and still
+        // resolve. An absolute path would bind the evidence to one disk, and a
+        // traversal would let a row name a file outside the run entirely.
+        let suite = load_suite().unwrap();
+        for case in &suite.cases {
+            for profile in crate::model_lock::KNOWN_PROFILE_IDS {
+                for attempt in 1..=MAX_ATTEMPTS as u32 {
+                    let path = raw_output_path(&case.id, profile, attempt);
+                    assert!(path.starts_with("raw/"), "{path}");
+                    assert!(!path.contains(".."), "{path}");
+                    assert!(!path.contains(':'), "{path}");
+                    assert!(!path.starts_with('/') && !path.starts_with('\\'), "{path}");
+                    assert!(!std::path::Path::new(&path).is_absolute(), "{path}");
+                    // Forward slashes, on Windows too: the path is written into
+                    // JSON that is read on other platforms.
+                    assert!(!path.contains('\\'), "{path}");
+                }
+            }
+        }
+
+        // And it is the same string the runner writes and the row records, so
+        // the two cannot drift apart.
+        let case = &suite.cases[0];
+        let outcome = accepted_outcome("lite");
+        let record = record_generation(
+            "r", case, "lite", 2, test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &outcome,
+        );
+        assert_eq!(record.raw_output_path, raw_output_path(&case.id, "lite", 2));
+    }
+
+    // ---------------------------------------------------------------------
+    // The one permitted retry
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_retry_repairs_the_rejection_it_was_given() {
+        let base = "STATO: nulla";
+        let retry = retry_user_prompt(base, "unknown tone tag: epico");
+
+        // The original question is repeated verbatim: a retry is a repair, not a
+        // different case.
+        assert!(retry.starts_with(base), "{retry}");
+        // And it says what actually went wrong, in the validator's own words.
+        assert!(retry.contains("unknown tone tag: epico"), "{retry}");
+        assert!(retry.contains("CORREZIONE RICHIESTA"), "{retry}");
+        assert!(retry.contains("Correggi solo quel problema"), "{retry}");
+    }
+
+    #[test]
+    fn the_retry_is_profile_neutral_and_deterministic() {
+        // 10 and 12. Nothing here reads a profile, so the same case and the same
+        // rejection produce the same retry whichever model is being measured. It
+        // is the policy that is identical, not the wording.
+        let one = retry_user_prompt("scena", "required field missing or empty: dialogue");
+        let two = retry_user_prompt("scena", "required field missing or empty: dialogue");
+        assert_eq!(one, two, "the same inputs must reproduce");
+
+        for profile in crate::model_lock::KNOWN_PROFILE_IDS {
+            assert!(!one.contains(profile), "the retry names a profile: {one}");
+        }
+        for word in ["Qwen", "SmolLM", "lite", "standard", "Lite", "Standard"] {
+            assert!(!one.contains(word), "the retry mentions {word}: {one}");
+        }
+
+        // The function cannot depend on a profile: it is not given one.
+        let source = include_str!("benchmark.rs");
+        let at = source
+            .find("pub fn retry_user_prompt(")
+            .expect("the retry prompt exists");
+        let signature = &source[at..at + 120];
+        assert!(!signature.contains("profile"), "{signature}");
+    }
+
+    #[test]
+    fn a_retry_is_a_different_question_and_fingerprints_as_one() {
+        // 28: attempt 2 has its own raw output and its own fingerprint, so it
+        // can never be mistaken for, or overwrite, attempt 1.
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let system = system_prompt(case);
+        let user = user_prompt(case);
+
+        let first = input_fingerprint(case, &system, &user);
+        let retry = input_fingerprint(case, &system, &retry_user_prompt(&user, "unknown tone tag"));
+        assert_ne!(first, retry);
+
+        // Different rejections are different questions, which is the point of
+        // deriving the retry from the rejection at all.
+        let other = input_fingerprint(
+            case,
+            &system,
+            &retry_user_prompt(&user, "required field missing or empty: dialogue"),
+        );
+        assert_ne!(retry, other);
+
+        // And the raw paths differ by attempt, so nothing is overwritten.
+        assert_ne!(
+            raw_output_path(&case.id, "lite", 1),
+            raw_output_path(&case.id, "lite", 2)
+        );
+    }
+
+    #[test]
+    fn only_a_validator_rejection_earns_a_retry() {
+        // 6, 7, 8, 9. The block retries on the recorded rejection and on nothing
+        // else: every other failure has already ended the run by panicking
+        // before this point, because a lost connection or a wrong model is an
+        // infrastructure failure and not an output to repair.
+        let block = block_body();
+
+        let accepted_exit = block
+            .find("block.accepted_first += 1;")
+            .expect("an accepted first attempt is counted");
+        let retry_call = block
+            .find(concat!("retry_user_", "prompt(&user, &rejection)"))
+            .expect("the block retries");
+        assert!(accepted_exit < retry_call, "acceptance must return before the retry");
+        assert!(
+            block[accepted_exit..retry_call].contains("continue;"),
+            "an accepted first attempt must end the case"
+        );
+
+        // Exactly one retry, and no loop around it: attempt 3 is unreachable by
+        // construction rather than by a counter somebody must not get wrong.
+        assert_eq!(block.matches(concat!("retry_user_", "prompt(")).count(), 1);
+        // Two records built, one per attempt, and no third.
+        assert_eq!(block.matches("artifact.clone()").count(), 2);
+        assert_eq!(block.matches(concat!("record_", "generation(")).count(), 2);
+        assert!(!block.contains("attempt + 1"), "{block}");
+
+        // And the second attempt is the last: recovered or exhausted, the case
+        // ends either way.
+        assert!(block.contains("block.recovered += 1;"));
+        assert!(block.contains("block.exhausted += 1;"));
+    }
+
+    #[test]
+    fn the_official_run_measures_both_profiles_under_one_context() {
+        // Same controlled settings for both, from one derivation. A per-profile
+        // context would be tuning, and the report would refuse it anyway.
+        let runner = official_body();
+        assert_eq!(runner.matches(concat!("benchmark_", "context(")).count(), 1);
+        assert!(runner.contains("A per-profile context would be tuning"));
+        // The block receives it rather than building its own.
+        assert!(!block_body().contains(concat!("benchmark_", "context(")));
+    }
+
+    #[test]
+    fn no_fallback_is_possible_in_the_official_lane() {
+        // 20 and 21. Nothing in either function sets a fallback, and the record
+        // builder writes false/None, so official evidence cannot carry one.
+        for body in [official_body(), block_body()] {
+            assert!(!body.contains("fallback_used = true"), "{body}");
+            assert!(!body.contains("fallback_profile = Some"), "{body}");
+        }
+        let suite = load_suite().unwrap();
+        let case = &suite.cases[0];
+        let outcome = accepted_outcome("lite");
+        let record = record_generation(
+            "r", case, "lite", 1, test_artifact("lite"), benchmark_context(4096),
+            first_attempt_fingerprint(case), &outcome,
+        );
+        assert!(!record.fallback_used);
+        assert!(record.fallback_profile.is_none());
     }
 
     // ---------------------------------------------------------------------

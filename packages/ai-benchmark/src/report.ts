@@ -249,19 +249,22 @@ export function inputParityProblems(run: BenchmarkRun, profiles: BenchmarkProfil
       continue;
     }
 
-    // Compare within an attempt number, not across the whole case. Attempt 1
-    // must match; a shared retry must match; a retry only one profile made is
-    // valid evidence and is left alone.
-    const attempts = new Set(rows.map(generation => generation.attempt));
-    for (const attempt of [...attempts].sort((a, b) => a - b)) {
-      const forAttempt = rows.filter(generation => generation.attempt === attempt);
-      const profilesPresent = new Set(forAttempt.map(generation => generation.profile));
-      if (profilesPresent.size < 2) continue;
-
-      const fingerprints = new Set(forAttempt.map(generation => generation.inputFingerprint));
+    // Attempt 1 is the comparison, and it must be the same question asked of
+    // both. Attempt 2 is not: it repairs a model's *own* rejected output, so its
+    // prompt names that model's own validator errors. Requiring identical retry
+    // text across profiles would mean telling Lite to fix a mistake Standard
+    // made, which is neither fair nor informative — and it is the retry policy,
+    // not the retry wording, that has to be identical.
+    //
+    // Everything else about a retry stays checked: it may only follow a
+    // rejection, it may not follow an acceptance, there is no attempt 3, and the
+    // controlled generation settings still have to agree.
+    const firstAttempts = rows.filter(generation => generation.attempt === 1);
+    if (new Set(firstAttempts.map(generation => generation.profile)).size >= 2) {
+      const fingerprints = new Set(firstAttempts.map(generation => generation.inputFingerprint));
       if (fingerprints.size > 1) {
         problems.push(
-          `${caseId} attempt ${attempt} was asked differently of each profile: ` +
+          `${caseId} attempt 1 was asked differently of each profile: ` +
             `${fingerprints.size} fingerprints`,
         );
       }

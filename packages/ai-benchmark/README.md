@@ -28,6 +28,60 @@ second gameplay schema** — deltas are `StateDelta` from `@paa/game-types`, and
 acceptance is decided by the application's own validator, not by a
 benchmark-only rule.
 
+## Running the official comparison
+
+One command produces the whole thing: Lite over the suite, a full stop and reap,
+Standard over the suite, into one run directory under one run id.
+
+```
+CHRONOSAGA_WORKSPACE_ROOT=D:\Chronosaga CHRONOSAGA_BENCHMARK_OFFICIAL=1 \
+cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml \
+  benchmark::tests::official_quality_comparison -- --nocapture --test-threads=1
+```
+
+Nothing is edited between the two profiles: no source change, no model filename,
+no stitching of JSON afterwards. Adding `CHRONOSAGA_BENCHMARK_CASES=1` narrows it
+to one case per profile for proving the orchestration; official evidence is
+produced without it.
+
+The opt-in is its own variable. `CHRONOSAGA_BENCHMARK=1` runs a smoke pass and
+`CHRONOSAGA_BENCHMARK_OFFICIAL=1` runs the comparison, so the command that
+produces publishable evidence cannot be typed by accident while reaching for a
+three-case check.
+
+**Order, and why it is that order.** Lite runs entirely, is stopped, and the port
+is asserted free before Standard is built. Alternating per case would mean 65
+model swaps and would measure swapping. One model resident at a time is a
+property of the loop — a profile's block starts, runs and reaps before the next
+iteration begins — rather than of remembering to stop the last one.
+
+**The one retry.** A rejected first attempt earns exactly one more. The retry
+repeats the scene verbatim and adds what the validator actually said, because
+"your output was invalid" teaches a model nothing it can act on while `unknown
+tone tag: epico` does. Two profiles that failed differently therefore receive
+different retry text, which is the fair treatment: telling Lite to fix an error
+Standard made would be neither fair nor informative. Attempt 1 — the comparison —
+stays byte-identical for both, and its fingerprint is checked across profiles;
+attempt 2 is checked within a profile only. Nothing else about the policy moves:
+a retry may only follow a rejection, never an acceptance, and there is no third
+attempt.
+
+A retry is earned by a *validator* rejection and by nothing else. A lost
+connection, a wrong serving model, a failed digest or an unwritable directory
+ends the run where it stands: those are infrastructure failures, not outputs to
+repair.
+
+**Reading the evidence back.** `loadRunDirectory` parses `metadata.json` and
+`generations.jsonl` and returns `unknown`, which is the only honest type for a
+file nobody validated. From there it is the usual boundary —
+`structuralBenchmarkRunProblems`, `validateRun`, the suite, model, runtime and
+checkout bindings, then `buildLocalOfficialComparison`. A line that is not JSON
+is handed on as the string it was, so the boundary names the row; dropping it
+would silently shrink the run.
+
+A partial run loads and reads perfectly well. It simply cannot be published: an
+interrupted run is evidence of an interruption, and the coverage gates say so.
+
 ## Running a smoke pass
 
 The runner is opt-in and needs the verified payload:

@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import manifest from '../package.json' with { type: 'json' };
 import { buildComparisonWithTrustedCheckout } from '../src/report.js';
@@ -38,6 +41,26 @@ function reportedFromItsOwnCheckout(
  * reach a mutating module, and its functions do not modify the objects handed to
  * them. Both are checked, because either alone would be easy to defeat.
  */
+
+/** Every `.ts` file under `root`, recursively. */
+function sourceFiles(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap(entry => {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return entry.name.endsWith('.ts') ? [path] : [];
+  });
+}
+
+/** Source with comments removed, so prose about a rule is not read as a breach. */
+function stripComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
+/** The named imports a module takes from `module`. */
+function importedFrom(text: string, module: string): string[] {
+  const found = new RegExp(`import \{([^}]*)\} from '${module}'`).exec(text);
+  return (found?.[1] ?? '').split(',').map(name => name.trim()).filter(Boolean);
+}
 
 const suite = loadSuite();
 
@@ -156,6 +179,94 @@ describe('benchmark isolation from authoritative state', () => {
     });
 
     expect(() => reportedFromItsOwnCheckout(frozenSuite, run)).not.toThrow();
+  });
+
+  it('32: the package reads the world and never writes anything', () => {
+    // P0.5-B1 gave this package its first file access, so the claim needs
+    // enforcing rather than asserting: `loadRunDirectory` reads a run
+    // directory, and nothing here may create, modify or delete a file. A
+    // benchmark that can write is a benchmark that can edit its own evidence.
+    const root = fileURLToPath(new URL('../src/', import.meta.url));
+    const writers = [
+      'writeFile',
+      'appendFile',
+      'mkdir',
+      'rmSync',
+      'rmdir',
+      'unlink',
+      'createWriteStream',
+      'copyFile',
+      'renameSync',
+      'ftruncate',
+      'chmod',
+    ];
+
+    const offenders: string[] = [];
+    for (const file of sourceFiles(root)) {
+      // Comments explain the boundary and may name what is forbidden; only code
+      // can breach it. Scanning the prose would flag the sentence that says a
+      // number is not truncated.
+      const code = stripComments(readFileSync(file, 'utf8'));
+      for (const writer of writers) {
+        if (code.includes(writer)) offenders.push(`${basename(file)}: ${writer}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+
+    // The one module that touches the filesystem imports exactly the read it
+    // needs.
+    const adapter = readFileSync(join(root, 'adapters/run-directory.ts'), 'utf8');
+    expect(importedFrom(adapter, 'node:fs')).toEqual(['readFileSync']);
+  });
+
+  it('32: the only process it starts is a read-only git query', () => {
+    // `local-checkout.ts` asks Git where it is and whether it is dirty, which
+    // is how a report binds itself to the checkout that produced it. That is a
+    // spawned process, so it is named here rather than left to a general rule:
+    // one module, one binary, and only subcommands that report.
+    const root = fileURLToPath(new URL('../src/', import.meta.url));
+    const spawners = sourceFiles(root).filter(file =>
+      stripComments(readFileSync(file, 'utf8')).includes('node:child_process'),
+    );
+    // `.map(basename)` would hand the array index to basename's `suffix`
+    // parameter, which throws. Named explicitly.
+    expect(spawners.map(file => basename(file))).toEqual(['local-checkout.ts']);
+
+    const adapter = readFileSync(join(root, 'adapters/local-checkout.ts'), 'utf8');
+    expect(importedFrom(adapter, 'node:child_process')).toEqual(['execFileSync']);
+
+    const code = stripComments(adapter);
+    // One binary, and it is never a shell.
+    const invocations = [...code.matchAll(/execFileSync\(\s*'([^']+)'/g)].map(match => match[1]);
+    expect(invocations).toEqual(['git']);
+    expect(code).toContain("stdio: ['ignore', 'pipe', 'ignore']");
+    expect(code).not.toContain('shell');
+    expect(code).not.toContain('execSync');
+
+    // And only subcommands that report. `checkout`, `reset`, `clean` and `push`
+    // would each change the very thing the report is trying to describe.
+    const subcommands = [...code.matchAll(/git\(\[\s*'([^']+)'/g)].map(match => match[1]);
+    expect(subcommands.length).toBeGreaterThan(0);
+    expect([...new Set(subcommands)].sort()).toEqual(['rev-parse', 'status']);
+  });
+
+  it('33: authoritative state is not reachable from here, by name or by type', () => {
+    // The engine owns WorldState. This package has no import of it, no
+    // reference to it, and no dependency that exports it — so benchmark code
+    // cannot mutate a campaign even by mistake.
+    const root = fileURLToPath(new URL('../src/', import.meta.url));
+    const forbidden = ['WorldState', 'runWorldTick', 'resolveChoice', 'createCampaign', 'applyEvent'];
+
+    const offenders: string[] = [];
+    for (const file of sourceFiles(root)) {
+      const text = readFileSync(file, 'utf8');
+      // Comments may discuss the engine; code may not reach it.
+      const code = stripComments(text);
+      for (const name of forbidden) {
+        if (code.includes(name)) offenders.push(`${basename(file)}: ${name}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('produces the same evaluation whatever order cases are visited in', () => {

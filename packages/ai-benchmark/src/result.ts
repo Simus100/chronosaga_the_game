@@ -249,6 +249,44 @@ export interface NormalizedOutput {
  * dropping a malformed item would each turn evidence of a broken run into a
  * plausible-looking number.
  */
+/**
+ * What is wrong with a row's pointer to its own raw evidence.
+ *
+ * A raw path is read **relative to the run directory**, so it has to stay
+ * inside it. Anything else turns a row into an instruction to open a file
+ * somewhere on the reader's disk: `../../../secrets.txt` and `C:\keys.txt` are
+ * both perfectly good strings, and a run directory is evidence that arrives
+ * from outside — copied off another machine, or handed over for review.
+ *
+ * The runner already writes exactly `raw/<case>.<profile>.<attempt>.txt`, so
+ * requiring that shape costs an honest run nothing.
+ */
+function rawOutputPathProblems(path: string): string[] {
+  if (!path) return ['raw evidence must be referenced'];
+  const problems: string[] = [];
+  if (!path.startsWith('raw/')) {
+    problems.push(`'${path}' must be run-relative, under 'raw/'`);
+  }
+  // Checked separately from the prefix: `raw/../..` starts correctly and still
+  // leaves the run.
+  if (path.split('/').includes('..')) {
+    problems.push(`'${path}' must not climb out of the run directory`);
+  }
+  if (path.includes(String.fromCharCode(92))) {
+    problems.push(`'${path}' must use forward slashes, so it resolves on any platform`);
+  }
+  // A Windows drive or UNC path is absolute wherever it is read.
+  if (/^[a-zA-Z]:/.test(path) || path.startsWith('/')) {
+    problems.push(`'${path}' is absolute; evidence must travel with its run`);
+  }
+  // Written as a codepoint comparison rather than an escape, so the rule
+  // survives being copied through a tool that eats backslashes.
+  if ([...path].some(character => character < ' ')) {
+    problems.push('a path cannot contain control characters');
+  }
+  return problems;
+}
+
 export function normalizedOutputProblems(value: unknown): string[] {
   const problems: string[] = [];
   const object = plainObject(value);
@@ -448,7 +486,9 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
       at('artifact.profileId', 'the artifact must belong to the profile that produced the generation');
     }
 
-    if (!generation.rawOutputPath) at('rawOutputPath', 'raw evidence must be referenced');
+    for (const problem of rawOutputPathProblems(generation.rawOutputPath)) {
+      at('rawOutputPath', problem);
+    }
     // Acceptance is a proven boolean by now, so this reads what it means rather
     // than what it is.
     if (generation.accepted) {
