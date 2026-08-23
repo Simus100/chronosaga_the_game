@@ -5877,6 +5877,46 @@ mod tests {
     }
 
     #[test]
+    fn every_benchmark_opt_in_can_reach_the_payload_it_asked_for() {
+        // The official lane was given its own variable so it could not be typed
+        // by accident. That made it the one caller the payload resolver did not
+        // recognise, and the documented command refused the locked runtime as
+        // "not present on this machine" while it sat in the workspace.
+        //
+        // The resolver now reads one list, and this is what keeps the two in
+        // step: every opt-in the benchmark defines has to appear in it.
+        let source = include_str!("runtime_e2e.rs");
+        let start = source
+            .find("const PAYLOAD_OPT_INS")
+            .expect("the opt-ins are declared in one place");
+        let declaration = &source[start..start + 200];
+
+        for name in [BENCHMARK_ENV, OFFICIAL_ENV] {
+            let constant = source
+                .find(&format!("= {:?};", name))
+                .map(|at| source[..at].rfind("const ").expect("a constant name"))
+                .unwrap_or_else(|| panic!("{name} is not known to the payload resolver"));
+            let ident = source[constant + 6..]
+                .split(':')
+                .next()
+                .expect("a constant name")
+                .trim()
+                .to_string();
+            assert!(
+                declaration.contains(&ident),
+                "{name} ({ident}) is not in PAYLOAD_OPT_INS: {declaration}"
+            );
+        }
+
+        // And the resolver reads the list rather than a second copy of it.
+        let resolver = source
+            .find("fn opted_in()")
+            .map(|at| &source[at..at + 200])
+            .expect("the resolver exists");
+        assert!(resolver.contains("PAYLOAD_OPT_INS"), "{resolver}");
+    }
+
+    #[test]
     fn an_existing_run_directory_is_never_overwritten() {
         // 23. Official evidence accumulates; it does not get edited into shape.
         assert!(

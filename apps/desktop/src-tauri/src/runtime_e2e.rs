@@ -30,10 +30,20 @@ use std::{
 const E2E_ENV: &str = "CHRONOSAGA_RUNTIME_E2E";
 const WORKSPACE_ENV: &str = "CHRONOSAGA_WORKSPACE_ROOT";
 const BENCHMARK_ENV: &str = "CHRONOSAGA_BENCHMARK";
+const OFFICIAL_ENV: &str = "CHRONOSAGA_BENCHMARK_OFFICIAL";
+
+/// Every variable that means "this machine has the verified payload".
+///
+/// One list, so a new opt-in cannot be added to the benchmark and forgotten
+/// here. It was: the official lane got its own variable precisely so it could
+/// not be typed by accident, and that made it the one caller this resolver did
+/// not recognise — the command refused the locked runtime as absent on a
+/// machine where it was sitting right there.
+const PAYLOAD_OPT_INS: [&str; 3] = [E2E_ENV, BENCHMARK_ENV, OFFICIAL_ENV];
 
 /// Whether the caller has asked to use the real local payload.
 fn opted_in() -> bool {
-    [E2E_ENV, BENCHMARK_ENV]
+    PAYLOAD_OPT_INS
         .iter()
         .any(|name| env::var(name).ok().as_deref() == Some("1"))
 }
