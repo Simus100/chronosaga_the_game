@@ -132,8 +132,13 @@ export interface BenchmarkGeneration {
   /**
    * SHA-256 over the suite identity, the case and both prompts verbatim.
    *
-   * Two profiles that answered the same case must carry the same fingerprint.
-   * That turns "they saw identical inputs" from an assumption into evidence.
+   * On **attempt 1** — the comparison — two profiles answering the same case
+   * must carry the same fingerprint, which turns "they saw identical inputs"
+   * from an assumption into evidence.
+   *
+   * On **attempt 2** they need not: a retry quotes that profile's own validator
+   * rejection, so profiles that failed differently are asked differently. The
+   * fingerprint is what makes that visible instead of hiding it.
    */
   inputFingerprint: string;
   /** 1 for the first try; a retry is a second row, never a mutation. */
@@ -164,6 +169,20 @@ export interface BenchmarkGeneration {
    * two profiles times retries is a lot of prose nobody will diff.
    */
   rawOutputPath: string;
+  /**
+   * SHA-256 of the exact bytes at `rawOutputPath`, lowercase hex.
+   *
+   * A path is a promise about a file. This is what makes the promise
+   * checkable: without it, a run could be handed over with one raw file
+   * deleted, truncated, or swapped for another generation's, and every row
+   * would still point somewhere plausible.
+   *
+   * Over the bytes as persisted — not the normalised output, not a reparsed
+   * object, not trimmed text. The point is to detect a change to the file, so
+   * the file is what is hashed. Verified by the adapter that has the run
+   * directory; this package stays pure and cannot open it.
+   */
+  rawOutputSha256: string;
   /**
    * What the raw response looked like before the validator normalised it.
    *
@@ -249,6 +268,44 @@ export interface NormalizedOutput {
  * dropping a malformed item would each turn evidence of a broken run into a
  * plausible-looking number.
  */
+/**
+ * What is wrong with a row's pointer to its own raw evidence.
+ *
+ * A raw path is read **relative to the run directory**, so it has to stay
+ * inside it. Anything else turns a row into an instruction to open a file
+ * somewhere on the reader's disk: `../../../secrets.txt` and `C:\keys.txt` are
+ * both perfectly good strings, and a run directory is evidence that arrives
+ * from outside — copied off another machine, or handed over for review.
+ *
+ * The runner already writes exactly `raw/<case>.<profile>.<attempt>.txt`, so
+ * requiring that shape costs an honest run nothing.
+ */
+export function rawOutputPathProblems(path: string): string[] {
+  if (!path) return ['raw evidence must be referenced'];
+  const problems: string[] = [];
+  if (!path.startsWith('raw/')) {
+    problems.push(`'${path}' must be run-relative, under 'raw/'`);
+  }
+  // Checked separately from the prefix: `raw/../..` starts correctly and still
+  // leaves the run.
+  if (path.split('/').includes('..')) {
+    problems.push(`'${path}' must not climb out of the run directory`);
+  }
+  if (path.includes(String.fromCharCode(92))) {
+    problems.push(`'${path}' must use forward slashes, so it resolves on any platform`);
+  }
+  // A Windows drive or UNC path is absolute wherever it is read.
+  if (/^[a-zA-Z]:/.test(path) || path.startsWith('/')) {
+    problems.push(`'${path}' is absolute; evidence must travel with its run`);
+  }
+  // Written as a codepoint comparison rather than an escape, so the rule
+  // survives being copied through a tool that eats backslashes.
+  if ([...path].some(character => character < ' ')) {
+    problems.push('a path cannot contain control characters');
+  }
+  return problems;
+}
+
 export function normalizedOutputProblems(value: unknown): string[] {
   const problems: string[] = [];
   const object = plainObject(value);
@@ -448,7 +505,16 @@ export function validateRun(run: BenchmarkRun): ResultProblem[] {
       at('artifact.profileId', 'the artifact must belong to the profile that produced the generation');
     }
 
-    if (!generation.rawOutputPath) at('rawOutputPath', 'raw evidence must be referenced');
+    for (const problem of rawOutputPathProblems(generation.rawOutputPath)) {
+      at('rawOutputPath', problem);
+    }
+    if (!SHA256.test(generation.rawOutputSha256)) {
+      at(
+        'rawOutputSha256',
+        `'${generation.rawOutputSha256}' is not a lowercase SHA-256; raw evidence that ` +
+          'cannot be checked is raw evidence nobody has to keep intact',
+      );
+    }
     // Acceptance is a proven boolean by now, so this reads what it means rather
     // than what it is.
     if (generation.accepted) {

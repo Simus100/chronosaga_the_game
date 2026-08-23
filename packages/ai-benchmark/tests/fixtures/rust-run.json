@@ -48,6 +48,7 @@
         "wrapperTextPresent": false
       },
       "rawOutputPath": "raw/ai_case_001.lite.1.txt",
+      "rawOutputSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       "retryUsed": false,
       "runId": "run_001",
       "servedModel": "lite",
@@ -91,6 +92,7 @@
         "wrapperTextPresent": true
       },
       "rawOutputPath": "raw/ai_case_001.standard.1.txt",
+      "rawOutputSha256": "8b2518bca8bf28721941e3bec995b6d6f97fb2b736e72ca86c7ac66ba3e66ab9",
       "retryUsed": false,
       "runId": "run_001",
       "servedModel": "standard",

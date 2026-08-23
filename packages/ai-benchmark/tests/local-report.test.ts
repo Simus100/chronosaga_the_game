@@ -81,6 +81,10 @@ function officialRun(commit: string): BenchmarkRun {
         artifact: { ...lockedArtifact(profile)!, profileId: profile, source: 'user model library' },
         inputFingerprint: 'c'.repeat(64),
         rawOutputPath: `raw/${entry.id}.${profile}.1.txt`,
+        // Shape only: these fixtures have no files on disk, and the bytes are
+        // the run-directory adapter's business. Two rows may legitimately share
+        // a digest — two models can emit the same raw text.
+        rawOutputSha256: '0'.repeat(64),
         normalizedOutput: {
           narration: 'Nulla di rilevante.',
           dialogue: (entry.constraints.requiredSpeakerIds ?? []).map(speakerId => ({

@@ -190,7 +190,18 @@ function checkGeneration(
     problems.at(undefined, `generations[${index}].id`, `is ${describe(generation.id)}; it must be a string`);
   }
 
-  for (const field of ['runId', 'caseId', 'task', 'inputFingerprint', 'rawOutputPath']) {
+  for (const field of [
+    'runId',
+    'caseId',
+    'task',
+    'inputFingerprint',
+    'rawOutputPath',
+    // Structural only — that it is a string at all. `validateRun` owns
+    // whether it is a SHA-256, and the adapter owns whether it is the
+    // right one. Reading a missing digest as "nothing to check" is how a
+    // deleted raw file would go unnoticed.
+    'rawOutputSha256',
+  ]) {
     problems.string(where, field, generation[field]);
   }
   problems.member(where, 'profile', generation.profile, OFFICIAL_COMPARISON_PROFILES);

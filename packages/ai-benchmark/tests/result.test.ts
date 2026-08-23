@@ -46,6 +46,10 @@ function generation(over: Partial<BenchmarkGeneration> = {}): BenchmarkGeneratio
     tokensPerSecond: 12,
     servedModel: 'lite',
     rawOutputPath: 'raw/c1.lite.1.txt',
+    // Shape only: these fixtures have no files on disk, and the bytes are
+    // the run-directory adapter's business. Two rows may legitimately share
+    // a digest — two models can emit the same raw text.
+    rawOutputSha256: '0'.repeat(64),
     rawFormat: { bareJson: true, codeFencePresent: false, wrapperTextPresent: false },
     normalizedOutput: {
       narration: 'ok',
@@ -125,6 +129,38 @@ describe('the benchmark result schema', () => {
   it('always references raw evidence on disk', () => {
     const broken = run([generation({ rawOutputPath: '' })]);
     expect(validateRun(broken).some(problem => problem.field === 'rawOutputPath')).toBe(true);
+  });
+
+  it('27: raw evidence must stay inside the run that produced it', () => {
+    // A raw path is resolved against the run directory, and a run directory
+    // arrives from outside — copied off the machine that produced it, or handed
+    // over for review. A row is therefore never allowed to point anywhere else:
+    // the string is data, and treating it as an instruction to open a file is
+    // exactly the mistake.
+    const escapes = [
+      '../../../secrets.txt',
+      'raw/../../secrets.txt',
+      '/etc/passwd',
+      'C:/Windows/System32/config',
+      'D:\Chronosaga\raw\c1.lite.1.txt',
+      'raw' + String.fromCharCode(92) + 'c1.lite.1.txt',
+      'evidence/c1.lite.1.txt',
+      'raw/c1.lite.1.txt' + String.fromCharCode(0),
+    ];
+    for (const rawOutputPath of escapes) {
+      const problems = validateRun(run([generation({ rawOutputPath })]));
+      expect(
+        problems.some(problem => problem.field === 'rawOutputPath'),
+        `accepted ${JSON.stringify(rawOutputPath)}`,
+      ).toBe(true);
+    }
+  });
+
+  it('27: and the shape the runner actually writes is accepted', () => {
+    // The rule has to cost an honest run nothing, on either platform.
+    for (const rawOutputPath of ['raw/c1.lite.1.txt', 'raw/ai_case_065.standard.2.txt']) {
+      expect(validateRun(run([generation({ rawOutputPath })]))).toEqual([]);
+    }
   });
 });
 
