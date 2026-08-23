@@ -1,151 +1,178 @@
 # REPOSITORY BOOTSTRAP STATUS
 ## Chronosaga: The Game
 
-**Snapshot:** 2026-08-19
-**Tipo:** stato operativo/informativo, non normativo.
+**Snapshot:** 2026-08-23 (post-merge PR #24)
+**Tipo:** stato operativo/informativo, **non normativo**.
 
-Questo file fotografa lo stato corrente della repository. Non sostituisce Product Vision, Knowledge, Roadmap, P0 Plan o altri documenti normativi.
+Questo file fotografa lo stato corrente del repository. Non sostituisce Product
+Vision, Knowledge, Roadmap, P0 Plan o altri documenti normativi, e non ha
+precedenza su di essi. In caso di conflitto prevale la Knowledge; in caso di
+conflitto fra questo file e il repository reale, **prevale il repository**: Git,
+i test e gli artefatti verificabili sono la fonte dello stato implementato.
+
+## Legenda
+
+```text
+MERGED / VERIFIED     mergiato in develop e coperto da test/gate eseguiti
+IN REVIEW             implementato, PR aperta, non ancora mergiato
+NOT RUN               infrastruttura pronta, esecuzione non ancora effettuata
+NOT RELEASE-APPROVED  candidato tecnico, nessuna approvazione di rilascio
+OUT OF SCOPE          deliberatamente non incluso in questa fase
+```
 
 ## Branch state
 
-- **P0.3-C functional baseline merged in `develop`:** `06812f98f6d55aa787c93984b4bc772228475b01`
-  - merge PR #8: **P0.3-C: prove real Lite local inference on Windows**.
-- Questo status file è stato aggiunto successivamente tramite PR documentale; per questo **non pinna il proprio merge commit come “current develop HEAD”**. L'HEAD corrente di `develop` va letto direttamente da GitHub.
-- `main` osservato nello snapshot: `27571a85100a11875cad7d72431a48586573a976`
-  - contiene la precedente promozione fino alla strategia visuale statica/code-driven;
-  - **non contiene P0.3-C** nello snapshot.
-- `main` e `develop` hanno storie Git divergenti a causa delle precedenti PR/merge; non vanno riallineati con merge/force/fast-forward automatici. Una futura promozione `develop` → `main` richiede una PR deliberata e review del diff.
+- `develop` osservato: `63b8af59846be2e85923695fa65cca8b6d7bc468`
+  — merge PR #24, *P0.5-B1: operationalize official Lite vs Standard quality
+  benchmark*.
+- `main` osservato: `27571a85100a11875cad7d72431a48586573a976`
+  — significativamente indietro rispetto a `develop` (92 commit).
+- `main` e `develop` hanno storie Git divergenti per via dei merge precedenti.
+  **Nessun documento normativo è però presente solo su `main`**: il diff `docs/`
+  fra i due branch mostra unicamente che `develop` è più avanti. La divergenza è
+  storia, non contenuto perduto.
+- Non riallineare `main` e `develop` con merge/force/fast-forward automatici. Una
+  promozione `develop` → `main` è una decisione deliberata separata, con PR e
+  review del diff.
+- Questo file è aggiornato tramite PR documentale, quindi **non pinna il proprio
+  merge commit** come HEAD corrente di `develop`.
 
-## Gate completati
+## Stato per gate
 
-### P0.1 — Windows desktop runtime
-**COMPLETATO / PROVATO SU PC REALE**
+### P0.1 — Windows desktop runtime — MERGED / VERIFIED
+Tauri Windows avviabile e installabile, diagnostica hardware/risorse, build e
+installer verificati sul PC Windows target.
 
-- Tauri Windows avviabile e installabile.
-- Hardware/resource path diagnostics.
-- Build/installer Windows verificati.
+### P0.2 — SQLite smoke persistence — MERGED / VERIFIED
+save/load SQLite, chiusura e riapertura applicazione, persistenza dello smoke
+campaign, validati sul PC Windows target.
 
-### P0.2 — SQLite persistence
-**COMPLETATO / PROVATO SU PC REALE**
+### P0.3-B — owned llama.cpp runtime — MERGED / VERIFIED
+llama.cpp `b10343` pinned e verificabile, runtime esterno a Git, lifecycle
+manager con ownership del processo, watcher background, `runtimeReady` distinto
+da `inferenceReady`, binding loopback-only, packaging runtime separato dal
+payload modello, zero orphan process nei test eseguiti.
 
-- save/load SQLite;
-- chiusura e riapertura applicazione;
-- persistenza del smoke campaign.
+### P0.3-C — prima inferenza locale Lite reale — MERGED / VERIFIED
+PR #8. Inferenza offline reale con il candidato Lite, GGUF integrity-verified,
+output strutturato validato application-side.
 
-### P0.3-B — owned llama.cpp runtime
-**COMPLETATO / MERGED**
+### P0.4 — Standard, AUTO e Safe fallback — MERGED / VERIFIED
+- P0.4-A Standard desktop integration (PR #14);
+- P0.4 AUTO orchestration e Safe fallback (PR #16);
+- P0.4-D installed model resolution hardening (PR #21).
 
-- llama.cpp `b10343` pinned e verificabile;
-- runtime esterno a Git;
-- lifecycle manager con ownership del processo;
-- watcher background;
-- `runtimeReady` distinto da `inferenceReady`;
-- loopback-only;
-- packaging runtime AI separato dal payload modello;
-- zero orphan process nei test/acceptance eseguiti.
+Un solo modello residente alla volta; `STANDARD → LITE → SAFE/PROCEDURAL`
+preservato; Safe/Procedural resta percorso degradato di continuità, **non** un
+quarto profilo normale.
 
-### Visual production strategy
-**MERGED / LOCKED NEL DOCUMENTO VISUAL ASSET PIPELINE**
+### M1-A / M1-B — fondazione sistemica e primo world tick — MERGED / VERIFIED
+- M1-A systemic world foundation (PR #15);
+- M1-B first useful world tick (PR #18).
 
-Baseline:
-- static modular assets first;
-- code-driven movement/motion;
-- FX/audio per comunicare azione;
-- frame-by-frame animation opzionale, non requisito iniziale;
-- AI-first external authoring pipeline;
-- persistent identity portrait/tactical/strategic;
-- asset compiler futuro per normalizzazione e metadata.
+Lavoro di gameplay anticipato in parallelo all'infrastruttura P0. Vedi la nota
+sulla sequenza in `TECHNICAL_ROADMAP_v0.2.md`: è lavoro anticipato, non una
+deviazione architetturale.
 
-### P0.3-C — first real Lite local inference
-**COMPLETATO / MERGED IN `develop`**
+### P0.5-A — benchmark harness — MERGED / VERIFIED
+PR #22. Suite versionata, schemi, evaluator deterministico, report
+Lite-vs-Standard, boundary di fiducia fra evidenza esterna e aggregazione.
 
-PR #8 ha dimostrato una vera inferenza locale offline con il candidato Lite.
+### P0.5-B1 — execution lane ufficiale — MERGED / VERIFIED
+PR #24, merge commit `63b8af59846be2e85923695fa65cca8b6d7bc468`.
 
-Candidato P0:
-- family: `Qwen3-1.7B`;
-- repository GGUF: `ggml-org/Qwen3-1.7B-GGUF`;
-- pinned revision: `daeb8e2d528a760970442092f6bf1e55c3b659eb`;
-- artifact: `Qwen3-1.7B-Q4_K_M.gguf`;
-- quantization: `Q4_K_M`;
-- size: `1,282,439,264` bytes;
-- SHA-256: `d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5`;
-- license metadata: Apache-2.0;
-- status: **P0 benchmark candidate — NOT release-approved**.
+L'infrastruttura di esecuzione esiste ed è mergiata. Contiene:
 
-Prove tecniche incorporate:
-- modello pesante fuori dal normale Git;
-- lock separato runtime/model;
-- verifier filename/size/SHA-256;
-- SHA-256 streaming una volta per sessione applicativa;
-- `ResolvedModel` distinto da `VerifiedModel`;
-- solo `VerifiedModel` può entrare nel launch contract;
-- single-model `llama-server --model ...`;
-- context P0 = 4096;
-- reasoning off nel percorso Lite smoke;
-- API key casuale per sessione, non persistita e non esposta a React;
-- inference HTTP posseduta da Rust via `reqwest`;
-- URL inference validato strutturalmente come `http://127.0.0.1:<port>`;
-- Web UI / agent / MCP proxy disabilitati;
-- readiness richiede l'alias modello atteso `lite`;
-- output strutturato validato application-side;
-- raw rejected output non serializzato verso la UI;
-- Simulation Core resta autorevole e il modello non muta lo stato.
+- un comando unico che esegue entrambi i profili sotto un solo `runId` logico;
+- ciclo di vita sequenziale del modello: Lite completamente fermato e reaped,
+  porta provata libera, prima che Standard parta;
+- un solo retry, derivato dal rifiuto del validator, e nessun terzo tentativo;
+- nessun fallback durante la comparazione;
+- verifica di runtime e di entrambi gli artefatti **prima** di qualunque
+  generazione;
+- claim atomico della run directory: una directory esistente non viene mai
+  riusata, fusa o sovrascritta;
+- selezione dei casi fail-closed — `CHRONOSAGA_BENCHMARK_CASES` malformata, o
+  `CHRONOSAGA_BENCHMARK_CASE_IDS` senza conteggio, rifiutano la run;
+- preflight su checkout pulito e committato, senza override;
+- `rawOutputSha256` per riga, che lega l'evidenza grezza ai byte scritti;
+- CLI di reporting che attraversa l'intero boundary e esce non-zero su qualsiasi
+  rifiuto.
 
-## Real-machine P0.3-C observations
+**Mergiato non significa eseguito.** Vedi il gate seguente.
 
-Macchina di sviluppo usata per l'acceptance:
-- Intel i7-13700KF;
-- 64 GB RAM;
-- RTX 3090 presente ma non usata nel runtime CPU P0;
-- llama.cpp Windows CPU build `b10343`;
-- context 4096.
+### P0.5 — risultato qualità ufficiale Lite vs Standard — NOT RUN
+La comparazione 65 × 2 **non è stata eseguita**. Nessuna evidenza in questo
+repository o nel workspace è evidenza ufficiale comparabile.
 
-Osservazioni iniziali:
-- cold model load circa 1.6 s;
-- short generation circa 6.3–8.6 s;
-- throughput circa 18–20 tok/s;
-- working set circa 2.2 GB;
-- 6 generazioni reali nel primo acceptance: 5 accettate, 1 correttamente respinta dal validator;
-- stop/restart e shutdown senza orphan process verificati.
+Esiste una run interrotta a
+`D:\Chronosaga\benchmarks\p0.5\official_1787448652` (69 righe Lite, Standard mai
+avviato). È **historical incomplete evidence**: non va modificata, completata,
+riparata né usata per un verdetto. Il boundary di reporting la rifiuta.
 
-Questi dati dimostrano **fattibilità**, non fissano requisiti hardware finali e non sostituiscono P0.5.
+### P0.5-C — matrice performance / context / hardware — NOT RUN
 
-## CI state for P0.3-C
+### P0 — verdetto finale GO / GO WITH LIMITS / NO-GO — NOT RUN
 
-GitHub Actions run #99 su PR #8:
-- `validate`: PASS;
-- `desktop-windows-check`: PASS;
-- `windows-ai-installer`: SKIPPED intenzionalmente perché i payload pesanti verificati non sono disponibili sui runner hosted.
+### Windows Full Offline bundle — NOT RUN
+La strategia fisica della distribuzione multi-GB resta PROVISIONAL.
 
-Il job Windows ha superato frontend build, Rust tests, Rust check, NSIS build e artifact upload.
-
-## Known limitations / open work
-
-- Standard non implementato.
-- AUTO/profile switching non implementato.
-- Fallback completo Standard → Lite → Safe non implementato.
-- P0.5 benchmark matrix non eseguita.
-- GGUF Lite corrente è un benchmark candidate, non release lock.
-- `/health` e `/v1/models` del llama-server pinned restano localmente discoverable anche con API key; generation endpoints sono autenticati.
-- Modello Lite non è ancora incluso nel NSIS corrente.
-- Strategia fisica della distribuzione Windows Full Offline multi-GB resta PROVISIONAL.
-- GPU acceleration non benchmarkata.
-- Gameplay M1/M2 non ancora il focus implementativo principale.
-
-## Next intended gate
-
-La prossima milestone infrastrutturale è P0.4:
+## Profili modello
 
 ```text
-LITE proven
-    ↓
-STANDARD candidate + real inference
-    ↓
-AUTO / profile selection
-    ↓
-one-model-at-a-time switching
-    ↓
-STANDARD → LITE → SAFE fallback
+LITE     Qwen3-1.7B Q4_K_M   P0 benchmark candidate   NOT RELEASE-APPROVED
+STANDARD SmolLM3-3B  Q4_K_M  P0 benchmark candidate   NOT RELEASE-APPROVED
+SAFE / PROCEDURAL   percorso degradato di continuità, non profilo equivalente
 ```
 
-Prima di estendere ulteriormente l'infrastruttura oltre P0.4/P0.5, il progetto deve spostare rapidamente il focus sul vertical slice di gameplay sistemico.
+Entrambi restano `releaseApproved = false` finché P0.5 non produce evidenza
+sufficiente. Nessun modello è release-ready senza quell'evidenza.
+
+## Sequenza corrente
+
+```text
+P0.5-A benchmark harness            DONE
+P0.5-B1 execution infrastructure    DONE
+        ↓
+sync del checkout locale su develop mergiato
+        ↓
+verifica checkout pulito / runtime / modelli
+        ↓
+official Lite-vs-Standard 65-case run     <- CURRENT, non ancora eseguita
+        ↓
+machine validation / report
+        ↓
+human scoring / review
+        ↓
+P0.5-B quality verdict
+        ↓
+P0.5-C performance / context / hardware matrix
+        ↓
+final P0 verdict — GO / GO WITH LIMITS / NO-GO
+```
+
+Dopo la chiusura di P0.5 il focus si sposta da costruire infrastruttura a
+dimostrare che Chronosaga è un gioco interessante: M2 vertical slice.
+
+## Limiti noti e lavoro aperto
+
+- Benchmark ufficiale non eseguito; nessun verdetto di qualità.
+- Matrice P0.5-C non eseguita; requisiti hardware finali non definiti.
+- GPU acceleration non benchmarkata.
+- Modelli non inclusi nel NSIS corrente.
+- `/health` e `/v1/models` del llama-server pinned restano localmente
+  discoverable anche con API key; gli endpoint di generazione sono autenticati.
+- Persistence SQLite oltre lo smoke P0 non implementata.
+- PostgreSQL production adapter/migrations OUT OF SCOPE in questa fase.
+- Authentication, secrets di produzione, deployment VPS/pubblico OUT OF SCOPE.
+- Runtime image generation OUT OF SCOPE per la v1.
+- M2 vertical slice non iniziato.
+
+## Invarianti da non violare
+
+- Nessun GGUF, weight o payload pesante nella normale history Git.
+- Nessuna raw benchmark evidence in Git; l'evidenza vive fuori dal repository.
+- Simulation Core autorevole e deterministico; l'AI non muta lo stato.
+- `llama-server` loopback-only, mai esposto pubblicamente.
+- Un solo LLM locale residente alla volta.
+- Nessun modello dichiarato release-ready senza evidenza P0.5.

@@ -9,6 +9,48 @@
 
 ---
 
+# 0-bis. Stato di esecuzione reale
+
+**Aggiornato:** 2026-08-23. Questa sezione è informativa: registra *dove siamo*,
+non cambia la sequenza decisa sotto.
+
+La sequenza descritta in questo documento è **concettuale**. L'esecuzione reale
+non l'ha seguita in modo strettamente lineare, e questo non è un errore
+architetturale: parte del lavoro M1 è stato anticipato in parallelo mentre P0
+era ancora aperto, perché non dipendeva dall'esito del benchmark.
+
+```text
+già mergiato in develop
+  P0.1  Windows desktop runtime
+  P0.2  SQLite smoke persistence
+  P0.3  llama.cpp runtime + prima inferenza Lite reale
+  P0.4  Standard, AUTO/profile switching, Safe fallback, installed model resolution
+  M1-A  systemic world foundation          <- lavoro anticipato, in parallelo a P0
+  M1-B  first useful world tick            <- lavoro anticipato, in parallelo a P0
+  P0.5-A benchmark harness
+  P0.5-B1 official execution lane
+
+non eseguito
+  P0.5-B comparazione ufficiale Lite vs Standard
+  P0.5-C matrice performance / context / hardware
+  P0     verdetto finale GO / GO WITH LIMITS / NO-GO
+  M2     playable micro vertical slice
+```
+
+**P0.5 resta il gate tecnico prioritario fino alla sua chiusura.** Finché è
+aperto non vanno iniziate espansioni M2 rilevanti, salvo correzioni isolate,
+test, o lavoro che non interferisce con il benchmark.
+
+Il fatto che M1-A/M1-B siano già fatti mentre P0.5 è aperto va letto come
+anticipazione deliberata, non come inversione della priorità: il gate P0 esiste
+per decidere se e con quale modello Chronosaga può spedire Windows Full Offline,
+e quella domanda è ancora senza risposta.
+
+Per la fotografia operativa aggiornata: `REPOSITORY_BOOTSTRAP_STATUS.md` nella
+radice del repository.
+
+---
+
 # 0. Decisione di priorità
 
 Chronosaga mantiene due target principali — Windows e Web — ma non li sviluppa con la stessa intensità nello stesso momento.

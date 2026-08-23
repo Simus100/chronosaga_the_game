@@ -1,7 +1,7 @@
 # KNOWLEDGE INDEX v1
 ## Chronosaga: The Game
 
-**Data:** 2026-08-19
+**Data:** 2026-08-23
 
 I documenti seguenti costituiscono la Knowledge di progetto.
 
@@ -141,7 +141,7 @@ Fonte operativa prevalente per il gate tecnico immediato:
 - Web compatibility checks durante Windows-first;
 - exit criteria `GO / GO WITH LIMITS / NO-GO`.
 
-**Stato review 2026-08-19:** P0.1 Desktop runtime e P0.2 SQLite persistence sono validati sul PC Windows target; P0.3-B lifecycle/runtime llama.cpp è merged; P0.3-C ha provato e mergiato la prima inferenza locale Lite reale con GGUF integrity-verified e output strutturato validato. Restano Standard, AUTO/profile switching, fallback completo e la matrice P0.5 prima di chiudere l'intero gate dual-model. Per lo stato operativo aggiornato usare `REPOSITORY_BOOTSTRAP_STATUS.md`.
+**Stato review 2026-08-23:** P0.1, P0.2, P0.3-B, P0.3-C, P0.4 (Standard, AUTO/profile switching, Safe fallback, P0.4-D installed model resolution), M1-A, M1-B, P0.5-A e P0.5-B1 sono mergiati in `develop`. Il gate aperto è P0.5: l'infrastruttura di esecuzione esiste, ma la comparazione ufficiale Lite vs Standard **non è ancora stata eseguita** e la matrice P0.5-C performance/context/hardware non è iniziata. Nessun modello è release-approved. Per lo stato operativo aggiornato usare `REPOSITORY_BOOTSTRAP_STATUS.md` nella radice del repository, che è l'unica fotografia operativa canonica.
 
 ## 10. `IMPLEMENTATION_BACKLOG_v0.1.md`
 Backlog operativo aggiornato internamente a v0.2.
@@ -238,8 +238,8 @@ Snapshot informativo della review tecnica svolta il 18 agosto 2026:
 
 Non è una specifica normativa e non prevale sulla Knowledge. Le decisioni di prodotto emerse dalla review sono state separate nel documento normativo `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`.
 
-## `REPOSITORY_BOOTSTRAP_STATUS.md` — se presente
-Snapshot informativo dello stato corrente del repository e dei gate completati/pending. Non è una specifica architetturale e non ha precedenza sulla Knowledge; deve essere mantenuto aggiornato se utilizzato nel workspace/repository.
+## `REPOSITORY_BOOTSTRAP_STATUS.md` — radice del repository
+Snapshot informativo dello stato corrente del repository e dei gate completati/pending. Non è una specifica architetturale e non ha precedenza sulla Knowledge; in caso di conflitto fra questo file e il repository reale prevale il repository. È l'**unica** fotografia operativa canonica: `docs/REPOSITORY_BOOTSTRAP_STATUS.md` è solo un rinvio a essa.
 
 ---
 
