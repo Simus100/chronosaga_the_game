@@ -82,6 +82,9 @@ function characters(): CharacterState[] {
 function simulation(): SystemicSimulationState {
   return {
     schemaVersion: 1,
+    // A fresh world has not ticked yet. The first `runWorldTick` produces tick 1,
+    // exactly as the first player decision produces Player Turn 2 from turn 1.
+    tick: 0,
     settlements: [
       {
         id: "settlement_helios",

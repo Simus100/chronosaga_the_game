@@ -5,6 +5,7 @@ import type {
   StateDelta,
   WorldState
 } from "@paa/game-types";
+import { applyAuthoritativeResourceDelta } from "./resource-authority.js";
 
 function requireSimulation(state: WorldState) {
   if (!state.simulation) throw new Error("Systemic simulation state is required");
@@ -14,10 +15,9 @@ function requireSimulation(state: WorldState) {
 function applyEffect(next: WorldState, effect: EventEffect, changes: StateChange[]): void {
   if (effect.type === "RESOURCE_DELTA") {
     if (!effect.key) throw new Error("RESOURCE_DELTA requires key");
-    const before = next.resources[effect.key] ?? 0;
-    const after = before + Number(effect.value);
-    next.resources[effect.key] = after;
-    changes.push({ type: "resource", key: effect.key, before, after });
+    // Same authority as a player choice. A consequence that landed on the flat
+    // projection would be erased by the next tick exactly as a choice was.
+    applyAuthoritativeResourceDelta(next, effect.key, Number(effect.value), changes);
     return;
   }
 

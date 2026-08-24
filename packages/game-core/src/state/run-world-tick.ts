@@ -6,6 +6,7 @@ import type {
   StateDelta,
   WorldState
 } from "@paa/game-types";
+import { projectResource, resolveSettlementTarget } from "./resource-authority.js";
 
 const CONSUMPTION_PER_1000: Readonly<ResourceMap> = {
   water: 4,
@@ -43,7 +44,10 @@ export interface PoliticalReactionTrace {
 }
 
 export interface WorldTickTrace {
-  turn: number;
+  /** The world simulation tick this trace describes. */
+  tick: number;
+  /** The Player Turn the tick happened during. It is not advanced by a tick. */
+  playerTurn: number;
   production: ProductionTrace[];
   consumption: ResourceMap;
   shortageSeverity: ResourceMap;
@@ -343,10 +347,21 @@ function reactPoliticalGroups(
   return result;
 }
 
+/**
+ * Record that the quartermaster lived through a water shortage.
+ *
+ * Two different clocks meet here, and calling either of them `turn` is how they
+ * got confused. A memory happened during a Player Turn — that is when the
+ * character experienced it — but it was *caused* by a specific World Tick, and
+ * several ticks may run inside one Player Turn. So the memory carries the Player
+ * Turn, its causal source carries the tick, and the id is keyed by the tick
+ * because that is what makes it unique.
+ */
 function addShortageMemory(
   state: WorldState,
   settlementId: string,
-  turn: number,
+  tick: number,
+  playerTurn: number,
   changes: StateChange[]
 ): void {
   const settlement = state.simulation?.settlements.find(item => item.id === settlementId);
@@ -355,15 +370,22 @@ function addShortageMemory(
   );
   if (!character) return;
 
-  const memoryId = `mem_world_tick_${turn}_water_shortage`;
+  // Keyed by tick, not by Player Turn: three ticks in one turn are three
+  // distinct experiences and must not collide into one memory.
+  const memoryId = `mem_world_tick_${tick}_water_shortage`;
   if (character.memories?.some(memory => memory.id === memoryId)) return;
 
   const memory: CharacterMemory = {
     id: memoryId,
     summary: `${settlement?.name ?? settlementId} ended the world tick below its target water reserve.`,
     tags: ["water", "shortage", "world_tick"],
-    turn,
-    source: { kind: "world_tick", id: `world_tick_${turn}`, tick: turn, rule: "resource_shortage" }
+    turn: playerTurn,
+    source: {
+      kind: "world_tick",
+      id: `world_tick_${tick}`,
+      tick,
+      rule: "resource_shortage"
+    }
   };
   const before = character.memories?.length ?? 0;
   character.memories = [...(character.memories ?? []), memory];
@@ -381,7 +403,8 @@ function addShortageMemory(
 function reactFactionAndFlags(
   state: WorldState,
   shortageSeverity: ResourceMap,
-  turn: number,
+  tick: number,
+  playerTurn: number,
   changes: StateChange[]
 ): boolean {
   const simulation = state.simulation!;
@@ -440,7 +463,7 @@ function reactFactionAndFlags(
     }
 
     if (waterActive && previousWaterFlag !== true) {
-      addShortageMemory(state, settlement.id, turn, changes);
+      addShortageMemory(state, settlement.id, tick, playerTurn, changes);
     }
   }
 
@@ -448,8 +471,9 @@ function reactFactionAndFlags(
 }
 
 function mirrorPrimarySettlementResources(state: WorldState, changes: StateChange[]): void {
-  const settlement = state.simulation?.settlements[0];
-  if (!settlement) return;
+  const target = resolveSettlementTarget(state);
+  if (target.kind !== "settlement") return;
+  const settlement = target.settlement;
 
   // Transitional compatibility for the existing P0 event/resource surface:
   // the first systemic settlement is the local campaign settlement, so its
@@ -457,15 +481,7 @@ function mirrorPrimarySettlementResources(state: WorldState, changes: StateChang
   // resource map is fully migrated. The simulation stock is authoritative for
   // this tick; the mirror prevents two visible truths from drifting apart.
   for (const [resource, value] of Object.entries(settlement.resourceStock)) {
-    const before = state.resources[resource];
-    if (before === value) continue;
-    state.resources[resource] = value;
-    changes.push({
-      type: "resourceMirror",
-      key: `resources.${resource}`,
-      before,
-      after: value
-    });
+    projectResource(state.resources, resource, value, changes);
   }
 }
 
@@ -474,7 +490,9 @@ function mirrorPrimarySettlementResources(state: WorldState, changes: StateChang
  *
  * Order is intentionally fixed and authoritative:
  * production -> population consumption -> shortage -> cohorts -> politics ->
- * faction/memory reaction -> compatibility mirror -> turn/day advance.
+ * faction/memory reaction -> compatibility mirror -> tick/day advance.
+ *
+ * `WorldState.turn` is never advanced here: it is the Player Turn.
  *
  * No AI participates and the input object is never mutated.
  */
@@ -484,20 +502,33 @@ export function runWorldTick(input: WorldState): WorldTickResult {
   }
 
   const state = structuredClone(input);
+  // Proven present by the guard above; named once so the tick bookkeeping below
+  // does not have to re-assert it at every use.
+  const simulation = state.simulation!;
   const changes: StateChange[] = [];
-  const nextTurn = state.turn + 1;
+  // The tick this run produces. Separate from `state.turn`, which is the Player
+  // Turn and belongs to the player's decision, not to the simulation.
+  const nextTick = simulation.tick + 1;
 
   const production = runProduction(state, changes);
   const consumption = consumePopulationResources(state, changes);
   const shortageSeverity = calculateShortageSeverity(state);
   const cohortReactions = reactCohorts(state, shortageSeverity, changes);
   const politicalReactions = reactPoliticalGroups(state, cohortReactions, changes);
-  const factionReaction = reactFactionAndFlags(state, shortageSeverity, nextTurn, changes);
+  const factionReaction = reactFactionAndFlags(
+    state,
+    shortageSeverity,
+    nextTick,
+    state.turn,
+    changes
+  );
   mirrorPrimarySettlementResources(state, changes);
 
-  const turnBefore = state.turn;
-  state.turn = nextTurn;
-  changes.push({ type: "turn", key: "turn", before: turnBefore, after: state.turn });
+  // The Player Turn is deliberately untouched. A tick advances the world; only
+  // a decision advances the player.
+  const tickBefore = simulation.tick;
+  simulation.tick = nextTick;
+  changes.push({ type: "tick", key: "simulation.tick", before: tickBefore, after: nextTick });
 
   const dayBefore = state.day;
   state.day += 1;
@@ -506,12 +537,13 @@ export function runWorldTick(input: WorldState): WorldTickResult {
   return {
     state,
     delta: {
-      turn: nextTurn,
-      source: `world_tick:${nextTurn}`,
+      turn: state.turn,
+      source: `world_tick:${nextTick}`,
       changes
     },
     trace: {
-      turn: nextTurn,
+      tick: nextTick,
+      playerTurn: state.turn,
       production,
       consumption,
       shortageSeverity,
