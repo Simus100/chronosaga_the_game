@@ -132,6 +132,16 @@ export interface DelayedConsequenceState {
 
 export interface SystemicSimulationState {
   schemaVersion: 1;
+  /**
+   * World Tick counter, distinct from `WorldState.turn`.
+   *
+   * `GAME_SYSTEMS_SCHEMA_v0.1` section 46 separates a Player Turn — one
+   * significant decision — from a World Tick, which advances the simulation,
+   * and states they need not be 1:1. One counter cannot represent both: when
+   * `runWorldTick` also advanced `turn`, a single player decision followed by
+   * one tick consumed two Player Turns.
+   */
+  tick: number;
   settlements: SettlementState[];
   factions: FactionState[];
   productionNodes: ProductionNodeState[];

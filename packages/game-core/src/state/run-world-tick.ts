@@ -6,6 +6,7 @@ import type {
   StateDelta,
   WorldState
 } from "@paa/game-types";
+import { projectResource, resolveSettlementTarget } from "./resource-authority.js";
 
 const CONSUMPTION_PER_1000: Readonly<ResourceMap> = {
   water: 4,
@@ -448,8 +449,9 @@ function reactFactionAndFlags(
 }
 
 function mirrorPrimarySettlementResources(state: WorldState, changes: StateChange[]): void {
-  const settlement = state.simulation?.settlements[0];
-  if (!settlement) return;
+  const target = resolveSettlementTarget(state);
+  if (target.kind !== "settlement") return;
+  const settlement = target.settlement;
 
   // Transitional compatibility for the existing P0 event/resource surface:
   // the first systemic settlement is the local campaign settlement, so its
@@ -457,15 +459,7 @@ function mirrorPrimarySettlementResources(state: WorldState, changes: StateChang
   // resource map is fully migrated. The simulation stock is authoritative for
   // this tick; the mirror prevents two visible truths from drifting apart.
   for (const [resource, value] of Object.entries(settlement.resourceStock)) {
-    const before = state.resources[resource];
-    if (before === value) continue;
-    state.resources[resource] = value;
-    changes.push({
-      type: "resourceMirror",
-      key: `resources.${resource}`,
-      before,
-      after: value
-    });
+    projectResource(state.resources, resource, value, changes);
   }
 }
 
@@ -474,7 +468,9 @@ function mirrorPrimarySettlementResources(state: WorldState, changes: StateChang
  *
  * Order is intentionally fixed and authoritative:
  * production -> population consumption -> shortage -> cohorts -> politics ->
- * faction/memory reaction -> compatibility mirror -> turn/day advance.
+ * faction/memory reaction -> compatibility mirror -> tick/day advance.
+ *
+ * `WorldState.turn` is never advanced here: it is the Player Turn.
  *
  * No AI participates and the input object is never mutated.
  */
@@ -484,20 +480,27 @@ export function runWorldTick(input: WorldState): WorldTickResult {
   }
 
   const state = structuredClone(input);
+  // Proven present by the guard above; named once so the tick bookkeeping below
+  // does not have to re-assert it at every use.
+  const simulation = state.simulation!;
   const changes: StateChange[] = [];
-  const nextTurn = state.turn + 1;
+  // The tick this run produces. Separate from `state.turn`, which is the Player
+  // Turn and belongs to the player's decision, not to the simulation.
+  const nextTick = simulation.tick + 1;
 
   const production = runProduction(state, changes);
   const consumption = consumePopulationResources(state, changes);
   const shortageSeverity = calculateShortageSeverity(state);
   const cohortReactions = reactCohorts(state, shortageSeverity, changes);
   const politicalReactions = reactPoliticalGroups(state, cohortReactions, changes);
-  const factionReaction = reactFactionAndFlags(state, shortageSeverity, nextTurn, changes);
+  const factionReaction = reactFactionAndFlags(state, shortageSeverity, nextTick, changes);
   mirrorPrimarySettlementResources(state, changes);
 
-  const turnBefore = state.turn;
-  state.turn = nextTurn;
-  changes.push({ type: "turn", key: "turn", before: turnBefore, after: state.turn });
+  // The Player Turn is deliberately untouched. A tick advances the world; only
+  // a decision advances the player.
+  const tickBefore = simulation.tick;
+  simulation.tick = nextTick;
+  changes.push({ type: "tick", key: "simulation.tick", before: tickBefore, after: nextTick });
 
   const dayBefore = state.day;
   state.day += 1;
@@ -506,12 +509,15 @@ export function runWorldTick(input: WorldState): WorldTickResult {
   return {
     state,
     delta: {
-      turn: nextTurn,
-      source: `world_tick:${nextTurn}`,
+      turn: state.turn,
+      source: `world_tick:${nextTick}`,
       changes
     },
     trace: {
-      turn: nextTurn,
+      // The tick this trace describes. Named `turn` in the M1-B contract, when
+      // the two were the same number; it has always described the simulation
+      // step, and now that they differ it carries the tick.
+      turn: nextTick,
       production,
       consumption,
       shortageSeverity,

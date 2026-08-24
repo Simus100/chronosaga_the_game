@@ -52,10 +52,13 @@ describe("M1-B deterministic world tick", () => {
     // the exact previous state for audit/replay.
     expect(initial).toEqual(untouched);
 
-    expect(result.state.turn).toBe(2);
+    // A World Tick advances the world, not the player. `turn` is the Player Turn
+    // and only a decision moves it; the simulation counts its own ticks.
+    expect(result.state.turn).toBe(1);
+    expect(result.state.simulation!.tick).toBe(1);
     expect(result.state.day).toBe(2);
-    expect(result.delta.turn).toBe(2);
-    expect(result.delta.source).toBe("world_tick:2");
+    expect(result.delta.turn).toBe(1);
+    expect(result.delta.source).toBe("world_tick:1");
 
     expect(result.trace.production).toHaveLength(1);
     expect(result.trace.production[0]!.nodeId).toBe("prod_recycler_01");

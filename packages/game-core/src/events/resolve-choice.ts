@@ -1,11 +1,22 @@
 import type { EventChoice, StateDelta, WorldState } from "@paa/game-types";
+import {
+  applyAuthoritativeResourceDelta,
+  readAuthoritativeResource
+} from "../state/resource-authority.js";
 
+/**
+ * Whether the player may take this choice.
+ *
+ * Requirements read the same authoritative source the effects write. Checking
+ * the flat projection while writing the systemic stock would let a choice be
+ * permitted by one number and applied to another.
+ */
 export function canChoose(choice: EventChoice, state: WorldState): boolean {
   const req = choice.requirements;
   if (!req) return true;
   if (req.resources) {
     for (const [key, amount] of Object.entries(req.resources)) {
-      if ((state.resources[key] ?? 0) < amount) return false;
+      if (readAuthoritativeResource(state, key) < amount) return false;
     }
   }
   if (req.flagsAll?.some(flag => !state.flags[flag])) return false;
@@ -25,10 +36,7 @@ export function resolveChoice(
 
   for (const effect of choice.effects) {
     if (effect.type === "RESOURCE_DELTA" && effect.key) {
-      const before = next.resources[effect.key] ?? 0;
-      const after = before + Number(effect.value);
-      next.resources[effect.key] = after;
-      changes.push({ type: "resource", key: effect.key, before, after });
+      applyAuthoritativeResourceDelta(next, effect.key, Number(effect.value), changes);
     }
     if (effect.type === "FLAG_SET" && effect.key) {
       const before = next.flags[effect.key];
@@ -53,8 +61,10 @@ export function resolveChoice(
     }
   }
 
+  // One significant decision is one Player Turn. The day belongs to the world
+  // and advances with the World Tick, so that a decision and the simulation
+  // step that follows it cannot both claim to have moved the calendar.
   next.turn += 1;
-  if (next.turn % 4 === 0) next.day += 1;
 
   return {
     state: next,

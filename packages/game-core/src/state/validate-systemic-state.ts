@@ -46,6 +46,11 @@ function validateShape(input: unknown): string[] {
     return errors;
   }
 
+  // Untrusted input: a save may arrive without it, or with a string.
+  if (!Number.isInteger(simulationValue.tick) || (simulationValue.tick as number) < 0) {
+    errors.push("WorldState.simulation.tick must be a non-negative integer");
+  }
+
   const settlements = requireEntityArray(simulationValue, "settlements", "settlements", errors);
   const factions = requireEntityArray(simulationValue, "factions", "factions", errors);
   requireEntityArray(simulationValue, "productionNodes", "productionNodes", errors);
