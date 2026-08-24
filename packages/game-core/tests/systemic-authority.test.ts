@@ -263,6 +263,109 @@ describe("4: one decision is one Player Turn", () => {
   });
 });
 
+describe("the trace names its two clocks correctly", () => {
+  it("reports the tick it ran and the Player Turn it ran during", () => {
+    const chosen = resolveChoice(scenario(), spendWater(-1), "player_choice").state;
+    const { trace } = runWorldTick(chosen);
+
+    expect(trace.tick).toBe(1);
+    expect(trace.playerTurn).toBe(2);
+    // A field called `turn` holding a tick is how the two got confused in the
+    // first place; the contract no longer has one.
+    expect("turn" in trace).toBe(false);
+  });
+
+  it("the two diverge as ticks accumulate inside one Player Turn", () => {
+    let state = resolveChoice(scenario(), spendWater(-1), "player_choice").state;
+    const seen: Array<{ tick: number; playerTurn: number }> = [];
+    for (let i = 0; i < 3; i += 1) {
+      const result = runWorldTick(state);
+      seen.push({ tick: result.trace.tick, playerTurn: result.trace.playerTurn });
+      state = result.state;
+    }
+    expect(seen).toEqual([
+      { tick: 1, playerTurn: 2 },
+      { tick: 2, playerTurn: 2 },
+      { tick: 3, playerTurn: 2 }
+    ]);
+  });
+});
+
+describe("a memory knows when it happened and what caused it", () => {
+  /** Drive the settlement into water shortage so the quartermaster remembers it. */
+  const starving = (): WorldState => {
+    const state = structuredClone(scenario());
+    state.simulation!.settlements[0]!.resourceStock.water = 0;
+    return state;
+  };
+
+  it("carries the Player Turn, and blames the World Tick", () => {
+    const chosen = resolveChoice(starving(), spendWater(0), "player_choice").state;
+    expect(chosen.turn).toBe(2);
+
+    const after = runWorldTick(chosen).state;
+    const quartermaster = after.party.find(character => character.role === "Quartermaster")!;
+    const memory = quartermaster.memories!.find(entry => entry.tags.includes("shortage"))!;
+
+    expect(memory).toBeDefined();
+    // The character lived through Player Turn 2 ...
+    expect(memory.turn).toBe(2);
+    // ... and it was World Tick 1 that did it to them.
+    expect(memory.source.tick).toBe(1);
+    expect(memory.source.id).toBe("world_tick_1");
+    expect(memory.source.kind).toBe("world_tick");
+  });
+
+  it("repeated shortages in one Player Turn stay distinct", () => {
+    // A memory is written when the settlement *enters* shortage, which is M1-B
+    // behaviour and unchanged here. The collision risk is a settlement that
+    // recovers and falls again inside one Player Turn: keyed by Player Turn
+    // those memories would share an id and the second would be dropped.
+    let state = resolveChoice(starving(), spendWater(0), "player_choice").state;
+    const plenty = 500;
+
+    state.simulation!.settlements[0]!.resourceStock.water = 0;
+    state = runWorldTick(state).state; // tick 1: enters shortage
+    state.simulation!.settlements[0]!.resourceStock.water = plenty;
+    state = runWorldTick(state).state; // tick 2: recovers
+    state.simulation!.settlements[0]!.resourceStock.water = 0;
+    state = runWorldTick(state).state; // tick 3: falls again
+
+    const quartermaster = state.party.find(character => character.role === "Quartermaster")!;
+    const shortages = quartermaster.memories!.filter(entry => entry.tags.includes("shortage"));
+
+    expect(shortages).toHaveLength(2);
+    expect(shortages.map(entry => entry.id)).toEqual([
+      "mem_world_tick_1_water_shortage",
+      "mem_world_tick_3_water_shortage"
+    ]);
+    expect(new Set(shortages.map(entry => entry.id)).size).toBe(2);
+
+    // Both happened during the same Player Turn ...
+    expect(shortages.map(entry => entry.turn)).toEqual([2, 2]);
+    // ... and each blames the tick that caused it.
+    expect(shortages.map(entry => entry.source.tick)).toEqual([1, 3]);
+    expect(shortages.map(entry => entry.source.id)).toEqual(["world_tick_1", "world_tick_3"]);
+
+    expect(state.turn).toBe(2);
+    expect(state.simulation!.tick).toBe(3);
+  });
+
+  it("causal source ids stay deterministic across identical runs", () => {
+    const run = (): string[] => {
+      let state = resolveChoice(starving(), spendWater(0), "player_choice").state;
+      for (let i = 0; i < 2; i += 1) {
+        state.simulation!.settlements[0]!.resourceStock.water = 0;
+        state = runWorldTick(state).state;
+      }
+      return state.party
+        .flatMap(character => character.memories ?? [])
+        .map(memory => `${memory.id}|${memory.turn}|${memory.source.id}|${memory.source.tick}`);
+    };
+    expect(run()).toEqual(run());
+  });
+});
+
 describe("5 and 6: determinism and replay", () => {
   it("repeated ticks from one state are identical", () => {
     const start = scenario();

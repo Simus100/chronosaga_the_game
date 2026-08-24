@@ -1,20 +1,30 @@
 import type { ResourceMap, SettlementState, StateChange, WorldState } from "@paa/game-types";
 
 /**
- * One authoritative source for settlement resources.
+ * One authoritative source per resource, decided by which one it is.
  *
- * The systemic campaign keeps resources in `simulation.settlements[].resourceStock`.
- * `WorldState.resources` is a flat compatibility projection of that stock, kept
- * only until the old P0 surface is fully migrated.
+ * Two kinds of resource live in a systemic campaign, and they do not share an
+ * owner:
  *
- * Before this module the two drifted apart: a player choice wrote the flat map
- * and never touched the stock, and the next world tick mirrored the stock back
- * over the flat map — silently erasing the choice. The state was not corrupt in
- * any way a schema could catch, and no test failed. It simply lost decisions.
+ * - **Settlement resources** — water, energy, food, medicine. Authority is
+ *   `simulation.settlements[].resourceStock`. `WorldState.resources` holds a
+ *   flat *projection* of them, kept only until the old P0 surface is migrated.
+ * - **Campaign resources** — credits, influence, alloys, provisions. No
+ *   settlement stocks them, so `WorldState.resources` is their authority and
+ *   projects nothing.
  *
- * So every read and every write of a settlement resource goes through here, and
- * the projection is updated as a consequence of the authoritative write rather
- * than as a second independent truth.
+ * The distinction is drawn per key, from what the settlement actually stocks,
+ * rather than from a list kept here that would drift.
+ *
+ * Before this module the settlement half drifted apart: a player choice wrote
+ * the flat map and never touched the stock, and the next world tick mirrored
+ * the stock back over the flat map — silently erasing the choice. The state was
+ * not corrupt in any way a schema could catch, and no test failed. It simply
+ * lost decisions.
+ *
+ * So every read and every write goes through here, and where a projection
+ * exists it is updated as a consequence of the authoritative write rather than
+ * as a second independent truth.
  */
 
 /** Which settlement a resource effect applies to, or why that cannot be decided. */

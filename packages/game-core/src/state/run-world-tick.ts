@@ -44,7 +44,10 @@ export interface PoliticalReactionTrace {
 }
 
 export interface WorldTickTrace {
-  turn: number;
+  /** The world simulation tick this trace describes. */
+  tick: number;
+  /** The Player Turn the tick happened during. It is not advanced by a tick. */
+  playerTurn: number;
   production: ProductionTrace[];
   consumption: ResourceMap;
   shortageSeverity: ResourceMap;
@@ -344,10 +347,21 @@ function reactPoliticalGroups(
   return result;
 }
 
+/**
+ * Record that the quartermaster lived through a water shortage.
+ *
+ * Two different clocks meet here, and calling either of them `turn` is how they
+ * got confused. A memory happened during a Player Turn — that is when the
+ * character experienced it — but it was *caused* by a specific World Tick, and
+ * several ticks may run inside one Player Turn. So the memory carries the Player
+ * Turn, its causal source carries the tick, and the id is keyed by the tick
+ * because that is what makes it unique.
+ */
 function addShortageMemory(
   state: WorldState,
   settlementId: string,
-  turn: number,
+  tick: number,
+  playerTurn: number,
   changes: StateChange[]
 ): void {
   const settlement = state.simulation?.settlements.find(item => item.id === settlementId);
@@ -356,15 +370,22 @@ function addShortageMemory(
   );
   if (!character) return;
 
-  const memoryId = `mem_world_tick_${turn}_water_shortage`;
+  // Keyed by tick, not by Player Turn: three ticks in one turn are three
+  // distinct experiences and must not collide into one memory.
+  const memoryId = `mem_world_tick_${tick}_water_shortage`;
   if (character.memories?.some(memory => memory.id === memoryId)) return;
 
   const memory: CharacterMemory = {
     id: memoryId,
     summary: `${settlement?.name ?? settlementId} ended the world tick below its target water reserve.`,
     tags: ["water", "shortage", "world_tick"],
-    turn,
-    source: { kind: "world_tick", id: `world_tick_${turn}`, tick: turn, rule: "resource_shortage" }
+    turn: playerTurn,
+    source: {
+      kind: "world_tick",
+      id: `world_tick_${tick}`,
+      tick,
+      rule: "resource_shortage"
+    }
   };
   const before = character.memories?.length ?? 0;
   character.memories = [...(character.memories ?? []), memory];
@@ -382,7 +403,8 @@ function addShortageMemory(
 function reactFactionAndFlags(
   state: WorldState,
   shortageSeverity: ResourceMap,
-  turn: number,
+  tick: number,
+  playerTurn: number,
   changes: StateChange[]
 ): boolean {
   const simulation = state.simulation!;
@@ -441,7 +463,7 @@ function reactFactionAndFlags(
     }
 
     if (waterActive && previousWaterFlag !== true) {
-      addShortageMemory(state, settlement.id, turn, changes);
+      addShortageMemory(state, settlement.id, tick, playerTurn, changes);
     }
   }
 
@@ -493,7 +515,13 @@ export function runWorldTick(input: WorldState): WorldTickResult {
   const shortageSeverity = calculateShortageSeverity(state);
   const cohortReactions = reactCohorts(state, shortageSeverity, changes);
   const politicalReactions = reactPoliticalGroups(state, cohortReactions, changes);
-  const factionReaction = reactFactionAndFlags(state, shortageSeverity, nextTick, changes);
+  const factionReaction = reactFactionAndFlags(
+    state,
+    shortageSeverity,
+    nextTick,
+    state.turn,
+    changes
+  );
   mirrorPrimarySettlementResources(state, changes);
 
   // The Player Turn is deliberately untouched. A tick advances the world; only
@@ -514,10 +542,8 @@ export function runWorldTick(input: WorldState): WorldTickResult {
       changes
     },
     trace: {
-      // The tick this trace describes. Named `turn` in the M1-B contract, when
-      // the two were the same number; it has always described the simulation
-      // step, and now that they differ it carries the tick.
-      turn: nextTick,
+      tick: nextTick,
+      playerTurn: state.turn,
       production,
       consumption,
       shortageSeverity,
