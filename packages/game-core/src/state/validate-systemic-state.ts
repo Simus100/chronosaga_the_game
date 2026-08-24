@@ -11,6 +11,43 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Every value in a numeric map must be a finite number.
+ *
+ * These maps arrive from SQLite as untrusted JSON, and every one of them is
+ * arithmetic input: a stock is subtracted from, a need is divided by, a relation
+ * is compared. A string where a number belongs turns `14 - 5` into `"145"`; a
+ * `null` becomes `0` under coercion and looks like a legitimate empty stock;
+ * `NaN` propagates through every later sum and never compares unequal to
+ * itself, so a shortage check silently stops firing.
+ *
+ * `JSON.stringify` cannot emit `NaN` or `Infinity` — it writes `null` — but a
+ * save does not have to come from `JSON.stringify`. A hand-edited file, a
+ * different writer or a future transport can carry them, and a validator that
+ * assumed otherwise would be trusting the shape of the attack it expects.
+ */
+function requireFiniteNumberMap(
+  owner: JsonRecord,
+  key: string,
+  label: string,
+  errors: string[]
+): void {
+  const value = owner[key];
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  for (const [entry, amount] of Object.entries(value)) {
+    if (typeof amount !== "number" || !Number.isFinite(amount)) {
+      errors.push(
+        `${label}.${entry} must be a finite number, got ${
+          typeof amount === "number" ? String(amount) : typeof amount
+        }`
+      );
+    }
+  }
+}
+
 function requireEntityArray(
   owner: JsonRecord,
   key: string,
@@ -39,6 +76,8 @@ function validateShape(input: unknown): string[] {
   const errors: string[] = [];
   if (!isRecord(input)) return ["WorldState must be an object"];
 
+  requireFiniteNumberMap(input, "resources", "WorldState.resources", errors);
+
   const party = requireEntityArray(input, "party", "party", errors);
   const simulationValue = input.simulation;
   if (!isRecord(simulationValue)) {
@@ -53,8 +92,13 @@ function validateShape(input: unknown): string[] {
 
   const settlements = requireEntityArray(simulationValue, "settlements", "settlements", errors);
   const factions = requireEntityArray(simulationValue, "factions", "factions", errors);
-  requireEntityArray(simulationValue, "productionNodes", "productionNodes", errors);
-  requireEntityArray(simulationValue, "populationCohorts", "populationCohorts", errors);
+  const nodes = requireEntityArray(simulationValue, "productionNodes", "productionNodes", errors);
+  const cohorts = requireEntityArray(
+    simulationValue,
+    "populationCohorts",
+    "populationCohorts",
+    errors
+  );
   const groups = requireEntityArray(simulationValue, "politicalGroups", "politicalGroups", errors);
   requireEntityArray(simulationValue, "warfareSquads", "warfareSquads", errors);
   const consequences = requireEntityArray(
@@ -85,6 +129,12 @@ function validateShape(input: unknown): string[] {
   }
 
   for (const settlement of settlements ?? []) {
+    requireFiniteNumberMap(
+      settlement,
+      "resourceStock",
+      `settlement ${String(settlement.id)}.resourceStock`,
+      errors
+    );
     for (const key of ["productionNodeIds", "cohortIds", "politicalGroupIds"] as const) {
       if (!Array.isArray(settlement[key]) || settlement[key].some(value => typeof value !== "string")) {
         errors.push(`settlement ${String(settlement.id)}.${key} must be a string array`);
@@ -93,14 +143,25 @@ function validateShape(input: unknown): string[] {
   }
 
   for (const faction of factions ?? []) {
-    if (!isRecord(faction.relations)) {
-      errors.push(`faction ${String(faction.id)}.relations must be an object`);
-    }
+    const label = `faction ${String(faction.id)}`;
+    requireFiniteNumberMap(faction, "relations", `${label}.relations`, errors);
+    requireFiniteNumberMap(faction, "resources", `${label}.resources`, errors);
   }
   for (const group of groups ?? []) {
-    if (!isRecord(group.relationships)) {
-      errors.push(`political group ${String(group.id)}.relationships must be an object`);
-    }
+    requireFiniteNumberMap(
+      group,
+      "relationships",
+      `political group ${String(group.id)}.relationships`,
+      errors
+    );
+  }
+  for (const node of nodes ?? []) {
+    const label = `production node ${String(node.id)}`;
+    requireFiniteNumberMap(node, "inputs", `${label}.inputs`, errors);
+    requireFiniteNumberMap(node, "outputs", `${label}.outputs`, errors);
+  }
+  for (const cohort of cohorts ?? []) {
+    requireFiniteNumberMap(cohort, "needs", `cohort ${String(cohort.id)}.needs`, errors);
   }
   for (const consequence of consequences ?? []) {
     if (!isRecord(consequence.source) || typeof consequence.source.id !== "string") {

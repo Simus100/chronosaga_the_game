@@ -150,6 +150,25 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
     let connection = Connection::open(&path)
         .map_err(|error| format!("Unable to open SQLite database {}: {error}", as_string(&path)))?;
 
+    initialize_schema(&connection)?;
+
+    connection
+        .execute(
+            "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [DATABASE_SCHEMA_VERSION.to_string()],
+        )
+        .map_err(|error| format!("Unable to store SQLite schema version: {error}"))?;
+
+    Ok(connection)
+}
+
+/// Create the tables, separately from opening the file.
+///
+/// Split out so the storage logic can be exercised against an in-memory
+/// database: the Tauri commands need an `AppHandle` and cannot run in a unit
+/// test, but what they actually do — the SQL — has no reason to be untestable.
+fn initialize_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -162,19 +181,15 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
                campaign_id TEXT PRIMARY KEY NOT NULL,
                payload TEXT NOT NULL,
                updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS campaign_systemic (
+               campaign_id TEXT PRIMARY KEY NOT NULL,
+               envelope_version INTEGER NOT NULL,
+               payload TEXT NOT NULL,
+               updated_at INTEGER NOT NULL
              );",
         )
-        .map_err(|error| format!("Unable to initialize SQLite schema: {error}"))?;
-
-    connection
-        .execute(
-            "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [DATABASE_SCHEMA_VERSION.to_string()],
-        )
-        .map_err(|error| format!("Unable to store SQLite schema version: {error}"))?;
-
-    Ok(connection)
+        .map_err(|error| format!("Unable to initialize SQLite schema: {error}"))
 }
 
 /// Diagnostic log for the sidecar, next to the save database.
@@ -413,6 +428,160 @@ type LocalAiRuntimeState = Arc<LocalAiRuntimeManager>;
 /// A pure read: it never advances the state machine and performs no filesystem
 /// or network access, so the UI may poll it freely. Driving the machine forward
 /// is the job of P0.3-B's background watcher.
+/// The systemic save envelope, versioned separately from the database schema.
+///
+/// Two versions travel together and answer different questions.
+/// `envelope_version` is *how these bytes are stored*: which columns exist,
+/// what the payload string means. `simulation.schemaVersion`, inside the
+/// payload, is *what the world is*. A future release could change either one
+/// without the other, and collapsing them into a single number would make one
+/// of those migrations impossible to describe.
+///
+/// The payload is the serialized `WorldState`, verbatim. Rust does not parse it
+/// and does not know its shape: `packages/game-core` owns what a valid world
+/// is, and re-implementing those rules here would create a second opinion that
+/// could disagree with the first.
+const SYSTEMIC_ENVELOPE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemicSave {
+    campaign_id: String,
+    envelope_version: u32,
+    /// Serialized `WorldState` JSON. Opaque to Rust.
+    payload: String,
+}
+
+/// What a completed save reports back.
+///
+/// Deliberately not a `SystemicSave`: echoing the payload would send megabytes
+/// back to a caller that just supplied them, and returning that field empty
+/// would be worse — a `payload` of `""` reads as "the save is empty" to anyone
+/// who does not know it is an artefact of the reply.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemicSaveReceipt {
+    campaign_id: String,
+    envelope_version: u32,
+    payload_bytes: usize,
+}
+
+/// Why a systemic load produced nothing.
+///
+/// Distinct variants because the caller must tell them apart: "no save here" is
+/// an ordinary state that offers a new game, while "the bytes are wrong" must
+/// never silently become one. A corrupted save that quietly turned into a fresh
+/// world would destroy a campaign and report success.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+enum SystemicLoad {
+    /// No save exists for this campaign.
+    NotFound,
+    /// Bytes retrieved. The caller must still validate them through game-core.
+    Found { save: SystemicSave },
+    /// The row exists but this build cannot read its envelope.
+    IncompatibleEnvelope { stored_version: u32, supported_version: u32 },
+}
+
+/// Write one campaign's systemic payload. Pure storage, no validation.
+///
+/// Keyed by campaign id, so campaign A's save replaces only campaign A's.
+fn store_systemic(
+    connection: &Connection,
+    campaign_id: &str,
+    payload: &str,
+    updated_at: i64,
+) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT INTO campaign_systemic(campaign_id, envelope_version, payload, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(campaign_id) DO UPDATE SET
+               envelope_version = excluded.envelope_version,
+               payload = excluded.payload,
+               updated_at = excluded.updated_at",
+            params![campaign_id, SYSTEMIC_ENVELOPE_VERSION, payload, updated_at],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("Unable to save systemic campaign: {error}"))
+}
+
+/// Read one campaign's systemic payload back, without judging it.
+fn fetch_systemic(connection: &Connection, campaign_id: &str) -> Result<SystemicLoad, String> {
+    let row: Option<(u32, String)> = connection
+        .query_row(
+            "SELECT envelope_version, payload FROM campaign_systemic WHERE campaign_id = ?1",
+            [campaign_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("Unable to load systemic campaign: {error}"))?;
+
+    let Some((envelope_version, payload)) = row else {
+        return Ok(SystemicLoad::NotFound);
+    };
+
+    if envelope_version != SYSTEMIC_ENVELOPE_VERSION {
+        return Ok(SystemicLoad::IncompatibleEnvelope {
+            stored_version: envelope_version,
+            supported_version: SYSTEMIC_ENVELOPE_VERSION,
+        });
+    }
+
+    Ok(SystemicLoad::Found {
+        save: SystemicSave {
+            campaign_id: campaign_id.to_string(),
+            envelope_version,
+            payload,
+        },
+    })
+}
+
+/// Store one campaign's systemic world.
+///
+/// Keyed by campaign id, so saving campaign A replaces only campaign A. The
+/// payload is stored as given; validity is the caller's proof, established
+/// before this is ever called.
+#[tauri::command]
+fn save_systemic_campaign(
+    app: AppHandle,
+    campaign_id: String,
+    payload: String,
+) -> Result<SystemicSaveReceipt, String> {
+    if campaign_id.trim().is_empty() {
+        return Err("A systemic save needs a campaign id".to_string());
+    }
+    if payload.trim().is_empty() {
+        return Err("Refusing to store an empty systemic payload".to_string());
+    }
+
+    let connection = open_database(&app)?;
+    let updated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let payload_bytes = payload.len();
+    store_systemic(&connection, &campaign_id, &payload, updated_at)?;
+
+    Ok(SystemicSaveReceipt {
+        campaign_id,
+        envelope_version: SYSTEMIC_ENVELOPE_VERSION,
+        payload_bytes,
+    })
+}
+
+/// Retrieve one campaign's stored systemic world, without judging it.
+///
+/// Returns the bytes and says whether they were there. Whether they describe a
+/// usable world is decided by `loadSystemicWorldState` in game-core, which is
+/// the only place that knows.
+#[tauri::command]
+fn load_systemic_campaign(app: AppHandle, campaign_id: String) -> Result<SystemicLoad, String> {
+    let connection = open_database(&app)?;
+    fetch_systemic(&connection, &campaign_id)
+}
+
 #[tauri::command]
 fn get_local_ai_runtime_status(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRuntimeSnapshot {
     runtime.snapshot()
@@ -1000,6 +1169,8 @@ fn main() {
             get_database_status,
             save_smoke_campaign,
             load_smoke_campaign,
+            save_systemic_campaign,
+            load_systemic_campaign,
             get_local_ai_runtime_status,
             start_local_ai_runtime,
             stop_local_ai_runtime,
@@ -1036,4 +1207,175 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod systemic_persistence_tests {
+    use super::*;
+
+    /// A database with the real schema, in memory.
+    fn database() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        initialize_schema(&connection).expect("schema");
+        connection
+    }
+
+    fn payload_of(load: &SystemicLoad) -> &str {
+        match load {
+            SystemicLoad::Found { save } => &save.payload,
+            other => panic!("expected a stored save, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stored_payload_comes_back_byte_for_byte() {
+        // Rust transports; it must not reshape. A payload that came back
+        // re-serialised would silently change the world game-core validates.
+        let db = database();
+        let payload = r#"{"campaignId":"c1","nested":{"water":14.5},"text":"acqua è 14"}"#;
+        store_systemic(&db, "c1", payload, 100).expect("store");
+
+        let loaded = fetch_systemic(&db, "c1").expect("fetch");
+        assert_eq!(payload_of(&loaded), payload);
+    }
+
+    #[test]
+    fn an_absent_campaign_is_not_found_rather_than_an_error() {
+        // 26 and the "never a new game" rule: absence is an ordinary answer,
+        // and it is not the same answer as failure.
+        let db = database();
+        assert!(matches!(
+            fetch_systemic(&db, "never_saved").expect("fetch"),
+            SystemicLoad::NotFound
+        ));
+    }
+
+    #[test]
+    fn one_campaign_cannot_return_another_campaigns_save() {
+        // 26. Keyed storage, proven rather than assumed.
+        let db = database();
+        store_systemic(&db, "alpha", r#"{"id":"alpha"}"#, 1).expect("alpha");
+        store_systemic(&db, "beta", r#"{"id":"beta"}"#, 2).expect("beta");
+
+        assert_eq!(payload_of(&fetch_systemic(&db, "alpha").unwrap()), r#"{"id":"alpha"}"#);
+        assert_eq!(payload_of(&fetch_systemic(&db, "beta").unwrap()), r#"{"id":"beta"}"#);
+        assert!(matches!(
+            fetch_systemic(&db, "gamma").unwrap(),
+            SystemicLoad::NotFound
+        ));
+    }
+
+    #[test]
+    fn saving_one_campaign_leaves_the_others_untouched() {
+        let db = database();
+        store_systemic(&db, "alpha", r#"{"turn":1}"#, 1).expect("alpha");
+        store_systemic(&db, "beta", r#"{"turn":1}"#, 1).expect("beta");
+
+        store_systemic(&db, "alpha", r#"{"turn":9}"#, 2).expect("alpha again");
+
+        assert_eq!(payload_of(&fetch_systemic(&db, "alpha").unwrap()), r#"{"turn":9}"#);
+        assert_eq!(payload_of(&fetch_systemic(&db, "beta").unwrap()), r#"{"turn":1}"#);
+    }
+
+    #[test]
+    fn re_saving_replaces_rather_than_accumulating() {
+        let db = database();
+        for turn in 1..=5 {
+            store_systemic(&db, "c1", &format!(r#"{{"turn":{turn}}}"#), turn).expect("store");
+        }
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM campaign_systemic", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(rows, 1, "one campaign is one row");
+        assert_eq!(payload_of(&fetch_systemic(&db, "c1").unwrap()), r#"{"turn":5}"#);
+    }
+
+    #[test]
+    fn an_envelope_this_build_cannot_read_is_named_as_such() {
+        // Not "not found" and not a parse error: the row is there and this
+        // build does not understand how it is stored. Collapsing that into
+        // either of the others would either lose a campaign or invent one.
+        let db = database();
+        db.execute(
+            "INSERT INTO campaign_systemic(campaign_id, envelope_version, payload, updated_at)
+             VALUES ('future', 99, '{}', 1)",
+            [],
+        )
+        .expect("insert");
+
+        match fetch_systemic(&db, "future").expect("fetch") {
+            SystemicLoad::IncompatibleEnvelope { stored_version, supported_version } => {
+                assert_eq!(stored_version, 99);
+                assert_eq!(supported_version, SYSTEMIC_ENVELOPE_VERSION);
+            }
+            other => panic!("expected an incompatible envelope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn systemic_and_smoke_storage_do_not_share_a_table() {
+        // 24 and 13: old P0 smoke rows must never be read as systemic state,
+        // and a systemic save must not disturb them.
+        let db = database();
+        db.execute(
+            "INSERT INTO campaign_smoke(campaign_id, payload, updated_at)
+             VALUES ('shared_id', '{\"seed\":1,\"turn\":3}', 1)",
+            [],
+        )
+        .expect("smoke row");
+
+        // The same id, systemic side: absent, because they are separate stores.
+        assert!(matches!(
+            fetch_systemic(&db, "shared_id").expect("fetch"),
+            SystemicLoad::NotFound
+        ));
+
+        store_systemic(&db, "shared_id", r#"{"systemic":true}"#, 2).expect("store");
+
+        // Both survive, neither is confused for the other.
+        let smoke: String = db
+            .query_row(
+                "SELECT payload FROM campaign_smoke WHERE campaign_id = 'shared_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("smoke still there");
+        assert!(smoke.contains("\"turn\":3"));
+        assert_eq!(
+            payload_of(&fetch_systemic(&db, "shared_id").unwrap()),
+            r#"{"systemic":true}"#
+        );
+    }
+
+    #[test]
+    fn rust_stores_bytes_and_does_not_validate_worlds() {
+        // The division that keeps one definition of a valid world. Rust accepts
+        // a payload it cannot interpret; game-core is what refuses it. Teaching
+        // Rust the rules would create a second opinion that could disagree.
+        let db = database();
+        store_systemic(&db, "c1", "this is not even json", 1).expect("stored anyway");
+        assert_eq!(payload_of(&fetch_systemic(&db, "c1").unwrap()), "this is not even json");
+
+        // Scanned up to this test module, so the needles below do not match
+        // themselves. No newline in the marker: this file is checked out CRLF
+        // on Windows.
+        let source = include_str!("main.rs");
+        let production = source
+            .find(concat!("mod systemic_persistence_", "tests"))
+            .map(|at| &source[..at])
+            .expect("the test module marks the end of production code");
+
+        for rule in [
+            concat!("resource", "Stock"),
+            concat!("simulation.", "tick"),
+            concat!("validate", "Systemic"),
+            concat!("world", "Pressure"),
+            concat!("delayed", "Consequences"),
+        ] {
+            assert!(
+                !production.contains(rule),
+                "main.rs mentions {rule}: simulation validation belongs to game-core"
+            );
+        }
+    }
 }
