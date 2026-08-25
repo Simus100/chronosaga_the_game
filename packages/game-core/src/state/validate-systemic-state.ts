@@ -441,40 +441,83 @@ function range(value: number, min: number, max: number, label: string, errors: s
   }
 }
 
-function validateEffect(effect: EventEffect, characterIds: Set<string>, label: string, errors: string[]): void {
-  const allowed = new Set(["RESOURCE_DELTA", "FLAG_SET", "PRESSURE_DELTA", "CHARACTER_STRESS"]);
-  if (!allowed.has(effect.type)) {
-    errors.push(`${label} has unsupported effect type '${String(effect.type)}'`);
+/**
+ * Validate one effect that arrived from a save, without trusting its shape.
+ *
+ * The parameter is `unknown` on purpose. It used to be `EventEffect`, which is
+ * a claim about a value read out of a file — and the claim was wrong often
+ * enough to matter: `effects: [null]` threw on `effect.type`, and a numeric
+ * `key` threw on `.trim()`. A validator that throws is worse than one that
+ * misses something, because the caller was promised a list of problems and
+ * gets an exception from three layers down instead.
+ *
+ * So every field is proven before it is read, in the order the union requires:
+ * object, then discriminant, then the fields that discriminant selects.
+ */
+function validateEffect(
+  effect: unknown,
+  characterIds: Set<string>,
+  label: string,
+  errors: string[]
+): void {
+  if (!isRecord(effect)) {
+    errors.push(`${label} must be an object, got ${effect === null ? "null" : typeof effect}`);
     return;
   }
-  if ((effect.type === "RESOURCE_DELTA" || effect.type === "FLAG_SET") && !effect.key?.trim()) {
-    errors.push(`${label} ${effect.type} requires key`);
+
+  const allowed = ["RESOURCE_DELTA", "FLAG_SET", "PRESSURE_DELTA", "CHARACTER_STRESS"];
+  const type = effect.type;
+  if (typeof type !== "string" || !allowed.includes(type)) {
+    errors.push(`${label} has unsupported effect type '${String(type)}'`);
+    return;
   }
-  // A flag may legitimately be a number, and then it must be a usable one. A
-  // NaN flag compares false against everything, including itself, so an event
-  // gated on it simply stops appearing and nothing reports why.
-  if (
-    effect.type === "FLAG_SET" &&
-    typeof effect.value === "number" &&
-    !Number.isFinite(effect.value)
-  ) {
-    errors.push(`${label} FLAG_SET value must be a finite number, got ${String(effect.value)}`);
+
+  // `key` is required by two of the four, and must be a usable string before
+  // anything asks whether it is blank.
+  if (type === "RESOURCE_DELTA" || type === "FLAG_SET") {
+    // Absent and wrongly-typed are different mistakes and read differently.
+    // "requires key" is the long-standing message for a missing one; a key that
+    // is present but is a number needs to say so, and must never reach `.trim`.
+    if (effect.key === undefined || (typeof effect.key === "string" && effect.key.trim() === "")) {
+      errors.push(`${label} ${type} requires key`);
+    } else if (typeof effect.key !== "string") {
+      errors.push(`${label} ${type} requires a string key, got ${typeof effect.key}`);
+    }
   }
-  if (effect.type === "CHARACTER_STRESS") {
-    if (!effect.targetId?.trim()) {
+
+  if (type === "CHARACTER_STRESS") {
+    if (
+      effect.targetId === undefined ||
+      (typeof effect.targetId === "string" && effect.targetId.trim() === "")
+    ) {
       errors.push(`${label} CHARACTER_STRESS requires targetId`);
+    } else if (typeof effect.targetId !== "string") {
+      errors.push(`${label} CHARACTER_STRESS requires a string targetId, got ${typeof effect.targetId}`);
     } else if (!characterIds.has(effect.targetId)) {
       errors.push(`${label} references unknown character '${effect.targetId}'`);
     }
   }
-  if (
-    (effect.type === "RESOURCE_DELTA" || effect.type === "PRESSURE_DELTA" || effect.type === "CHARACTER_STRESS") &&
-    (typeof effect.value !== "number" || !Number.isFinite(effect.value))
-  ) {
-    errors.push(`${label} ${effect.type} requires finite numeric value`);
+
+  // The value, per the discriminant that selects it.
+  if (type === "RESOURCE_DELTA" || type === "PRESSURE_DELTA" || type === "CHARACTER_STRESS") {
+    if (typeof effect.value !== "number" || !Number.isFinite(effect.value)) {
+      errors.push(`${label} ${type} requires finite numeric value`);
+    }
+    return;
   }
-  if (effect.type === "FLAG_SET" && !["string", "number", "boolean"].includes(typeof effect.value)) {
+
+  // FLAG_SET carries a string, a boolean or a number — and if a number, one
+  // that can be compared. A NaN flag is false against everything, itself
+  // included, so an event gated on it simply stops appearing and nothing
+  // reports why.
+  const value = effect.value;
+  const kind = typeof value;
+  if (kind !== "string" && kind !== "number" && kind !== "boolean") {
     errors.push(`${label} FLAG_SET requires string, number or boolean value`);
+    return;
+  }
+  if (kind === "number" && !Number.isFinite(value)) {
+    errors.push(`${label} FLAG_SET value must be a finite number, got ${String(value)}`);
   }
 }
 

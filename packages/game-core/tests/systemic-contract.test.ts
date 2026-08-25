@@ -221,6 +221,85 @@ describe("every systemic entity is checked, not only its id", () => {
   });
 });
 
+describe("a malformed effect is reported, never thrown", () => {
+  /** Put `effects` into an otherwise valid world and validate it. */
+  const withEffects = (effects: unknown) => {
+    const world = JSON.parse(JSON.stringify(scenario())) as Record<string, any>;
+    world.simulation.delayedConsequences[0].effects = effects;
+    return world;
+  };
+
+  const hostile: Array<[string, unknown]> = [
+    ["[null]", [null]],
+    ["[undefined]", [undefined]],
+    ["[42]", [42]],
+    ['["x"]', ["x"]],
+    ["[[]]", [[]]],
+    ["[{}]", [{}]],
+    ["[{type:null}]", [{ type: null }]],
+    ["[{type:7}]", [{ type: 7 }]],
+    ["RESOURCE_DELTA key 123", [{ type: "RESOURCE_DELTA", key: 123, value: 1 }]],
+    ["FLAG_SET key []", [{ type: "FLAG_SET", key: [], value: true }]],
+    ["FLAG_SET key {}", [{ type: "FLAG_SET", key: {}, value: true }]],
+    ["CHARACTER_STRESS targetId 123", [{ type: "CHARACTER_STRESS", targetId: 123, value: 1 }]],
+    ["CHARACTER_STRESS targetId {}", [{ type: "CHARACTER_STRESS", targetId: {}, value: 1 }]],
+    ["RESOURCE_DELTA value string", [{ type: "RESOURCE_DELTA", key: "water", value: "-1" }]],
+    ["FLAG_SET value object", [{ type: "FLAG_SET", key: "f", value: {} }]]
+  ];
+
+  it("none of them throw", () => {
+    // A validator that throws is worse than one that misses something: the
+    // caller was promised a list of problems and gets an exception from three
+    // layers down instead. `effects: [null]` used to throw on `.type`, and a
+    // numeric key on `.trim()`.
+    for (const [label, effects] of hostile) {
+      expect(() => validateSystemicWorldState(withEffects(effects)), label).not.toThrow();
+    }
+  });
+
+  it("all of them are refused, with an error naming the effect", () => {
+    for (const [label, effects] of hostile) {
+      const result = validateSystemicWorldState(withEffects(effects));
+      expect(result.ok, `${label} was accepted`).toBe(false);
+      expect(
+        result.errors.some(error => error.includes("effect[0]")),
+        `${label}: ${result.errors.join(" | ")}`
+      ).toBe(true);
+    }
+  });
+
+  it("and the whole load boundary stays a result, not an exception", () => {
+    for (const [label, effects] of hostile) {
+      const raw = JSON.stringify(withEffects(effects));
+      expect(() => loadSystemicWorldState(raw, scenario().campaignId), label).not.toThrow();
+      const result = loadSystemicWorldState(raw, scenario().campaignId);
+      expect(result.ok, label).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("invalid_world_state");
+    }
+  });
+
+  it("a missing key still reads as 'requires key', as it always did", () => {
+    // Absent and wrongly-typed are different mistakes; the long-standing
+    // message for the first one is not collateral damage of fixing the second.
+    const result = validateSystemicWorldState(
+      withEffects([{ type: "RESOURCE_DELTA", value: -1 }])
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors.some(error => error.includes("requires key"))).toBe(true);
+  });
+
+  it("legitimate effects still pass", () => {
+    const valid = [
+      { type: "RESOURCE_DELTA", key: "water", value: -2 },
+      { type: "FLAG_SET", key: "debt", value: true },
+      { type: "FLAG_SET", key: "count", value: 3 },
+      { type: "FLAG_SET", key: "note", value: "text" },
+      { type: "PRESSURE_DELTA", value: 1 }
+    ];
+    expect(validateSystemicWorldState(withEffects(valid)).ok).toBe(true);
+  });
+});
+
 describe("saving derives the key from the world, and loading checks it", () => {
   it("the campaign id comes from the validated state, not from the caller", () => {
     // The storage command takes an id and a payload independently; nothing
@@ -245,6 +324,22 @@ describe("saving derives the key from the world, and loading checks it", () => {
     if (!saved.ok) expect(saved.errors.some(error => error.includes("resourceStock.water"))).toBe(true);
   });
 
+  it("the serializer honours its result contract even when stringify fails", () => {
+    // A validated world has no reason to be unserialisable, but "no reason to"
+    // is not a guarantee, and the contract is a union rather than an exception.
+    const world = scenario() as unknown as Record<string, any>;
+    const cyclic = structuredClone(world);
+    cyclic.extra = {};
+    cyclic.extra.self = cyclic.extra;
+
+    expect(() => serializeSystemicWorldState(cyclic)).not.toThrow();
+    const result = serializeSystemicWorldState(cyclic);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some(error => error.includes("could not be serialised"))).toBe(true);
+    }
+  });
+
   it("a divergent projection is refused at save time too", () => {
     const world = JSON.parse(JSON.stringify(scenario())) as Record<string, any>;
     world.resources.water = 999;
@@ -265,7 +360,7 @@ describe("saving derives the key from the world, and loading checks it", () => {
     }
   });
 
-  it("the matching key loads normally, and omitting it keeps the old behaviour", () => {
+  it("the matching key loads normally", () => {
     const state = scenario();
     const saved = serializeSystemicWorldState(state);
     if (!saved.ok) throw new Error("save failed");
@@ -273,7 +368,23 @@ describe("saving derives the key from the world, and loading checks it", () => {
     const right = loadSystemicWorldState(saved.payload, saved.campaignId);
     expect(right.ok).toBe(true);
     if (right.ok) expect(right.state).toEqual(state);
+  });
 
-    expect(loadSystemicWorldState(saved.payload).ok).toBe(true);
+  it("the identity check cannot be skipped", () => {
+    // It was optional once. An optional safety check is one the careless call
+    // site skips, and that is the call site loading somebody's campaign.
+    const saved = serializeSystemicWorldState(scenario());
+    if (!saved.ok) throw new Error("save failed");
+
+    for (const missing of ["", "   "]) {
+      const result = loadSystemicWorldState(saved.payload, missing);
+      expect(result.ok, `accepted ${JSON.stringify(missing)}`).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("campaign_identity_mismatch");
+    }
+
+    // The stronger proof is not in this file: `expectedCampaignId` is a
+    // required parameter, so `pnpm typecheck` refuses any call that omits it.
+    // No amount of carelessness at a call site can skip the check, because the
+    // code would not compile — which is why there is nothing to assert here.
   });
 });

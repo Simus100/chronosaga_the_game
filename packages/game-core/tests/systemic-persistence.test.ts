@@ -40,16 +40,19 @@ function populated(): WorldState {
 
 const store = (state: WorldState): string => JSON.stringify(state);
 
+/** The id every fixture in this file is filed under. */
+const CAMPAIGN = createSystemicScenario(7419).campaignId;
+
 /** Load, or fail the test with the reason it refused. */
-function loaded(raw: string): WorldState {
-  const result = loadSystemicWorldState(raw);
+function loaded(raw: string, campaignId = CAMPAIGN): WorldState {
+  const result = loadSystemicWorldState(raw, campaignId);
   if (!result.ok) throw new Error(`refused as ${result.reason}: ${result.errors.join("; ")}`);
   return result.state;
 }
 
 /** The refusal, or fail the test because it was accepted. */
-function refused(raw: string): { reason: string; errors: string[] } {
-  const result = loadSystemicWorldState(raw);
+function refused(raw: string, campaignId = CAMPAIGN): { reason: string; errors: string[] } {
+  const result = loadSystemicWorldState(raw, campaignId);
   if (result.ok) throw new Error("expected a refusal, the save was accepted");
   return { reason: result.reason, errors: result.errors };
 }
@@ -63,9 +66,9 @@ describe("1, 2: the save round-trips through the untrusted boundary", () => {
   it("the annotation is earned, not assumed", () => {
     // `JSON.parse(raw) as WorldState` is exactly what this replaces: the value
     // is `unknown` until every check has passed.
-    const result = loadSystemicWorldState(store(populated()));
+    const result = loadSystemicWorldState(store(populated()), CAMPAIGN);
     expect(result.ok).toBe(true);
-    const empty = loadSystemicWorldState("{}");
+    const empty = loadSystemicWorldState("{}", CAMPAIGN);
     expect(empty.ok).toBe(false);
     if (!empty.ok) expect(empty.reason).toBe("invalid_world_state");
   });
@@ -74,7 +77,7 @@ describe("1, 2: the save round-trips through the untrusted boundary", () => {
 describe("3, 4, 5: unreadable or incomplete saves are refused by name", () => {
   it("malformed JSON is not an invalid world, it is not JSON", () => {
     for (const raw of ["", "{", "not json", "[1,2,3", '{"a":']) {
-      const result = loadSystemicWorldState(raw);
+      const result = loadSystemicWorldState(raw, CAMPAIGN);
       expect(result.ok, `accepted ${JSON.stringify(raw)}`).toBe(false);
       if (!result.ok && raw !== "[1,2,3") expect(result.reason).toBe("malformed_json");
     }
@@ -140,7 +143,7 @@ describe("6, 7, 8: numeric maps are arithmetic input, and are checked as such", 
     for (const poison of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
       const world = JSON.parse(store(populated())) as Record<string, any>;
       world.simulation.settlements[0].resourceStock.water = poison;
-      const result = loadSystemicWorldState(JSON.stringify(world));
+      const result = loadSystemicWorldState(JSON.stringify(world), CAMPAIGN);
       // stringify turns these into null; either way the boundary must refuse.
       expect(result.ok).toBe(false);
 
@@ -306,7 +309,7 @@ describe("25: a corrupted save never becomes a fresh world", () => {
       JSON.stringify({ ...fresh, simulation: null }),
       JSON.stringify({ ...fresh, resources: { water: "14" } })
     ]) {
-      const result = loadSystemicWorldState(raw);
+      const result = loadSystemicWorldState(raw, CAMPAIGN);
       expect(result.ok, `accepted ${raw.slice(0, 30)}`).toBe(false);
       // No branch of the failure carries a state at all: there is nothing a
       // caller could mistake for a playable world. The union enforces it — the

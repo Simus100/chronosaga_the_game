@@ -99,21 +99,49 @@ export function serializeSystemicWorldState(input: unknown): SystemicSaveResult 
   const divergent = projectionProblems(state);
   if (divergent.length > 0) return { ok: false, errors: divergent };
 
-  return {
-    ok: true,
-    campaignId: state.campaignId,
-    payload: JSON.stringify(state)
-  };
+  // The contract is a result union, so it has to hold even here. A validated
+  // world has no reason to be unserialisable, but "no reason to" is not a
+  // guarantee: an extra non-schema property carrying a cycle, or a `toJSON`
+  // that throws, would turn a save into an exception from inside a function
+  // whose whole point is to report failures as values.
+  let payload: string;
+  try {
+    payload = JSON.stringify(state);
+  } catch (error) {
+    return {
+      ok: false,
+      errors: [`the validated world could not be serialised: ${(error as Error).message}`]
+    };
+  }
+
+  return { ok: true, campaignId: state.campaignId, payload };
 }
 
 /**
- * Turn stored JSON text into a trusted `WorldState`, or say precisely why not.
+ * Turn a stored save into a trusted `WorldState`, or say precisely why not.
  *
  * Takes the raw text rather than a parsed value on purpose: parsing is where
  * malformed bytes announce themselves, and doing it here means the caller
  * cannot accidentally hand on a half-parsed object.
+ *
+ * `expectedCampaignId` is required, not optional. It was optional once, and an
+ * optional safety check is a safety check that the one careless call site will
+ * skip — which is the call site that matters, because it is the one loading
+ * somebody's campaign. The key a row was filed under and the campaign inside it
+ * must agree, and there is no persisted-load path that may decline to ask.
  */
-export function loadSystemicWorldState(raw: string, expectedCampaignId?: string): SystemicLoadResult {
+export function loadSystemicWorldState(
+  raw: string,
+  expectedCampaignId: string
+): SystemicLoadResult {
+  if (typeof expectedCampaignId !== "string" || expectedCampaignId.trim() === "") {
+    return {
+      ok: false,
+      reason: "campaign_identity_mismatch",
+      errors: ["a stored save must be loaded under a non-empty campaign id"]
+    };
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -143,7 +171,7 @@ export function loadSystemicWorldState(raw: string, expectedCampaignId?: string)
   // neither is used. Rust cannot make this check: it never parses the payload,
   // and teaching it to would give the project two opinions about what a world
   // is.
-  if (expectedCampaignId !== undefined && state.campaignId !== expectedCampaignId) {
+  if (state.campaignId !== expectedCampaignId) {
     return {
       ok: false,
       reason: "campaign_identity_mismatch",

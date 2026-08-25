@@ -178,31 +178,14 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
 /// future version is an error, not a number to overwrite — this build cannot
 /// know what it would be agreeing to.
 fn migrate_database(connection: &Connection) -> Result<u32, String> {
-    // Tables first: `metadata` must exist before it can be read, and every
-    // statement is `IF NOT EXISTS`, so this is also the v1 -> v2 step. A v1
-    // file already has `metadata` and `campaign_smoke`; it gains
-    // `campaign_systemic` here and keeps its rows untouched.
-    initialize_schema(connection)?;
+    // Read before writing. The previous order ran the schema DDL first and
+    // asked the version afterwards, which meant an old build could add tables
+    // to a database written by a newer one and only then refuse it. `CREATE
+    // TABLE IF NOT EXISTS` is still a write, and a refusal that has already
+    // modified the file is not a refusal.
+    let stored = stored_schema_version(connection)?;
 
-    let stored: Option<String> = connection
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| format!("Unable to read SQLite schema version: {error}"))?;
-
-    let current: Option<u32> = match stored {
-        None => None,
-        Some(text) => Some(
-            text.trim()
-                .parse()
-                .map_err(|_| format!("SQLite schema version '{text}' is not a number"))?,
-        ),
-    };
-
-    if let Some(version) = current {
+    if let Some(version) = stored {
         if version > DATABASE_SCHEMA_VERSION {
             return Err(format!(
                 "This save database was written by a newer version of Chronosaga \
@@ -211,10 +194,15 @@ fn migrate_database(connection: &Connection) -> Result<u32, String> {
             ));
         }
         if version == DATABASE_SCHEMA_VERSION {
+            // Already current. Nothing to create, nothing to rewrite.
             return Ok(version);
         }
-        // Older and known: the tables above have already brought it forward.
     }
+
+    // Fresh, or an older known version. Both are brought forward by the same
+    // `IF NOT EXISTS` statements: a v1 file keeps `metadata` and
+    // `campaign_smoke` exactly as they are and gains `campaign_systemic`.
+    initialize_schema(connection)?;
 
     connection
         .execute(
@@ -225,6 +213,45 @@ fn migrate_database(connection: &Connection) -> Result<u32, String> {
         .map_err(|error| format!("Unable to store SQLite schema version: {error}"))?;
 
     Ok(DATABASE_SCHEMA_VERSION)
+}
+
+/// The version a database declares, or `None` when it has never declared one.
+///
+/// A file with no `metadata` table is a fresh database, not a broken one: the
+/// missing-table error is the answer, not a failure. Anything else — an
+/// unreadable file, a version that is not a number — is reported, because
+/// guessing at that point is how a database gets opened under the wrong
+/// assumptions.
+fn stored_schema_version(connection: &Connection) -> Result<Option<u32>, String> {
+    let exists: Option<String> = connection
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'metadata'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Unable to inspect the save database: {error}"))?;
+    if exists.is_none() {
+        return Ok(None);
+    }
+
+    let stored: Option<String> = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Unable to read SQLite schema version: {error}"))?;
+
+    match stored {
+        None => Ok(None),
+        Some(text) => text
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(|_| format!("SQLite schema version '{text}' is not a number")),
+    }
 }
 
 /// Create the tables, separately from opening the file.
@@ -1472,28 +1499,54 @@ mod systemic_persistence_tests {
     }
 
     #[test]
-    fn a_database_from_a_newer_build_is_refused_rather_than_relabelled() {
-        // The dangerous case. Overwriting the version would open a file this
-        // build does not understand while claiming it does, and whatever the
-        // newer build had added would be read with the wrong assumptions.
+    fn a_database_from_a_newer_build_is_refused_without_being_touched() {
+        // The dangerous case, and the one the first version of this test
+        // missed. It is not enough to check that the version survives: an old
+        // build must not modify the file at all before refusing it, and
+        // `CREATE TABLE IF NOT EXISTS` is a modification.
+        //
+        // So the fixture deliberately lacks `campaign_systemic`. If the schema
+        // DDL runs before the version is read, the table appears — and a
+        // database written by a newer build has been altered by one that
+        // cannot read it.
         let db = Connection::open_in_memory().expect("db");
-        migrate_database(&db).expect("bring to current");
-        db.execute(
-            "UPDATE metadata SET value = '99' WHERE key = 'schema_version'",
-            [],
+        db.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             CREATE TABLE future_marker (note TEXT NOT NULL);
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '99');
+             INSERT INTO future_marker(note) VALUES ('written by a later build');",
         )
-        .expect("pretend the future wrote it");
+        .expect("future database");
 
         let error = migrate_database(&db).expect_err("must refuse");
         assert!(error.contains("newer version"), "{error}");
         assert!(error.contains("99"), "{error}");
         assert!(error.contains("Refusing to open"), "{error}");
 
-        // And it did not quietly rewrite the version on its way out.
+        // The declared version is untouched.
         let still: String = db
             .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
             .expect("version");
         assert_eq!(still, "99");
+
+        // The newer build's own data is untouched.
+        let marker: String = db
+            .query_row("SELECT note FROM future_marker", [], |row| row.get(0))
+            .expect("marker");
+        assert_eq!(marker, "written by a later build");
+
+        // And nothing of ours was created inside it.
+        for table in ["campaign_systemic", "campaign_smoke"] {
+            let created: Option<String> = db
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .optional()
+                .expect("inspect");
+            assert!(created.is_none(), "{table} was created inside a future database");
+        }
     }
 
     #[test]
