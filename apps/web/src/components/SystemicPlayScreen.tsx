@@ -16,6 +16,7 @@ import {
   type NarrationSource
 } from "../gameplay/narration";
 import { tauriPersistence, type SystemicPersistence } from "../platform/persistence";
+import { createPersistenceLock, type PersistenceLock } from "../gameplay/persistence-lock";
 
 /**
  * The first playable systemic screen.
@@ -50,9 +51,21 @@ export function SystemicPlayScreen({
   const [session, setSession] = useState<GameplaySession | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [lines, setLines] = useState<Record<string, string>>({});
+  const [ioBusy, setIoBusy] = useState(false);
   const mounted = useRef(true);
 
   useEffect(() => () => { mounted.current = false; }, []);
+
+  // One lock for the lifetime of the screen. `ioBusy` is only the rendered
+  // shadow of it: the lock itself answers immediately, before any re-render,
+  // which is what a second click in the same frame actually meets.
+  const lock = useRef<PersistenceLock | null>(null);
+  if (lock.current === null) {
+    lock.current = createPersistenceLock(busy => {
+      if (mounted.current) setIoBusy(busy);
+    });
+  }
+  const io = lock.current;
 
   /** Narrate the newest entry, after the authoritative result already exists. */
   const narrateNewest = useCallback(
@@ -76,59 +89,72 @@ export function SystemicPlayScreen({
   );
 
   const startNew = useCallback(() => {
-    const next = newSystemicGame();
-    setSession(next);
-    setLines({});
-    setStatus({ kind: "ok", message: "Nuova campagna sistemica." });
-  }, []);
+    io.protect(() => {
+      const next = newSystemicGame();
+      setSession(next);
+      setLines({});
+      setStatus({ kind: "ok", message: "Nuova campagna sistemica." });
+    });
+  }, [io]);
 
   const choose = useCallback(
     (choiceId: string) => {
       if (!session) return;
-      try {
-        commit(playChoice(session, choiceId), "Scelta risolta.");
-      } catch (error) {
-        setStatus({ kind: "error", message: (error as Error).message });
-      }
+      io.protect(() => {
+        try {
+          commit(playChoice(session, choiceId), "Scelta risolta.");
+        } catch (error) {
+          setStatus({ kind: "error", message: (error as Error).message });
+        }
+      });
     },
-    [session, commit]
+    [session, commit, io]
   );
 
   const tick = useCallback(() => {
     if (!session) return;
-    commit(playWorldTick(session), "World Tick eseguito.");
-  }, [session, commit]);
+    io.protect(() => commit(playWorldTick(session), "World Tick eseguito."));
+  }, [session, commit, io]);
 
   const save = useCallback(async () => {
     if (!session) return;
-    setStatus({ kind: "busy", message: "Salvataggio…" });
-    const outcome = await saveGame(session.state, persistence);
-    if (!mounted.current) return;
-    setStatus(
-      outcome.ok
-        ? { kind: "ok", message: `Salvato: ${outcome.campaignId} (${outcome.bytes} byte).` }
-        : { kind: "error", message: outcome.message }
-    );
-  }, [session, persistence]);
+    // The world handed to the save is still the current world when the receipt
+    // arrives, because nothing was allowed to change it in between. That is
+    // what makes "Salvato" an honest thing to display.
+    await io.exclusive(async () => {
+      setStatus({ kind: "busy", message: "Salvataggio…" });
+      const outcome = await saveGame(session.state, persistence);
+      if (!mounted.current) return;
+      setStatus(
+        outcome.ok
+          ? { kind: "ok", message: `Salvato: ${outcome.campaignId} (${outcome.bytes} byte).` }
+          : { kind: "error", message: outcome.message }
+      );
+    });
+  }, [session, persistence, io]);
 
   const load = useCallback(async () => {
     // One default slot for this slice. The id is the scenario's own campaign
     // id, which is also what the save derives, so the two cannot drift.
     const campaignId = (session?.state.campaignId ?? newSystemicGame().state.campaignId);
-    setStatus({ kind: "busy", message: "Caricamento…" });
-    const outcome = await loadGame(campaignId, persistence);
-    if (!mounted.current) return;
+    // Replacing the session is safe only because no turn could have been taken
+    // since this load began; there is no later action for it to discard.
+    await io.exclusive(async () => {
+      setStatus({ kind: "busy", message: "Caricamento…" });
+      const outcome = await loadGame(campaignId, persistence);
+      if (!mounted.current) return;
 
-    if (!outcome.ok) {
-      // A corrupted save never becomes a new campaign: the world on screen is
-      // left exactly as it was, and the player is told what happened.
-      setStatus({ kind: "error", message: outcome.message });
-      return;
-    }
-    setSession(outcome.session);
-    setLines({});
-    setStatus({ kind: "ok", message: `Campagna ${campaignId} caricata.` });
-  }, [session, persistence]);
+      if (!outcome.ok) {
+        // A corrupted save never becomes a new campaign: the world on screen is
+        // left exactly as it was, and the player is told what happened.
+        setStatus({ kind: "error", message: outcome.message });
+        return;
+      }
+      setSession(outcome.session);
+      setLines({});
+      setStatus({ kind: "ok", message: `Campagna ${campaignId} caricata.` });
+    });
+  }, [session, persistence, io]);
 
   if (!session) {
     return (
@@ -136,10 +162,10 @@ export function SystemicPlayScreen({
         <h1>CHRONOSAGA</h1>
         <p className="play__subtitle">Helios Reach · simulazione sistemica</p>
         <div className="play__actions">
-          <button className="play__button play__button--primary" onClick={startNew}>
+          <button className="play__button play__button--primary" onClick={startNew} disabled={ioBusy}>
             NUOVA CAMPAGNA
           </button>
-          <button className="play__button" onClick={() => void load()}>
+          <button className="play__button" onClick={() => void load()} disabled={ioBusy}>
             CARICA
           </button>
           {onExit ? (
@@ -159,23 +185,23 @@ export function SystemicPlayScreen({
 
       <div className="play__grid">
         <SettlementPanel state={session.state} />
-        <EventPanel session={session} onChoose={choose} />
+        <EventPanel session={session} onChoose={choose} locked={ioBusy} />
         <CharactersPanel state={session.state} />
         <FactionsPanel state={session.state} />
         <FeedPanel feed={session.feed} lines={lines} />
       </div>
 
       <footer className="play__bar">
-        <button className="play__button play__button--primary" onClick={tick}>
+        <button className="play__button play__button--primary" onClick={tick} disabled={ioBusy}>
           ESEGUI WORLD TICK
         </button>
-        <button className="play__button" onClick={() => void save()}>
+        <button className="play__button" onClick={() => void save()} disabled={ioBusy}>
           SALVA
         </button>
-        <button className="play__button" onClick={() => void load()}>
+        <button className="play__button" onClick={() => void load()} disabled={ioBusy}>
           CARICA
         </button>
-        <button className="play__button play__button--ghost" onClick={startNew}>
+        <button className="play__button play__button--ghost" onClick={startNew} disabled={ioBusy}>
           NUOVA
         </button>
         <StatusLine status={status} />
@@ -259,10 +285,13 @@ function ActiveFlags({ state }: { state: WorldState }) {
 
 function EventPanel({
   session,
-  onChoose
+  onChoose,
+  locked
 }: {
   session: GameplaySession;
   onChoose: (choiceId: string) => void;
+  /** True while persistence holds the lock: a turn cannot be taken mid-write. */
+  locked: boolean;
 }) {
   const { state, event } = session;
   return (
@@ -279,8 +308,14 @@ function EventPanel({
             <button
               key={choice.id}
               className="choice"
-              disabled={!available}
-              title={available ? undefined : "Requisiti non soddisfatti"}
+              disabled={!available || locked}
+              title={
+                locked
+                  ? "Operazione su disco in corso"
+                  : available
+                    ? undefined
+                    : "Requisiti non soddisfatti"
+              }
               onClick={() => onChoose(choice.id)}
             >
               <b>{choice.label}</b>

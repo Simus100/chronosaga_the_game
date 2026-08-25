@@ -18,6 +18,7 @@ import {
   narrateEntry
 } from "../src/gameplay/narration";
 import type { SystemicPersistence, SystemicStored } from "../src/platform/persistence";
+import { createPersistenceLock } from "../src/gameplay/persistence-lock";
 
 /**
  * The playable loop, tested through the actions the screen dispatches.
@@ -537,3 +538,201 @@ describe("17, 18: P0 keeps working beside the new surface", () => {
 function concat_save(): string {
   return "save_" + "systemic_campaign";
 }
+
+describe("P2: persistence and gameplay cannot overlap", () => {
+  /**
+   * The race this closes is not hypothetical. Without the lock:
+   *
+   *   save reads S1 -> player takes a turn producing S2 -> the write of S1
+   *   completes -> the screen says "saved" while the disk holds S1
+   *
+   * and the mirror case, where a load in flight replaces a session that has
+   * moved on since. Both are prevented the same way: the action cannot run.
+   */
+
+  /** A promise the test decides when to settle. */
+  function deferred<T>() {
+    let settle!: (value: T) => void;
+    const promise = new Promise<T>(resolve => {
+      settle = resolve;
+    });
+    return { promise, settle };
+  }
+
+  it("1: while a save is pending, another save cannot start", async () => {
+    const lock = createPersistenceLock();
+    const first = deferred<string>();
+    let secondRan = false;
+
+    const running = lock.exclusive(() => first.promise);
+    expect(lock.busy).toBe(true);
+
+    const refused = await lock.exclusive(async () => {
+      secondRan = true;
+      return "second";
+    });
+
+    expect(refused.ran).toBe(false);
+    expect(secondRan).toBe(false);
+
+    first.settle("first");
+    await running;
+    expect(lock.busy).toBe(false);
+  });
+
+  it("2: while a save is pending, choice/tick/new/load cannot alter the session", async () => {
+    const lock = createPersistenceLock();
+    const pending = deferred<void>();
+    const session = newSystemicGame();
+    let current = session;
+
+    const saving = lock.exclusive(() => pending.promise);
+
+    // Every authoritative action offered during the write is refused outright,
+    // so `current` is still the world the save was handed.
+    for (const action of [
+      () => playChoice(current, "hold_reserve"),
+      () => playWorldTick(current),
+      () => newSystemicGame()
+    ]) {
+      const attempt = lock.protect(() => {
+        current = action();
+        return current;
+      });
+      expect(attempt.ran).toBe(false);
+    }
+    expect(await lock.exclusive(async () => "load")).toEqual({ ran: false });
+
+    expect(current).toBe(session);
+    expect(current.state.turn).toBe(session.state.turn);
+    expect(current.state.simulation!.tick).toBe(session.state.simulation!.tick);
+
+    pending.settle();
+    await saving;
+  });
+
+  it("3: while a load is pending, choice/tick/new/save cannot alter the session", async () => {
+    const lock = createPersistenceLock();
+    const pending = deferred<void>();
+    const onScreen = playWorldTick(newSystemicGame());
+    let current = onScreen;
+
+    const loading = lock.exclusive(() => pending.promise);
+
+    expect(lock.protect(() => { current = playWorldTick(current); }).ran).toBe(false);
+    expect(lock.protect(() => { current = playChoice(current, "hold_reserve"); }).ran).toBe(false);
+    expect(lock.protect(() => { current = newSystemicGame(); }).ran).toBe(false);
+    expect(await lock.exclusive(async () => "save")).toEqual({ ran: false });
+
+    expect(current).toBe(onScreen);
+
+    pending.settle();
+    await loading;
+    // Only now can the loaded world take its place, and it replaces a session
+    // that provably has not moved.
+    expect(lock.protect(() => playWorldTick(current)).ran).toBe(true);
+  });
+
+  it("4, 5: a failed save and a failed load both release the lock", async () => {
+    const lock = createPersistenceLock();
+
+    // A rejected persistence promise must not leave the game unplayable.
+    await expect(
+      lock.exclusive(async () => {
+        throw new Error("disk is full");
+      })
+    ).rejects.toThrow("disk is full");
+    expect(lock.busy).toBe(false);
+    expect(lock.protect(() => "playable").ran).toBe(true);
+
+    // A reported failure - corrupted, not found, transport - is an ordinary
+    // return value and releases just the same.
+    const store = fakeStore({});
+    const failed = await lock.exclusive(() => loadGame("cmp_missing", store));
+    expect(failed.ran).toBe(true);
+    expect(failed.ran && failed.result.ok).toBe(false);
+    expect(lock.busy).toBe(false);
+  });
+
+  it("6, 7: a successful save and a successful load release the lock", async () => {
+    const lock = createPersistenceLock();
+    const store = fakeStore();
+    const session = newSystemicGame();
+
+    const saved = await lock.exclusive(() => saveGame(session.state, store));
+    expect(saved.ran && saved.result.ok).toBe(true);
+    expect(lock.busy).toBe(false);
+
+    const loaded = await lock.exclusive(() => loadGame(session.state.campaignId, store));
+    expect(loaded.ran && loaded.result.ok).toBe(true);
+    expect(lock.busy).toBe(false);
+    expect(lock.protect(() => playWorldTick(session)).ran).toBe(true);
+  });
+
+  it("8: a stale load cannot overwrite a later action, because there is none", async () => {
+    const lock = createPersistenceLock();
+    const store = fakeStore();
+    const start = newSystemicGame();
+    await saveGame(start.state, store);
+
+    // A slow load: the payload is already known, the transport is not.
+    const gate = deferred<void>();
+    const slow: SystemicPersistence = {
+      save: store.save,
+      async load(campaignId) {
+        await gate.promise;
+        return store.load(campaignId);
+      }
+    };
+
+    let onScreen = playWorldTick(start);
+    const ticked = onScreen.state.simulation!.tick;
+
+    const loading = lock.exclusive(() => loadGame(start.state.campaignId, slow));
+
+    // The player tries to take another turn while the read is outstanding.
+    const blocked = lock.protect(() => {
+      onScreen = playWorldTick(onScreen);
+      return onScreen;
+    });
+    expect(blocked.ran).toBe(false);
+    expect(onScreen.state.simulation!.tick).toBe(ticked);
+
+    gate.settle();
+    const outcome = await loading;
+    expect(outcome.ran && outcome.result.ok).toBe(true);
+
+    // The loaded world discards nothing: the only turn it could have discarded
+    // was never allowed to happen.
+    if (outcome.ran && outcome.result.ok) {
+      expect(outcome.result.session.state.simulation!.tick).toBe(0);
+    }
+  });
+
+  it("9: the screen routes every action through the lock and disables its buttons", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const source = readFileSync(
+      fileURLToPath(new URL("../src/components/SystemicPlayScreen.tsx", import.meta.url)),
+      "utf8"
+    );
+
+    // The guard is logic, not styling: every action passes through the lock.
+    expect(source).toContain("createPersistenceLock");
+    expect(source).toContain("io.exclusive(");
+    expect(source).toContain("io.protect(");
+    // Save and load are the exclusive pair; the three synchronous actions are
+    // the protected ones.
+    expect(source.match(/io\.exclusive\(/g) ?? []).toHaveLength(2);
+    expect((source.match(/io\.protect\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
+
+    // And the player is told, rather than clicking a button that silently
+    // does nothing.
+    expect((source.match(/disabled=\{ioBusy\}/g) ?? []).length).toBeGreaterThanOrEqual(6);
+    expect(source).toContain("disabled={!available || locked}");
+
+    // The lock is never represented inside the world.
+    expect(source).not.toContain("state.ioBusy");
+    expect(source).not.toContain("simulation.busy");
+  });
+});
