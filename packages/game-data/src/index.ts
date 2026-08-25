@@ -1,3 +1,4 @@
+export * from "./systemic-events";
 import type { GameEvent } from "@paa/game-types";
 
 export const demoEvents: GameEvent[] = [
