@@ -29,7 +29,18 @@ use std::{
 use sysinfo::{Disks, System};
 use tauri::{AppHandle, Manager, State};
 
-const DATABASE_SCHEMA_VERSION: u32 = 1;
+/// The shape of the database file: which tables exist.
+///
+/// Raised to 2 by M1-C/2, which adds `campaign_systemic`.
+const DATABASE_SCHEMA_VERSION: u32 = 2;
+
+/// The shape of a stored P0 smoke payload.
+///
+/// Deliberately still 1, and deliberately not the same constant as the
+/// database version. Adding a table next to `campaign_smoke` changed nothing
+/// about what a smoke row contains, and validating one against the other would
+/// invalidate every existing save the moment an unrelated table appeared.
+const SMOKE_SAVE_SCHEMA_VERSION: u32 = 1;
 const DATABASE_FILE_NAME: &str = "chronosaga-p0.sqlite3";
 
 #[derive(Debug, Serialize)]
@@ -150,7 +161,60 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
     let connection = Connection::open(&path)
         .map_err(|error| format!("Unable to open SQLite database {}: {error}", as_string(&path)))?;
 
-    initialize_schema(&connection)?;
+    migrate_database(&connection)?;
+
+    Ok(connection)
+}
+
+/// Bring a database file up to the current schema, or refuse to touch it.
+///
+/// The previous version wrote `DATABASE_SCHEMA_VERSION` over whatever was
+/// there, unconditionally. That is fine while the number never moves and
+/// silently destructive the moment it does: a file written by a *newer* build
+/// would be relabelled as this one's and opened as though compatible, and
+/// whatever that build had added would be read with the wrong assumptions.
+///
+/// So the stored version is read first and decides what happens. An unknown
+/// future version is an error, not a number to overwrite — this build cannot
+/// know what it would be agreeing to.
+fn migrate_database(connection: &Connection) -> Result<u32, String> {
+    // Tables first: `metadata` must exist before it can be read, and every
+    // statement is `IF NOT EXISTS`, so this is also the v1 -> v2 step. A v1
+    // file already has `metadata` and `campaign_smoke`; it gains
+    // `campaign_systemic` here and keeps its rows untouched.
+    initialize_schema(connection)?;
+
+    let stored: Option<String> = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Unable to read SQLite schema version: {error}"))?;
+
+    let current: Option<u32> = match stored {
+        None => None,
+        Some(text) => Some(
+            text.trim()
+                .parse()
+                .map_err(|_| format!("SQLite schema version '{text}' is not a number"))?,
+        ),
+    };
+
+    if let Some(version) = current {
+        if version > DATABASE_SCHEMA_VERSION {
+            return Err(format!(
+                "This save database was written by a newer version of Chronosaga \
+                 (database schema {version}, this build supports {DATABASE_SCHEMA_VERSION}). \
+                 Refusing to open it: continuing could damage the campaign."
+            ));
+        }
+        if version == DATABASE_SCHEMA_VERSION {
+            return Ok(version);
+        }
+        // Older and known: the tables above have already brought it forward.
+    }
 
     connection
         .execute(
@@ -160,7 +224,7 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
         )
         .map_err(|error| format!("Unable to store SQLite schema version: {error}"))?;
 
-    Ok(connection)
+    Ok(DATABASE_SCHEMA_VERSION)
 }
 
 /// Create the tables, separately from opening the file.
@@ -352,7 +416,7 @@ fn get_database_status(app: AppHandle) -> Result<DatabaseStatus, String> {
     Ok(DatabaseStatus {
         ready: true,
         path: as_string(&path),
-        schema_version: DATABASE_SCHEMA_VERSION,
+        schema_version: SMOKE_SAVE_SCHEMA_VERSION,
     })
 }
 
@@ -366,10 +430,10 @@ fn validate_smoke_campaign(campaign: &SmokeCampaign) -> Result<(), String> {
     ) {
         return Err("aiProfile must be auto, lite, standard or procedural".to_string());
     }
-    if campaign.schema_version != DATABASE_SCHEMA_VERSION {
+    if campaign.schema_version != SMOKE_SAVE_SCHEMA_VERSION {
         return Err(format!(
             "Unsupported smoke save schema version {} (expected {})",
-            campaign.schema_version, DATABASE_SCHEMA_VERSION
+            campaign.schema_version, SMOKE_SAVE_SCHEMA_VERSION
         ));
     }
     Ok(())
@@ -1345,6 +1409,122 @@ mod systemic_persistence_tests {
             payload_of(&fetch_systemic(&db, "shared_id").unwrap()),
             r#"{"systemic":true}"#
         );
+    }
+
+    #[test]
+    fn a_fresh_database_is_created_at_the_current_schema() {
+        let db = Connection::open_in_memory().expect("db");
+        assert_eq!(migrate_database(&db).expect("migrate"), DATABASE_SCHEMA_VERSION);
+        assert_eq!(DATABASE_SCHEMA_VERSION, 2);
+
+        let stored: String = db
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(stored, "2");
+    }
+
+    #[test]
+    fn a_v1_database_migrates_to_v2_without_losing_its_rows() {
+        // The shape a real installation has today: metadata and smoke only.
+        let db = Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             CREATE TABLE campaign_smoke (
+               campaign_id TEXT PRIMARY KEY NOT NULL,
+               payload TEXT NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+             INSERT INTO campaign_smoke(campaign_id, payload, updated_at)
+               VALUES ('old_run', '{\"seed\":7419,\"turn\":4}', 1700000000);",
+        )
+        .expect("v1 database");
+
+        assert_eq!(migrate_database(&db).expect("migrate"), 2);
+
+        let version: String = db
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, "2");
+
+        // The player's existing campaign is still there, byte for byte.
+        let payload: String = db
+            .query_row(
+                "SELECT payload FROM campaign_smoke WHERE campaign_id = 'old_run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("smoke row survived");
+        assert_eq!(payload, "{\"seed\":7419,\"turn\":4}");
+
+        // And the new table now exists for systemic saves.
+        store_systemic(&db, "new_campaign", r#"{"ok":true}"#, 1).expect("systemic table exists");
+    }
+
+    #[test]
+    fn migrating_twice_changes_nothing() {
+        let db = Connection::open_in_memory().expect("db");
+        migrate_database(&db).expect("first");
+        store_systemic(&db, "c1", r#"{"turn":3}"#, 1).expect("store");
+
+        assert_eq!(migrate_database(&db).expect("second"), DATABASE_SCHEMA_VERSION);
+        assert_eq!(payload_of(&fetch_systemic(&db, "c1").unwrap()), r#"{"turn":3}"#);
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused_rather_than_relabelled() {
+        // The dangerous case. Overwriting the version would open a file this
+        // build does not understand while claiming it does, and whatever the
+        // newer build had added would be read with the wrong assumptions.
+        let db = Connection::open_in_memory().expect("db");
+        migrate_database(&db).expect("bring to current");
+        db.execute(
+            "UPDATE metadata SET value = '99' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("pretend the future wrote it");
+
+        let error = migrate_database(&db).expect_err("must refuse");
+        assert!(error.contains("newer version"), "{error}");
+        assert!(error.contains("99"), "{error}");
+        assert!(error.contains("Refusing to open"), "{error}");
+
+        // And it did not quietly rewrite the version on its way out.
+        let still: String = db
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(still, "99");
+    }
+
+    #[test]
+    fn an_unreadable_schema_version_is_an_error_not_a_zero() {
+        let db = Connection::open_in_memory().expect("db");
+        migrate_database(&db).expect("current");
+        db.execute("UPDATE metadata SET value = 'banana' WHERE key = 'schema_version'", [])
+            .expect("corrupt it");
+
+        let error = migrate_database(&db).expect_err("must refuse");
+        assert!(error.contains("not a number"), "{error}");
+    }
+
+    #[test]
+    fn the_three_version_domains_are_separate_numbers() {
+        // Adding a table beside campaign_smoke changed nothing about what a
+        // smoke row contains. Validating one against the other would have
+        // invalidated every existing save the moment an unrelated table
+        // appeared — which is exactly what happened before this split.
+        assert_eq!(DATABASE_SCHEMA_VERSION, 2);
+        assert_eq!(SMOKE_SAVE_SCHEMA_VERSION, 1);
+        assert_eq!(SYSTEMIC_ENVELOPE_VERSION, 1);
+
+        let source = include_str!("main.rs");
+        let production = source
+            .find(concat!("mod systemic_persistence_", "tests"))
+            .map(|at| &source[..at])
+            .expect("test module");
+        // The smoke payload check must compare against its own constant.
+        assert!(production.contains("campaign.schema_version != SMOKE_SAVE_SCHEMA_VERSION"));
+        assert!(!production.contains("campaign.schema_version != DATABASE_SCHEMA_VERSION"));
     }
 
     #[test]

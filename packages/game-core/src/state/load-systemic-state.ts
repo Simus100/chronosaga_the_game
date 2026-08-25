@@ -22,7 +22,13 @@ export type SystemicLoadResult =
 export type SystemicLoadFailure =
   | "malformed_json"
   | "invalid_world_state"
-  | "inconsistent_projection";
+  | "inconsistent_projection"
+  | "campaign_identity_mismatch";
+
+/** What a save produced, or why it could not be produced. */
+export type SystemicSaveResult =
+  | { readonly ok: true; readonly campaignId: string; readonly payload: string }
+  | { readonly ok: false; readonly errors: string[] };
 
 /**
  * Whether the compatibility projection agrees with the authority it mirrors.
@@ -67,13 +73,47 @@ function projectionProblems(state: WorldState): string[] {
 }
 
 /**
+ * Prepare a world for storage, and derive its key from the world itself.
+ *
+ * The storage command takes a campaign id and a payload as two independent
+ * arguments, which means nothing stops a caller from filing campaign `beta`
+ * under the key `alpha` — and SQL key isolation cannot notice, because both
+ * values are exactly what it was told to store. The mismatch would only appear
+ * later, as a campaign that loads someone else's world.
+ *
+ * So the id is not asked for. It is read from the state after that state has
+ * been proven valid, which makes the two impossible to disagree at the point
+ * where they are written.
+ *
+ * The same invariants as loading are applied here, and for the same reason: a
+ * save that would be refused on the way in should never reach the disk on the
+ * way out. Failing at save time costs one refused click; failing at load time
+ * costs the campaign.
+ */
+export function serializeSystemicWorldState(input: unknown): SystemicSaveResult {
+  const validation = validateSystemicWorldState(input);
+  if (!validation.ok) return { ok: false, errors: validation.errors };
+
+  const state = input as WorldState;
+
+  const divergent = projectionProblems(state);
+  if (divergent.length > 0) return { ok: false, errors: divergent };
+
+  return {
+    ok: true,
+    campaignId: state.campaignId,
+    payload: JSON.stringify(state)
+  };
+}
+
+/**
  * Turn stored JSON text into a trusted `WorldState`, or say precisely why not.
  *
  * Takes the raw text rather than a parsed value on purpose: parsing is where
  * malformed bytes announce themselves, and doing it here means the caller
  * cannot accidentally hand on a half-parsed object.
  */
-export function loadSystemicWorldState(raw: string): SystemicLoadResult {
+export function loadSystemicWorldState(raw: string, expectedCampaignId?: string): SystemicLoadResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -96,6 +136,22 @@ export function loadSystemicWorldState(raw: string): SystemicLoadResult {
   const divergent = projectionProblems(state);
   if (divergent.length > 0) {
     return { ok: false, reason: "inconsistent_projection", errors: divergent };
+  }
+
+  // The row was filed under a key. If the world inside names a different
+  // campaign, one of the two is wrong and there is no way to tell which — so
+  // neither is used. Rust cannot make this check: it never parses the payload,
+  // and teaching it to would give the project two opinions about what a world
+  // is.
+  if (expectedCampaignId !== undefined && state.campaignId !== expectedCampaignId) {
+    return {
+      ok: false,
+      reason: "campaign_identity_mismatch",
+      errors: [
+        `the save stored under '${expectedCampaignId}' contains campaign ` +
+          `'${state.campaignId}'`
+      ]
+    };
   }
 
   return { ok: true, state };

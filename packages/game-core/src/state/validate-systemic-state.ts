@@ -11,6 +11,158 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A string, and not the empty one when `nonEmpty`. */
+function requireString(
+  owner: JsonRecord,
+  key: string,
+  label: string,
+  errors: string[],
+  nonEmpty = true
+): void {
+  const value = owner[key];
+  if (typeof value !== "string") {
+    errors.push(`${label} must be a string, got ${typeof value}`);
+    return;
+  }
+  if (nonEmpty && value.trim() === "") errors.push(`${label} must not be empty`);
+}
+
+/** An optional string: absent is fine, present and wrong is not. */
+function requireOptionalString(
+  owner: JsonRecord,
+  key: string,
+  label: string,
+  errors: string[]
+): void {
+  if (owner[key] === undefined) return;
+  requireString(owner, key, label, errors);
+}
+
+/** A finite number. Rules out NaN, both infinities, strings and null alike. */
+function requireFiniteNumber(
+  owner: JsonRecord,
+  key: string,
+  label: string,
+  errors: string[],
+  min?: number
+): void {
+  const value = owner[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    errors.push(
+      `${label} must be a finite number, got ${
+        typeof value === "number" ? String(value) : typeof value
+      }`
+    );
+    return;
+  }
+  if (min !== undefined && value < min) errors.push(`${label} must be at least ${min}, got ${value}`);
+}
+
+/** A whole number, optionally with a floor. */
+function requireInteger(
+  owner: JsonRecord,
+  key: string,
+  label: string,
+  errors: string[],
+  min?: number
+): void {
+  const value = owner[key];
+  if (!Number.isInteger(value)) {
+    errors.push(
+      `${label} must be an integer, got ${
+        typeof value === "number" ? String(value) : typeof value
+      }`
+    );
+    return;
+  }
+  if (min !== undefined && (value as number) < min) {
+    errors.push(`${label} must be at least ${min}, got ${String(value)}`);
+  }
+}
+
+/** A real boolean, not "true" and not 1. */
+function requireBoolean(owner: JsonRecord, key: string, label: string, errors: string[]): void {
+  if (typeof owner[key] !== "boolean") {
+    errors.push(`${label} must be a boolean, got ${typeof owner[key]}`);
+  }
+}
+
+/** An array of strings, which several systemic fields are. */
+function requireStringArray(
+  owner: JsonRecord,
+  key: string,
+  label: string,
+  errors: string[]
+): void {
+  const value = owner[key];
+  if (!Array.isArray(value)) {
+    errors.push(`${label} must be an array`);
+    return;
+  }
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string") errors.push(`${label}[${index}] must be a string`);
+  });
+}
+
+/** One of a closed set. Enums are contracts, and a save may claim anything. */
+function requireEnum(
+  owner: JsonRecord,
+  key: string,
+  label: string,
+  allowed: readonly string[],
+  errors: string[]
+): void {
+  const value = owner[key];
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    errors.push(`${label} must be one of ${allowed.join(", ")}, got ${JSON.stringify(value)}`);
+  }
+}
+
+const CAUSAL_KINDS = ["choice", "event", "world_tick", "tactical", "warfare", "system"] as const;
+
+/**
+ * A causal source, fully.
+ *
+ * This is how the game explains itself: why a memory exists, why a consequence
+ * fired. A half-checked source produces evidence that looks authoritative and
+ * cannot be traced, which is worse than no evidence at all.
+ */
+function requireCausalSource(value: unknown, label: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  requireEnum(value, "kind", `${label}.kind`, CAUSAL_KINDS, errors);
+  requireString(value, "id", `${label}.id`, errors);
+  requireOptionalString(value, "actorId", `${label}.actorId`, errors);
+  requireOptionalString(value, "rule", `${label}.rule`, errors);
+  if (value.tick !== undefined) requireInteger(value, "tick", `${label}.tick`, errors, 0);
+}
+
+/**
+ * `WorldState.flags` carries strings, booleans and numbers, and nothing else.
+ *
+ * A flag reaches gameplay through event eligibility, so an object or an array
+ * here becomes a truthy value that silently unlocks or blocks content.
+ */
+function requireFlags(owner: JsonRecord, label: string, errors: string[]): void {
+  const value = owner.flags;
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  for (const [flag, entry] of Object.entries(value)) {
+    const kind = typeof entry;
+    if (kind === "string" || kind === "boolean") continue;
+    if (kind === "number" && Number.isFinite(entry)) continue;
+    errors.push(
+      `${label}.${flag} must be a string, boolean or finite number, got ${
+        kind === "number" ? String(entry) : kind
+      }`
+    );
+  }
+}
+
 /**
  * Every value in a numeric map must be a finite number.
  *
@@ -48,6 +200,25 @@ function requireFiniteNumberMap(
   }
 }
 
+/**
+ * The campaign profile, five closed vocabularies.
+ *
+ * These select rules — mortality decides whether a character can die — so an
+ * unknown value is not a cosmetic problem: it falls through every comparison
+ * and lands on whatever the default branch happens to be.
+ */
+function requireCampaignProfile(value: unknown, label: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  requireEnum(value, "difficulty", `${label}.difficulty`, ["narrative", "standard", "hard", "simulation"], errors);
+  requireEnum(value, "mortality", `${label}.mortality`, ["protected", "standard", "permadeath"], errors);
+  requireEnum(value, "campaignLength", `${label}.campaignLength`, ["standard", "extended", "persistent"], errors);
+  requireEnum(value, "aiMode", `${label}.aiMode`, ["local", "cloud", "auto", "procedural"], errors);
+  requireEnum(value, "simulationDepth", `${label}.simulationDepth`, ["light", "standard", "deep"], errors);
+}
+
 function requireEntityArray(
   owner: JsonRecord,
   key: string,
@@ -76,7 +247,17 @@ function validateShape(input: unknown): string[] {
   const errors: string[] = [];
   if (!isRecord(input)) return ["WorldState must be an object"];
 
+  // Top level. Every one of these reaches gameplay: `turn` and `day` are shown
+  // and compared, `seed` drives the deterministic RNG, `worldPressure` gates
+  // event eligibility, and `campaignId` decides which save is whose.
+  requireString(input, "campaignId", "WorldState.campaignId", errors);
+  requireFiniteNumber(input, "seed", "WorldState.seed", errors);
+  requireInteger(input, "turn", "WorldState.turn", errors, 1);
+  requireInteger(input, "day", "WorldState.day", errors, 1);
+  requireFiniteNumber(input, "worldPressure", "WorldState.worldPressure", errors, 0);
+  requireFlags(input, "WorldState.flags", errors);
   requireFiniteNumberMap(input, "resources", "WorldState.resources", errors);
+  requireCampaignProfile(input.profile, "WorldState.profile", errors);
 
   const party = requireEntityArray(input, "party", "party", errors);
   const simulationValue = input.simulation;
@@ -100,7 +281,7 @@ function validateShape(input: unknown): string[] {
     errors
   );
   const groups = requireEntityArray(simulationValue, "politicalGroups", "politicalGroups", errors);
-  requireEntityArray(simulationValue, "warfareSquads", "warfareSquads", errors);
+  const squads = requireEntityArray(simulationValue, "warfareSquads", "warfareSquads", errors);
   const consequences = requireEntityArray(
     simulationValue,
     "delayedConsequences",
@@ -109,66 +290,128 @@ function validateShape(input: unknown): string[] {
   );
 
   for (const character of party ?? []) {
+    const who = `character ${String(character.id)}`;
+    requireString(character, "name", `${who}.name`, errors);
+    requireString(character, "role", `${who}.role`, errors);
+    requireFiniteNumber(character, "health", `${who}.health`, errors);
+    requireFiniteNumber(character, "stress", `${who}.stress`, errors);
+    requireFiniteNumber(character, "morale", `${who}.morale`, errors);
+    requireStringArray(character, "traits", `${who}.traits`, errors);
+    requireStringArray(character, "memoryTags", `${who}.memoryTags`, errors);
+    requireOptionalString(character, "factionId", `${who}.factionId`, errors);
+    requireOptionalString(character, "locationId", `${who}.locationId`, errors);
+
     if (character.memories !== undefined) {
       if (!Array.isArray(character.memories)) {
-        errors.push(`character ${String(character.id)}.memories must be an array`);
+        errors.push(`${who}.memories must be an array`);
       } else {
         character.memories.forEach((memory, index) => {
+          const at = `${who} memory[${index}]`;
           if (!isRecord(memory)) {
-            errors.push(`character ${String(character.id)} memory[${index}] must be an object`);
+            errors.push(`${at} must be an object`);
             return;
           }
-          if (typeof memory.id !== "string") errors.push(`character ${String(character.id)} memory[${index}].id must be a string`);
-          if (typeof memory.summary !== "string") errors.push(`character ${String(character.id)} memory[${index}].summary must be a string`);
-          if (!isRecord(memory.source) || typeof memory.source.id !== "string") {
-            errors.push(`character ${String(character.id)} memory[${index}] requires a causal source id`);
-          }
+          requireString(memory, "id", `${at}.id`, errors);
+          requireString(memory, "summary", `${at}.summary`, errors, false);
+          requireStringArray(memory, "tags", `${at}.tags`, errors);
+          requireInteger(memory, "turn", `${at}.turn`, errors, 1);
+          requireCausalSource(memory.source, `${at}.source`, errors);
         });
       }
     }
   }
 
   for (const settlement of settlements ?? []) {
-    requireFiniteNumberMap(
-      settlement,
-      "resourceStock",
-      `settlement ${String(settlement.id)}.resourceStock`,
-      errors
-    );
+    const where = `settlement ${String(settlement.id)}`;
+    requireString(settlement, "name", `${where}.name`, errors);
+    requireString(settlement, "controllingFactionId", `${where}.controllingFactionId`, errors);
+    requireFiniteNumber(settlement, "population", `${where}.population`, errors, 0);
+    requireFiniteNumber(settlement, "stability", `${where}.stability`, errors);
+    requireFiniteNumber(settlement, "satisfaction", `${where}.satisfaction`, errors);
+    requireFiniteNumberMap(settlement, "resourceStock", `${where}.resourceStock`, errors);
     for (const key of ["productionNodeIds", "cohortIds", "politicalGroupIds"] as const) {
-      if (!Array.isArray(settlement[key]) || settlement[key].some(value => typeof value !== "string")) {
-        errors.push(`settlement ${String(settlement.id)}.${key} must be a string array`);
-      }
+      requireStringArray(settlement, key, `${where}.${key}`, errors);
     }
   }
 
   for (const faction of factions ?? []) {
     const label = `faction ${String(faction.id)}`;
+    requireString(faction, "name", `${label}.name`, errors);
+    requireFiniteNumber(faction, "influence", `${label}.influence`, errors);
+    requireFiniteNumber(faction, "reputation", `${label}.reputation`, errors);
+    requireStringArray(faction, "memoryTags", `${label}.memoryTags`, errors);
     requireFiniteNumberMap(faction, "relations", `${label}.relations`, errors);
     requireFiniteNumberMap(faction, "resources", `${label}.resources`, errors);
   }
+
   for (const group of groups ?? []) {
-    requireFiniteNumberMap(
-      group,
-      "relationships",
-      `political group ${String(group.id)}.relationships`,
-      errors
-    );
+    const label = `political group ${String(group.id)}`;
+    requireString(group, "settlementId", `${label}.settlementId`, errors);
+    requireString(group, "name", `${label}.name`, errors);
+    requireFiniteNumber(group, "influence", `${label}.influence`, errors);
+    requireFiniteNumber(group, "approval", `${label}.approval`, errors);
+    // A scalar, not a map: `PoliticalGroupState.resources` is a single number
+    // and was slipping through the map check that guards every other one.
+    requireFiniteNumber(group, "resources", `${label}.resources`, errors);
+    requireStringArray(group, "goals", `${label}.goals`, errors);
+    requireStringArray(group, "redLines", `${label}.redLines`, errors);
+    requireOptionalString(group, "leaderId", `${label}.leaderId`, errors);
+    requireFiniteNumberMap(group, "relationships", `${label}.relationships`, errors);
   }
+
   for (const node of nodes ?? []) {
     const label = `production node ${String(node.id)}`;
+    requireString(node, "settlementId", `${label}.settlementId`, errors);
+    requireString(node, "recipe", `${label}.recipe`, errors);
+    requireFiniteNumber(node, "capacity", `${label}.capacity`, errors, 0);
+    requireFiniteNumber(node, "efficiency", `${label}.efficiency`, errors, 0);
+    requireFiniteNumber(node, "labor", `${label}.labor`, errors, 0);
+    requireFiniteNumber(node, "condition", `${label}.condition`, errors, 0);
+    requireBoolean(node, "enabled", `${label}.enabled`, errors);
     requireFiniteNumberMap(node, "inputs", `${label}.inputs`, errors);
     requireFiniteNumberMap(node, "outputs", `${label}.outputs`, errors);
   }
+
   for (const cohort of cohorts ?? []) {
-    requireFiniteNumberMap(cohort, "needs", `cohort ${String(cohort.id)}.needs`, errors);
+    const label = `cohort ${String(cohort.id)}`;
+    requireString(cohort, "settlementId", `${label}.settlementId`, errors);
+    requireFiniteNumber(cohort, "population", `${label}.population`, errors, 0);
+    requireString(cohort, "occupation", `${label}.occupation`, errors);
+    requireString(cohort, "wealth", `${label}.wealth`, errors);
+    requireString(cohort, "culture", `${label}.culture`, errors);
+    requireFiniteNumber(cohort, "satisfaction", `${label}.satisfaction`, errors);
+    requireFiniteNumber(cohort, "loyalty", `${label}.loyalty`, errors);
+    requireString(cohort, "politicalAffinity", `${label}.politicalAffinity`, errors);
+    requireFiniteNumberMap(cohort, "needs", `${label}.needs`, errors);
+  }
+
+  for (const squad of squads ?? []) {
+    const label = `warfare squad ${String(squad.id)}`;
+    requireString(squad, "factionId", `${label}.factionId`, errors);
+    requireString(squad, "name", `${label}.name`, errors);
+    requireFiniteNumber(squad, "personnel", `${label}.personnel`, errors, 0);
+    requireFiniteNumber(squad, "morale", `${label}.morale`, errors);
+    requireFiniteNumber(squad, "readiness", `${label}.readiness`, errors);
+    requireFiniteNumber(squad, "supply", `${label}.supply`, errors);
+    requireFiniteNumber(squad, "intelligence", `${label}.intelligence`, errors);
+    requireOptionalString(squad, "commanderId", `${label}.commanderId`, errors);
   }
   for (const consequence of consequences ?? []) {
-    if (!isRecord(consequence.source) || typeof consequence.source.id !== "string") {
-      errors.push(`consequence ${String(consequence.id)} requires a causal source id`);
-    }
+    const label = `consequence ${String(consequence.id)}`;
+    requireInteger(consequence, "triggerTurn", `${label}.triggerTurn`, errors, 1);
+    requireEnum(consequence, "visibility", `${label}.visibility`, ["visible", "hidden"], errors);
+    requireEnum(
+      consequence,
+      "scope",
+      `${label}.scope`,
+      ["personal", "local", "settlement", "faction", "regional"],
+      errors
+    );
+    requireEnum(consequence, "status", `${label}.status`, ["pending", "applied"], errors);
+    requireBoolean(consequence, "reversible", `${label}.reversible`, errors);
+    requireCausalSource(consequence.source, `${label}.source`, errors);
     if (!Array.isArray(consequence.effects)) {
-      errors.push(`consequence ${String(consequence.id)}.effects must be an array`);
+      errors.push(`${label}.effects must be an array`);
     }
   }
 
@@ -206,6 +449,16 @@ function validateEffect(effect: EventEffect, characterIds: Set<string>, label: s
   }
   if ((effect.type === "RESOURCE_DELTA" || effect.type === "FLAG_SET") && !effect.key?.trim()) {
     errors.push(`${label} ${effect.type} requires key`);
+  }
+  // A flag may legitimately be a number, and then it must be a usable one. A
+  // NaN flag compares false against everything, including itself, so an event
+  // gated on it simply stops appearing and nothing reports why.
+  if (
+    effect.type === "FLAG_SET" &&
+    typeof effect.value === "number" &&
+    !Number.isFinite(effect.value)
+  ) {
+    errors.push(`${label} FLAG_SET value must be a finite number, got ${String(effect.value)}`);
   }
   if (effect.type === "CHARACTER_STRESS") {
     if (!effect.targetId?.trim()) {
