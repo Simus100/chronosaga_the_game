@@ -177,29 +177,70 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
 /// So the stored version is read first and decides what happens. An unknown
 /// future version is an error, not a number to overwrite — this build cannot
 /// know what it would be agreeing to.
-fn migrate_database(connection: &Connection) -> Result<u32, String> {
-    // Read before writing. The previous order ran the schema DDL first and
-    // asked the version afterwards, which meant an old build could add tables
-    // to a database written by a newer one and only then refuse it. `CREATE
-    // TABLE IF NOT EXISTS` is still a write, and a refusal that has already
-    // modified the file is not a refusal.
-    let stored = stored_schema_version(connection)?;
+/// What a database file says about itself, before anything is written to it.
+///
+/// `Option<u32>` collapsed two different situations into `None`: a file that
+/// has never been touched, and a file that has a `metadata` table but no
+/// version in it. The first is a new campaign; the second is a database
+/// somebody or something has already written to in a way this build cannot
+/// account for. Treating them alike meant creating tables inside the second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoredSchema {
+    /// No `metadata` table: nothing has ever been stored here.
+    Fresh,
+    /// A version this file declares.
+    Declared(u32),
+    /// The file has been written to, but says nothing usable about its shape.
+    Unversioned,
+}
 
-    if let Some(version) = stored {
-        if version > DATABASE_SCHEMA_VERSION {
+fn migrate_database(connection: &Connection) -> Result<u32, String> {
+    // Read before writing. Running the schema DDL first and asking the version
+    // afterwards let an old build add tables to a database written by a newer
+    // one and only then refuse it. `CREATE TABLE IF NOT EXISTS` is still a
+    // write, and a refusal that has already modified the file is not a refusal.
+    let stored = stored_schema(connection)?;
+
+    match stored {
+        StoredSchema::Fresh => {}
+
+        StoredSchema::Unversioned => {
+            return Err(
+                "This save database has no schema version recorded. Refusing to open it: \
+                 an existing file that cannot say what shape it is could be damaged by \
+                 guessing."
+                    .to_string(),
+            );
+        }
+
+        StoredSchema::Declared(version) if version == DATABASE_SCHEMA_VERSION => {
+            // Already current. Nothing to create, nothing to rewrite.
+            return Ok(version);
+        }
+
+        StoredSchema::Declared(version) if version > DATABASE_SCHEMA_VERSION => {
             return Err(format!(
                 "This save database was written by a newer version of Chronosaga \
                  (database schema {version}, this build supports {DATABASE_SCHEMA_VERSION}). \
                  Refusing to open it: continuing could damage the campaign."
             ));
         }
-        if version == DATABASE_SCHEMA_VERSION {
-            // Already current. Nothing to create, nothing to rewrite.
-            return Ok(version);
+
+        // The only migration that has ever existed. Everything else below the
+        // current version is a number this project never shipped, and inventing
+        // a path for it would mean guessing at a layout nobody wrote down.
+        StoredSchema::Declared(1) => {}
+
+        StoredSchema::Declared(version) => {
+            return Err(format!(
+                "This save database declares schema version {version}, which no release of \
+                 Chronosaga has produced. Refusing to open it: there is no migration from a \
+                 layout that never existed."
+            ));
         }
     }
 
-    // Fresh, or an older known version. Both are brought forward by the same
+    // Fresh, or a real v1. Both are brought forward by the same
     // `IF NOT EXISTS` statements: a v1 file keeps `metadata` and
     // `campaign_smoke` exactly as they are and gains `campaign_systemic`.
     initialize_schema(connection)?;
@@ -215,15 +256,12 @@ fn migrate_database(connection: &Connection) -> Result<u32, String> {
     Ok(DATABASE_SCHEMA_VERSION)
 }
 
-/// The version a database declares, or `None` when it has never declared one.
+/// Classify a database file without writing to it.
 ///
-/// A file with no `metadata` table is a fresh database, not a broken one: the
-/// missing-table error is the answer, not a failure. Anything else — an
-/// unreadable file, a version that is not a number — is reported, because
-/// guessing at that point is how a database gets opened under the wrong
-/// assumptions.
-fn stored_schema_version(connection: &Connection) -> Result<Option<u32>, String> {
-    let exists: Option<String> = connection
+/// A non-numeric version is an error rather than a state: the file is declaring
+/// something, and this build cannot tell what.
+fn stored_schema(connection: &Connection) -> Result<StoredSchema, String> {
+    let metadata_exists: Option<String> = connection
         .query_row(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'metadata'",
             [],
@@ -231,8 +269,8 @@ fn stored_schema_version(connection: &Connection) -> Result<Option<u32>, String>
         )
         .optional()
         .map_err(|error| format!("Unable to inspect the save database: {error}"))?;
-    if exists.is_none() {
-        return Ok(None);
+    if metadata_exists.is_none() {
+        return Ok(StoredSchema::Fresh);
     }
 
     let stored: Option<String> = connection
@@ -244,14 +282,14 @@ fn stored_schema_version(connection: &Connection) -> Result<Option<u32>, String>
         .optional()
         .map_err(|error| format!("Unable to read SQLite schema version: {error}"))?;
 
-    match stored {
-        None => Ok(None),
-        Some(text) => text
-            .trim()
-            .parse()
-            .map(Some)
-            .map_err(|_| format!("SQLite schema version '{text}' is not a number")),
-    }
+    let Some(text) = stored else {
+        return Ok(StoredSchema::Unversioned);
+    };
+
+    text.trim()
+        .parse()
+        .map(StoredSchema::Declared)
+        .map_err(|_| format!("SQLite schema version '{text}' is not a number"))
 }
 
 /// Create the tables, separately from opening the file.
@@ -1547,6 +1585,119 @@ mod systemic_persistence_tests {
                 .expect("inspect");
             assert!(created.is_none(), "{table} was created inside a future database");
         }
+    }
+
+    /// Assert that a refusal left the file exactly as it was.
+    fn assert_untouched(db: &Connection, expected_version: Option<&str>, marker: &str) {
+        let version: Option<String> = db
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("read version");
+        assert_eq!(version.as_deref(), expected_version, "metadata was rewritten");
+
+        let note: String = db
+            .query_row("SELECT note FROM existing_marker", [], |row| row.get(0))
+            .expect("marker survived");
+        assert_eq!(note, marker, "existing data was modified");
+
+        for table in ["campaign_systemic", "campaign_smoke"] {
+            let created: Option<String> = db
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .optional()
+                .expect("inspect");
+            assert!(created.is_none(), "{table} was created inside a refused database");
+        }
+    }
+
+    /// A database that has been written to, with whatever version rows are given.
+    fn existing_database(version_rows: &str) -> Connection {
+        let db = Connection::open_in_memory().expect("db");
+        db.execute_batch(&format!(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             CREATE TABLE existing_marker (note TEXT NOT NULL);
+             INSERT INTO existing_marker(note) VALUES ('pre-existing data');
+             {version_rows}"
+        ))
+        .expect("fixture");
+        db
+    }
+
+    #[test]
+    fn a_metadata_table_without_a_version_is_refused_untouched() {
+        // The state that used to be indistinguishable from a fresh database.
+        // Something has already written here; creating tables inside it on the
+        // assumption that it is new is exactly the guess to avoid.
+        let db = existing_database("");
+        assert_eq!(stored_schema(&db).expect("classify"), StoredSchema::Unversioned);
+
+        let error = migrate_database(&db).expect_err("must refuse");
+        assert!(error.contains("no schema version recorded"), "{error}");
+        assert!(error.contains("Refusing to open"), "{error}");
+
+        assert_untouched(&db, None, "pre-existing data");
+    }
+
+    #[test]
+    fn a_version_this_project_never_shipped_is_refused_untouched() {
+        // Only 1 -> 2 has ever existed. Treating 0 as "old enough to be v1"
+        // would migrate a layout nobody ever wrote down. Numbers above the
+        // current version are a different refusal, covered separately.
+        for version in ["0"] {
+            let db = existing_database(&format!(
+                "INSERT INTO metadata(key, value) VALUES ('schema_version', '{version}');"
+            ));
+            assert_eq!(
+                stored_schema(&db).expect("classify"),
+                StoredSchema::Declared(version.parse().unwrap())
+            );
+
+            let error = migrate_database(&db).expect_err("must refuse");
+            assert!(error.contains("no release of"), "{version}: {error}");
+            assert!(error.contains("never existed"), "{version}: {error}");
+
+            assert_untouched(&db, Some(version), "pre-existing data");
+        }
+    }
+
+    #[test]
+    fn a_non_numeric_version_is_refused_untouched() {
+        let db = existing_database(
+            "INSERT INTO metadata(key, value) VALUES ('schema_version', 'banana');",
+        );
+        let error = migrate_database(&db).expect_err("must refuse");
+        assert!(error.contains("not a number"), "{error}");
+        assert_untouched(&db, Some("banana"), "pre-existing data");
+    }
+
+    #[test]
+    fn the_four_database_states_are_told_apart() {
+        // Fresh and unversioned are different answers, and used to be the same
+        // one. Everything downstream depends on that distinction.
+        let fresh = Connection::open_in_memory().expect("db");
+        assert_eq!(stored_schema(&fresh).expect("classify"), StoredSchema::Fresh);
+
+        assert_eq!(
+            stored_schema(&existing_database("")).expect("classify"),
+            StoredSchema::Unversioned
+        );
+
+        let versioned = existing_database(
+            "INSERT INTO metadata(key, value) VALUES ('schema_version', '1');",
+        );
+        assert_eq!(stored_schema(&versioned).expect("classify"), StoredSchema::Declared(1));
+
+        let broken = existing_database(
+            "INSERT INTO metadata(key, value) VALUES ('schema_version', 'x');",
+        );
+        assert!(stored_schema(&broken).is_err());
     }
 
     #[test]
