@@ -1,7 +1,7 @@
 # GAMEPLAY QUALITY PROOF v0.1
 ## Chronosaga: The Game
 
-**Versione:** 0.1  
+**Versione:** 0.1 — revisione 2, dopo revisione avversariale di architettura e fattibilità  
 **Data:** 2026-08-26  
 **Stato:** Product/gameplay gate specification  
 **Base tecnica:** `develop@10ea07c54327f363211921e7f3104c1cade6e638` (M1 completato)  
@@ -104,11 +104,11 @@ DILEMMA
    ↓              ↓              ↓
 RESOURCE       CHARACTER       FACTION
    │              │              │
-   │           MEMORY         GRIEVANCE /
-   │              │           DESIRE
+   │           MEMORY        AGENDA ITEM
+   │              │              │
    └──────────────┼──────────────┘
                   ↓
-                CLOCK
+               PRESSURE
                   ↓
         DELAYED CONSEQUENCE
                   ↓
@@ -127,6 +127,8 @@ Il giocatore deve percepire non solo che “i numeri sono cambiati”, ma:
 
 # 3. Gameplay Quality Principles — LOCKED FOR PROOF
 
+**Nota sui nomi.** I principi di questa sezione sono numerati `GQP-1` … `GQP-10`. Le slice di implementazione della sezione 25 sono invece `GQP-0`, `GQP-A`, `GQP-B`, `GQP-C`, `GQP-D`. `GQP-0` è una **slice**, non un undicesimo principio: è chiamata così perché precede `GQP-A`, non perché preceda `GQP-1`.
+
 ## GQP-1 — No dominant choice
 
 Ogni major dilemma deve evitare un'opzione chiaramente dominante in condizioni normali.
@@ -144,8 +146,8 @@ Una major choice deve influenzare almeno **tre** dei seguenti layer:
 - resource/settlement;
 - character;
 - relationship/memory;
-- faction grievance/desire;
-- clock/pressure;
+- faction agenda item;
+- pressure;
 - future event eligibility;
 - recovery options.
 
@@ -167,7 +169,7 @@ Una conseguenza importante ritardata deve avere almeno uno dei seguenti:
 
 - warning intermedio;
 - character callback;
-- clock stage change;
+- pressure stage change;
 - faction bulletin;
 - recap causale;
 - event subtitle/tooltip che richiama la causa.
@@ -224,8 +226,8 @@ Il turno deve però mantenere almeno una tensione o opportunità leggibile.
 
 Durante la maggior parte della sessione deve esistere almeno una domanda aperta significativa:
 
-- “Rian aveva ragione sul guasto?”
-- “Lira reagirà al mio decreto?”
+- “Il tecnico aveva ragione sul guasto?”
+- “La portavoce reagirà al mio decreto?”
 - “La FCL userà il debito contro di me?”
 - “La crisi sanitaria è davvero sotto controllo?”
 
@@ -252,19 +254,21 @@ Il Gameplay Quality Proof non è M2 completo.
 Target:
 
 ```text
-1 settlement
-5 important characters
+1 settlement          Helios Reach (variante del proof)
+5 important characters  cast esistente, ruoli funzionali del proof
 2 factions
 4 focal resources
-3 major pressure clocks
-8 event families/templates
-~6 pattern detectors
+2 pressures           1 esplicita + 1 derivata
+5 event families
+4 pattern detectors
 12–15 player turns
 persistent save/load
 procedural/grounded text sufficient
 0 generative AI required
 0 tactical combat required
 ```
+
+Lo scope è deliberatamente più piccolo della prima stesura. Un proof che non si può buttare via non è un proof: è già il prodotto.
 
 ## 4.1 Focal resources
 
@@ -279,13 +283,16 @@ Questo NON revoca il target product-wide di 8–10 risorse principali indicato n
 
 ## 4.2 Experimental scenario
 
-Working name: **Helioford**.
+Lo scenario è **Helios Reach**, riusato e non sostituito. Vedi sezione 6.
 
-Nome, lore e cast sono **PROVISIONAL** e non costituiscono canon lock.
+Il proof deve essere implementabile come variante separata e gated, senza distruggere il baseline M1 già accettato e validato sull'app Windows installata.
 
-Il proof deve essere implementabile come scenario separato/gated, senza distruggere il baseline M1 già accettato.
+## 4.3 Stato P0 — nota di contesto
+
+Per evitare ambiguità di stato: la fattibilità P0 è **già accettata** ai fini del gameplay. La qualificazione di release e hardware, e lo stato `releaseApproved` dei modelli, restano preoccupazioni separate e deliberatamente differite. Questo documento non riapre P0 e non modifica la storia della roadmap.
 
 ---
+
 
 # 5. Character model minimo
 
@@ -298,7 +305,6 @@ identity
 role
 core value
 current goal
-vulnerability / fear
 1–2 key relationships
 salient memories
 current pressure
@@ -320,18 +326,31 @@ Ogni campo aggiunto deve modificare almeno uno di:
 
 Campi puramente decorativi non fanno parte del proof.
 
-## 5.2 Salient memory
+## 5.2 Semantica autoritativa nuova — minima
 
-Il current `CharacterMemory` contract già conserva `id`, `summary`, `tags`, Player Turn e `CausalSource`.
+Il proof introduce come stato autoritativo nuovo soltanto:
 
-Il proof deve estendere la semantica in modo minimale per poter rappresentare, direttamente o attraverso campi/tag strutturati:
+- `coreValue`;
+- `currentGoal`;
+- relazioni fra personaggi;
+- le aggiunte alla memoria saliente strettamente necessarie.
+
+**`vulnerability` / `fear` non è un campo autoritativo del proof.** Può restare caratterizzazione narrativa e di contenuto quando è derivabile da `coreValue`, `currentGoal`, `stress`, `morale` e memorie. Nessuna decisione del giocatore lo consulta in modo che non sia già coperto da quei valori, e la regola 5.1 esclude i campi che non producono comportamento.
+
+## 5.3 Salient memory
+
+Il contratto `CharacterMemory` attuale conserva già `id`, `summary`, `tags`, Player Turn e `CausalSource`.
+
+Il proof estende la semantica in modo minimale per poter rappresentare:
 
 - target/subject;
 - valence: positive / negative / ambivalent;
 - salience;
-- visibility/knowledge origin quando necessario;
+- origine della conoscenza quando necessario;
 - behavior hook;
 - callback eligibility.
+
+Ciò che governa codice va tipizzato; ciò che è soltanto descrittivo può restare nei tag esistenti.
 
 Non fissare a priori un numero universale di memorie. Target operativo: **pochi ricordi salienti e percepibili**. Se tre ricordi producono più gameplay di venti, tre sono preferibili.
 
@@ -343,9 +362,9 @@ three isolated rationing grievances
 "Player repeatedly rationed my district"
 ```
 
-La strategia esatta di consolidamento è PROVISIONAL.
+Il consolidamento è una **regola** del World Tick, non un effetto d'autore. La strategia esatta è PROVISIONAL e può essere rimandata oltre i 15 turni se non serve prima.
 
-## 5.3 Character pressure
+## 5.4 Character pressure
 
 Usare gli stati esistenti (`stress`, `morale`) dove possibile prima di aggiungere nuove barre.
 
@@ -353,58 +372,39 @@ Il proof non introduce un life-sim di needs granulari.
 
 ---
 
-# 6. Cast minimo — PROVISIONAL CONTENT
 
-## EDDA — Steward
+# 6. Cast del proof — ruoli funzionali su identità esistenti
 
-- **Role:** settlement steward / governance.
-- **Core value:** stabilità collettiva.
-- **Current goal:** evitare una crisi di legittimità.
-- **Vulnerability:** burnout e paura di perdere il controllo istituzionale.
-- **Key relation:** fiducia funzionale con Rian; tensione politica con Lira.
-- **Faction connection:** interlocutrice naturale del Council of Order.
+## 6.1 Lo scenario è HELIOS REACH
 
-## RIAN — Infrastructure Engineer
+Il proof **non** introduce un mondo nuovo. Usa **Helios Reach**, l'insediamento già esistente e già validato nell'app Windows, con le sue coorti, i suoi gruppi politici, le sue due fazioni e il suo cast.
 
-- **Role:** acqua/energia/manutenzione.
-- **Core value:** integrità tecnica; non nascondere rischi strutturali.
-- **Current goal:** stabilizzare la rete.
-- **Vulnerability:** senso di colpa se un guasto evitabile provoca danni.
-- **Key relation:** rapporto professionale con Edda; può essere influenzato da chi protegge il sistema rispetto alla politica.
-- **Faction connection:** corteggiato da entrambe le parti per la sua competenza.
+Il motivo è pratico: un secondo scenario raddoppia il contenuto da mantenere e dimezza l'attenzione, per guadagnare soltanto dei nomi. E il cast esistente ha già memorie funzionanti scritte dal World Tick.
 
-## MARA — Medic
+La variante GQP è **derivata** da Helios Reach e ne riusa le identità — id di personaggi e fazioni — dove praticabile.
 
-- **Role:** clinica/triage.
-- **Core value:** non usare vite vulnerabili come semplice variabile di efficienza.
-- **Current goal:** mantenere la clinica operativa.
-- **Vulnerability:** trauma da triage e scarsità.
-- **Key relation:** forte legame con Lira.
-- **Faction connection:** diffidente verso imposizioni che sacrificano pazienti per ordine/produzione.
+**Vincolo di protezione del baseline:** non si muta lo scenario baseline soltanto per trasformarne il cast. Il baseline M1 accettato resta invariato e le sue regressioni restano verdi. La variante del proof può assegnare al cast esistente ruoli funzionali, obiettivi e semantica di valore specifici del proof, senza rompere le aspettative di regressione M1.
 
-## JACE — Quartermaster / Fixer
+## 6.2 Ruoli funzionali richiesti
 
-- **Role:** magazzini, scambi, canali informali.
-- **Core value:** preservare margine di manovra.
-- **Current goal:** consolidare una rete di scambi/debiti.
-- **Vulnerability:** esposizione a ricatto/indagine.
-- **Key relation:** rapporto ambiguo con Edda; conflitto potenziale con Rian sui workaround.
-- **Faction connection:** legami opachi con Free Conduit League.
+Il proof richiede che ogni personaggio abbia una posizione distinta rispetto alle risorse focali. Questo è ciò che rende possibile la previsione: un personaggio la cui posizione non tocca acqua, energia, cibo o medicine non produce decisioni prevedibili.
 
-## LIRA — Community Advocate
+Ruoli funzionali necessari, da assegnare al cast esistente:
 
-- **Role:** rappresentanza informale/comunicazione politica.
-- **Core value:** equità e legittimità percepita.
-- **Current goal:** ottenere trasparenza e voce nelle decisioni.
-- **Vulnerability:** impulsività; può trasformare protesta legittima in escalation.
-- **Key relation:** legame forte con Mara; tensione con Edda.
-- **Faction connection:** simpatia per autonomia locale ma non subordinazione automatica alla FCL.
+- **governance / steward** — arbitra fra priorità, porta il costo politico;
+- **infrastruttura** — avvisa in anticipo, ricorda gli avvisi ignorati;
+- **cura / clinica** — porta la pressione epidemica e il triage;
+- **logistica / approvvigionamento** — apre le opzioni informali e i loro debiti;
+- **comunità / portavoce** — porta la voce delle coorti e la responsabilità pubblica.
 
-## 6.1 Attachment gate
+Nomi, lore e attribuzione esatta dei ruoli sono **PROVISIONAL** e non costituiscono canon lock.
+
+## 6.3 Attachment gate
 
 Almeno due personaggi devono, entro 12–15 turni, produrre una reazione futura che il giocatore possa prevedere **per i motivi giusti** sulla base di valore, memoria o relazione.
 
 ---
+
 
 # 7. Relationship model minimo
 
@@ -414,10 +414,9 @@ Per il proof ogni relazione importante richiede:
 
 ```text
 sourceCharacterId
- targetCharacterId
- type
- strength: low | medium | high
- publicKnowledge: boolean / derived visibility
+targetCharacterId
+type
+strength: low | medium | high
 ```
 
 Tipi iniziali sufficienti:
@@ -428,25 +427,30 @@ Tipi iniziali sufficienti:
 - authority/dependent;
 - debt/obligation.
 
-La lista definitiva può essere più piccola se il scenario non usa tutti i tipi.
+La lista definitiva può essere più piccola se lo scenario non usa tutti i tipi.
 
-## 7.1 Social propagation
+Non è richiesto un campo `publicKnowledge` esplicito sulla relazione: la visibilità che il proof deve rappresentare riguarda le **azioni**, non i legami, ed è coperta dalla sezione 7.1.
 
-Una reazione non si propaga magicamente.
+## 7.1 Social propagation — tre canali
 
-Canali ammessi:
+Una reazione non si propaga magicamente. Il proof ammette **tre** canali:
 
-1. **direct** — il personaggio è target diretto;
-2. **witness** — ha assistito o ricevuto informazione esplicita;
-3. **strong relationship** — evento saliente su A può creare memoria riflessa in B;
-4. **public action** — decreto/assemblea/bulletin può diventare conoscenza di fazione;
-5. **discovery** — un segreto diventa pubblico attraverso evento specifico.
+1. **direct** — il personaggio è il target diretto dell'azione;
+2. **strong relationship reflection** — un evento saliente su A può creare una memoria riflessa in B quando esiste una relazione forte;
+3. **public / discovered action** — un'azione pubblica, o un'azione segreta resa pubblica da un evento di scoperta deterministico, diventa conoscenza di fazione e di comunità.
+
+Non è previsto:
+
+- un grafo dei testimoni;
+- un grafo generale della conoscenza;
+- alcun delta di opinione globale automatico per una scelta segreta.
+
+**Le azioni segrete restano locali** finché un evento deterministico di scoperta o di pubblicazione non le espone. È questa asimmetria che rende la trasparenza una scelta invece di un default, ed è ciò che alimenta `SECRET_ACTION_DISCOVERED`.
 
 Per il proof la propagazione massima normale è 1–2 hop.
 
-Nessun global opinion delta automatico per una scelta segreta.
-
 ---
+
 
 # 8. Faction model minimo
 
@@ -456,67 +460,108 @@ Fazioni sperimentali:
 
 - **Material interest:** rete critica stabile, tributi/standard, controllo istituzionale.
 - **Ideology:** centralizzazione, disciplina, prevedibilità.
-- **Short desire:** Helioford rimane affidabile.
+- **Short desire:** l'insediamento resta affidabile.
 - **Fear:** autonomia incontrollata / scandalo / instabilità.
 - **Compromise:** risultati tecnici verificabili e stabilità.
-- **Escalation:** violazioni pubbliche ripetute, promesse infrante, dipendenza manifesta dalla FCL.
+- **Escalation:** violazioni pubbliche ripetute, promesse infrante, dipendenza manifesta dalla fazione autonomista.
 
 ## Free Conduit League — FCL
 
 - **Material interest:** accesso indipendente a energia e scambi.
 - **Ideology:** autonomia, reti locali, pragmatismo.
-- **Short desire:** ottenere accesso/diritti informali o formali a Helioford.
-- **Fear:** blocco CO e perdita di contatti.
+- **Short desire:** ottenere accesso o diritti informali all'insediamento.
+- **Fear:** blocco istituzionale e perdita di contatti.
 - **Compromise:** crisi condivise e vantaggio reciproco.
 - **Escalation:** tradimento di accordi, repressione dei propri contatti, chiusura totale.
 
-## 8.1 Structured grievance/desire
+Nello scenario del proof questi ruoli sono assunti dalle fazioni già esistenti in Helios Reach, riusandone le identità: vedi sezione 6.
 
-Il proof deve poter esprimere concettualmente:
+## 8.1 FactionAgendaItem — un solo concetto strutturato
+
+Il proof introduce **un** concetto strutturato, non due collezioni parallele:
 
 ```text
-Faction grievance:
+FactionAgendaItem:
+  kind: desire | grievance
   id
-  cause/source
   subject
-  severity
-  persistence
-  compromise condition
-
-Faction desire:
-  id
-  target/outcome desired
-  urgency
-  cause
-  fulfillment condition
+  causal source
+  intensity / severity
+  satisfy / resolve condition
 ```
 
-`reputation` può essere mantenuta come metrica aggregata/backcompat, ma un evento politico importante deve poter spiegare **quale grievance/desire** lo rende possibile.
+`kind` è una distinzione **semantica reale**, non un segno algebrico. Un desiderio non è un rancore con severità negativa: un desiderio si soddisfa concedendo qualcosa, un rancore si risolve riparando qualcosa, e le due condizioni non sono l'una l'inverso dell'altra. Modellarli come un unico asse numerico renderebbe impossibile distinguere una fazione appagata da una fazione placata.
+
+Una collezione unica evita invece il problema opposto: due tabelle separate che devono restare coerenti a mano.
+
+`reputation` può restare come metrica aggregata e per compatibilità, ma un evento politico importante deve poter spiegare **quale elemento di agenda** lo rende possibile.
+
+## 8.2 Confine con la politica interna
+
+`PoliticalGroupState` resta politica **interna** all'insediamento: coorti, approvazione, linee rosse.
+
+`FactionAgendaItem` resta memoria politica **fra** fazioni ed esterna.
+
+I due livelli non vanno duplicati. Se una regola sta scrivendo la stessa verità in entrambi, uno dei due è il posto sbagliato.
 
 ---
 
-# 9. Three major pressure clocks
 
-Clocks del proof:
+# 9. Pressure model — one explicit, one derived
 
-1. **EPIDEMIC**
-2. **INFRASTRUCTURE**
-3. **LEGITIMACY**
+Il proof usa **due** pressioni, non tre.
 
-Non introdurre `AUDIT` come quarto clock iniziale. Un audit può essere una situazione/evento derivato da secret actions + CO grievance + discovery/evidence.
+```text
+EPIDEMIC        pressione esplicita, stato autoritativo proprio
+INFRASTRUCTURE  pressione derivata dallo stato dei nodi di produzione
+```
 
-## 9.1 Clock semantics
+## 9.1 EPIDEMIC — esplicita
 
-Ogni clock deve possedere:
+È l'unica pressione che crea un dilemma non esprimibile con lo stato M1 esistente: medicine e acqua competono, e la scelta "curare adesso o prevenire dopo" non ha oggi alcuna rappresentazione.
 
-- internal deterministic value/stage;
-- visible qualitative stage;
-- multiple causes;
-- at least two player levers;
-- threshold signals/events;
-- causal contributors surfaced in UI.
+Requisiti:
 
-Suggested visible stages:
+- valore interno deterministico e stadio qualitativo visibile;
+- cause multiple: penuria d'acqua, soddisfazione delle coorti, scelte di triage precedenti;
+- almeno due leve del giocatore;
+- eventi di soglia;
+- contributori causali esposti nell'UI.
+
+## 9.2 INFRASTRUCTURE — derivata
+
+Non introduce un contatore nuovo. Si deriva da `ProductionNodeState` — condizione, efficienza — più lo stato e la storia autoritativi della manutenzione.
+
+La ragione è che il Core calcola già questa verità: il riciclatore consuma energia e produce acqua, e la sua efficienza governa già il ciclo osservabile nel World Tick. Un contatore parallelo duplicherebbe un valore esistente e le due copie divergerebbero.
+
+**Requisito vincolante — agency reale.** Poiché la pressione è derivata, il proof deve fornire un modo tipizzato e di proprietà del Core perché manutenzione e danno modifichino la **condizione/efficienza autoritativa del nodo di produzione**. Senza di esso l'infrastruttura avanzerebbe solo per tick, senza leva del giocatore, e non soddisferebbe il requisito di agency della sezione 9.4.
+
+## 9.3 La pressione politica riusa lo stato esistente
+
+**Non esiste un clock LEGITIMACY.** La legittimità è già rappresentata tre volte nello stato autoritativo:
+
+- `SettlementState.stability`;
+- `SettlementState.satisfaction`;
+- `PoliticalGroupState.approval`;
+
+più l'agenda di fazione strutturata della sezione 8.
+
+Un quarto contatore non aggiungerebbe una decisione: aggiungerebbe un numero che il giocatore deve imparare a ignorare. Dove serve una soglia politica, è una soglia su questi valori.
+
+Nota: nessun clock `AUDIT`. Un audit è una situazione derivata da azioni segrete più agenda di fazione più scoperta.
+
+## 9.4 Semantica e agency
+
+Ogni pressione deve possedere:
+
+- valore interno deterministico;
+- stadio qualitativo visibile;
+- cause multiple;
+- almeno due leve del giocatore;
+- segnali di soglia;
+- contributori causali esposti nell'UI.
+
+Stadi visibili suggeriti:
 
 ```text
 STABLE
@@ -527,36 +572,35 @@ CRISIS
 
 Il valore numerico interno è PROVISIONAL. L'UI normale non deve necessariamente mostrare il numero esatto.
 
-## 9.2 Clock agency
+Ogni pressione deve offrire almeno due forme di interazione fra:
 
-Ogni clock deve offrire almeno due forme di interazione tra:
+- guadagnare tempo;
+- accelerare la risoluzione con costo o rischio;
+- scambiare una pressione con un'altra;
+- accettare il danno e preservare un'altra priorità.
 
-- buy time;
-- accelerate resolution with cost/risk;
-- trade one pressure for another;
-- accept damage and preserve another priority.
+**Una pressione che avanza soltanto per tick senza leva del giocatore non soddisfa il proof.**
 
-Un clock che avanza soltanto per tick senza leva del giocatore non soddisfa il proof.
-
-## 9.3 Clock causality example
+## 9.5 Esempio di causalità
 
 ```text
 INFRASTRUCTURE: CRITICAL
 
-Contributors:
-- deferred maintenance after player choice E02
-- unregistered conduit load
-- recent emergency energy draw
+Contributori:
+- manutenzione differita dopo una scelta F2
+- carico del condotto non registrato
+- prelievo energetico d'emergenza recente
 
-Mitigation available:
-- shut down clinic wing temporarily
-- request CO technical team
-- accept FCL component shipment
+Mitigazione disponibile:
+- fermare temporaneamente un'ala della clinica
+- richiedere una squadra tecnica istituzionale
+- accettare una fornitura di componenti dalla fazione autonomista
 ```
 
 Il testo è illustrativo; i valori devono provenire dal Core.
 
 ---
+
 
 # 10. Event taxonomy minima
 
@@ -573,149 +617,186 @@ Ambient flavour senza gameplay può esistere come presentation layer e non richi
 
 ---
 
-# 11. Eight event families — PROVISIONAL
+# 11. Five event families — PROVISIONAL
 
 Le famiglie sono strumenti di test, non quest line.
 
-## E01 — Water for the Sick
+Il proof ottimizza la **densità di interazione**, non il conteggio del contenuto: cinque famiglie con varianti sensibili allo stato battono otto famiglie con una variante ciascuna.
 
-Core conflict: clinic survival vs strategic water reserve / general rationing.
+## F1 — SCARCITY / TRIAGE
+
+Fusione di *Water for the Sick* e *Clinic Triage*: erano lo stesso dilemma — chi subisce la penuria — a due granularità diverse.
+
+Core conflict: sopravvivenza della clinica contro riserva strategica e razionamento generale.
 
 Must touch:
 
 - water/medicine;
-- Mara/Lira or Rian memory;
+- memoria del personaggio medico e di quello della comunità;
 - EPIDEMIC;
-- LEGITIMACY or future eligibility.
+- eleggibilità futura della responsabilità pubblica.
 
-## E02 — Priority Maintenance
+Varianti sensibili allo stato: triage individuale, razionamento di distretto, priorità contestata pubblicamente.
 
-Core conflict: spend scarce capacity now vs preserve short-term services/growth.
+## F2 — MAINTENANCE
+
+Core conflict: spendere capacità scarsa adesso contro preservare servizi a breve termine.
 
 Must touch:
 
 - energy/capacity;
-- Rian behavior/memory;
+- condizione autoritativa del nodo di produzione;
+- comportamento e memoria del personaggio tecnico;
 - INFRASTRUCTURE;
-- future blackout/repair eligibility.
+- eleggibilità futura di guasto o riparazione.
 
-## E03 — Unregistered Conduit
+## F3 — UNREGISTERED CONDUIT
 
-Core conflict: immediate energy margin vs institutional/faction dependency risk.
+Core conflict: soluzione rapida e non dichiarata contro esposizione politica.
 
 Must touch:
 
 - energy;
-- Jace;
-- FCL desire;
-- secret/public knowledge;
-- possible future discovery/audit situation.
+- agenda di fazione;
+- azione segreta e sua eventuale scoperta;
+- INFRASTRUCTURE.
 
-## E04 — Clinic Triage
+È la famiglia che alimenta `SECRET_ACTION_DISCOVERED` e che rende la trasparenza una decisione.
 
-Core conflict: protect vulnerable people vs protect critical productive/technical capacity.
+## F4 — PUBLIC ACCOUNTABILITY / TRANSPARENCY
 
-Must touch:
+Fusione di *Public Assembly* e *Rationing Disclosure*: erano entrambe "la verità diventa pubblica", con la disclosure come esito possibile dell'assemblea.
 
-- medicine;
-- Mara;
-- at least one other character/role;
-- EPIDEMIC or INFRASTRUCTURE;
-- social legitimacy.
-
-## E05 — Public Assembly
-
-Core conflict: political voice/transparency vs control/escalation risk.
+Core conflict: dire la verità sui costi contro mantenere margine di manovra.
 
 Must touch:
 
-- Lira/Edda;
-- public knowledge propagation;
-- LEGITIMACY;
-- faction future options.
+- stability/satisfaction;
+- approvazione dei gruppi politici;
+- memorie pubbliche;
+- agenda di fazione.
 
-## E06 — Rationing Disclosure
+## F5 — EXTERNAL RESCUE
 
-Core conflict: transparent pain vs short-term concealment/control.
+Core conflict: risolvere una crisi adesso contro contrarre un debito politico.
 
 Must touch:
 
-- food/water pressure;
-- public promise/knowledge;
-- LEGITIMACY;
-- later callback if concealment is discovered.
+- risorsa in crisi;
+- agenda di fazione;
+- dipendenza crescente.
 
-## E07 — External Rescue
+**Vincolo obbligatorio:** questa famiglia non deve produrre un'opzione dominante. Se accettare l'aiuto esterno è sempre corretto, la famiglia va tagliata. L'aiuto deve costare un elemento di agenda **immediato e visibile** presso la fazione avversa, e `FACTION_DEPENDENCY_GROWING` deve renderne il ripetersi progressivamente più caro.
 
-Core conflict: recover now vs dependency/leverage later.
+## 11.1 Payoff e aftermath non sono una famiglia
 
-Must be conditional on prior history, not guaranteed.
+*Governance / Systemic Payoff* è stata rimossa come famiglia autonoma.
 
-Possible providers: CO or FCL depending on grievances/desires and earlier choices.
+Il payoff non è un tipo di evento: è una **funzione dello stato accumulato** e una variante che ciascuna delle cinque famiglie deve poter produrre. Trattarlo come famiglia a sé porta inevitabilmente a scriverne uno finto — un evento che dichiara una conseguenza invece di derivarla.
 
-## E08 — Governance / Systemic Payoff
+## 11.2 Effetti tipizzati minimi
 
-Not a fixed final event.
+Le scelte del proof richiedono conseguenze multi-livello, ma il principio resta: **solo effetti tipizzati minimi**, e derivazione sistemica dove possibile.
 
-Family of variants generated by state such as:
+L'implementazione non è vincolata a un numero esatto di tipi nuovi. Sono probabilmente necessari:
 
-- institutional compromise;
-- dependency crisis;
-- local legitimacy challenge;
-- technical emergency with political consequences;
-- recovery pact.
+- creazione di memoria;
+- manipolazione esplicita della pressione epidemica;
+- manipolazione della condizione o della manutenzione di un nodo di produzione.
 
-The exact variant must be eligible because of accumulated state/patterns.
+Restano invece **derivate**, non effetti d'autore:
 
-## 11.1 Mandatory network properties
+- le relazioni cambiano per memorie accumulate, non per decreto di un evento;
+- gli elementi di agenda di fazione nascono da regole del World Tick quando lo stato li giustifica;
+- il consolidamento delle memorie è una regola, non un effetto.
 
-Across these families:
+Il confine è questo: se un autore può scrivere "la fazione ora ti odia", la fazione non è un sistema — è una variabile.
 
-- at least 2 families can be skipped entirely by good/bad prior state;
-- at least 3 change options or framing based on prior memories/grievances;
-- at least 2 early costly decisions can produce later positive payoff;
-- at least 2 apparently useful decisions can create later complications;
-- no fixed E01→E02→...→E08 sequence.
+Ogni tipo di effetto nuovo passa dall'applicatore condiviso e dalla validazione condivisa introdotti in GQP-0.
+
+## 11.3 Mandatory network properties
+
+Attraverso queste famiglie:
+
+- almeno 2 famiglie possono essere saltate interamente da uno stato precedente buono o cattivo;
+- almeno 3 cambiano opzioni o inquadramento in base a memorie ed elementi di agenda precedenti;
+- almeno 2 decisioni costose iniziali possono produrre un payoff positivo tardivo;
+- almeno 2 decisioni apparentemente utili possono creare complicazioni tardive;
+- nessuna sequenza fissa F1→F2→…→F5.
 
 ---
 
-# 12. Pattern detection — minimum set
 
-Start with approximately six deterministic detectors:
+# 12. Pattern detection — four detectors
+
+Il target iniziale è **quattro** detector, non sei.
 
 ```text
-IGNORED_ENGINEER_WARNINGS
-REPEATEDLY_PROTECTED_VULNERABLE
+IGNORED_TECHNICAL_WARNINGS
+REPEATED_PROTECTION_OR_NEGLECT
 FACTION_DEPENDENCY_GROWING
-PUBLIC_PROMISE_BROKEN
 SECRET_ACTION_DISCOVERED
-CHARACTER_CAUGHT_BETWEEN_LOYALTIES
 ```
 
-Each pattern must specify:
+## 12.1 Perché questi quattro
 
-- exact authoritative inputs;
-- pure deterministic predicate;
-- which event families/variants it can make eligible or reprioritize;
-- causal source(s) for explanation.
+Sono scelti per densità di interazione: ciascuno legge stato che il proof produce comunque, e ciascuno può cambiare l'eleggibilità di più di una famiglia.
 
-A pattern detector detects **story potential**. It does not fabricate an outcome.
+- **IGNORED_TECHNICAL_WARNINGS** — collega manutenzione, pressione infrastrutturale e memoria di un personaggio in un'unica catena. È il detector che rende un avviso ignorato una cosa che *torna indietro*, ed è la dimostrazione più diretta di conseguenza ritardata leggibile.
+- **REPEATED_PROTECTION_OR_NEGLECT** — trasforma uno schema di scelte ripetute in identità politica. Legge la storia risolta e la soddisfazione delle coorti, entrambe già autoritative, e alimenta sia la famiglia scarsità/triage sia quella della responsabilità pubblica.
+- **FACTION_DEPENDENCY_GROWING** — è il contrappeso che impedisce a EXTERNAL RESCUE di diventare l'opzione dominante. Senza di esso, chiamare aiuto è gratis; con esso, chiamarlo tre volte è una posizione politica.
+- **SECRET_ACTION_DISCOVERED** — è l'unico che introduce l'asimmetria informativa richiesta dalla sezione 7.1, ed è il ponte fra un'azione segreta locale e una conseguenza pubblica. Rende la trasparenza una scelta invece di un default.
+
+`PUBLIC_PROMISE_BROKEN` è coperto in larga parte da `REPEATED_PROTECTION_OR_NEGLECT` più la famiglia della responsabilità pubblica, e resta disponibile come quinto detector se il playtest lo richiede.
+
+`CHARACTER_CAUGHT_BETWEEN_LOYALTIES` è **rimandato** finché le relazioni non si sono dimostrate utili: richiede un grafo relazionale maturo che a questo punto del proof non esiste, e un detector che legge dati appena introdotti non può produrre gameplay leggibile.
+
+## 12.2 Requisiti per ogni detector
+
+Ogni pattern deve specificare:
+
+- input autoritativi esatti;
+- predicato puro e deterministico;
+- quali famiglie o varianti può rendere eleggibili o riprioritizzare;
+- sorgenti causali per la spiegazione.
+
+Un detector rileva **potenziale narrativo**. Non fabbrica un esito.
+
+## 12.3 Storia degli eventi risolti
+
+La logica di novità e ripetizione richiede una storia che oggi non esiste in alcuna forma nel `WorldState`. Va persistita, in forma minima:
+
+```text
+eventId
+choiceId
+playerTurn
+```
+
+Regole:
+
+1. registra **decisioni risolte autoritativamente**, non render di React e non la semplice presentazione di un evento;
+2. lo stato di gioco non si modifica per il fatto che l'UI ha mostrato qualcosa;
+3. è l'unica fonte ammessa per novità e ripetizione nel proof.
+
+Derivarla dalle memorie non è praticabile: le memorie vengono scritte solo quando una regola del World Tick lo decide, non a ogni scelta, e una storia con buchi produce penalità di ripetizione arbitrarie.
 
 ---
+
 
 # 13. Event eligibility authority
 
 `packages/game-core` remains authority for:
 
 - world state;
-- clock progression;
+- pressure progression;
 - memories;
 - relationships;
-- faction grievances/desires;
+- faction agenda;
 - delayed consequences;
 - pattern predicates;
 - event eligibility;
 - authoritative choice resolution;
+- resolved event history;
 - StateDelta;
 - World Tick.
 
@@ -725,71 +806,74 @@ Rust/Tauri remains platform/persistence authority only.
 
 ---
 
-# 14. Deterministic Story Director
 
-The proof may introduce a small Director, but the name **non-authoritative** must not be misread as “free to be nondeterministic”.
+# 14. Deterministic event selection
 
-The Director does not mutate WorldState outcomes, but its selection affects which decision the player sees. Therefore selection must be replayable.
+Il proof **non introduce un sottosistema Director separato**. Evolve il confine di selezione degli eventi già esistente.
 
-## 14.1 Director requirements
+La ragione è la stessa che ha fatto nascere questo documento: un punteggio a sette termini con pesi da tarare è un altro strato di fondazione invisibile. Con più famiglie e varianti, nessuno saprebbe più perché è uscito un evento invece di un altro, e la taratura consumerebbe più tempo della scrittura del contenuto. **Una selezione che non sai spiegare in una frase non è pilotabile in un playtest.**
 
-Director may:
+## 14.1 Cosa può e cosa non può
 
-- receive the Core-produced eligible event set;
-- select which eligible event receives focus now;
-- permit a quiet turn when no urgent event must surface;
-- prefer causal relevance;
-- prefer novelty;
-- rotate character focus;
-- prefer ready payoff/complication when appropriate;
-- select a relevant causal callback.
+La selezione può:
 
-Director may NOT:
+- ricevere l'insieme eleggibile prodotto dal Core;
+- scegliere quale evento eleggibile riceve il focus adesso;
+- emettere un focus `QUIET` quando nessun evento urgente deve emergere;
+- preferire rilevanza causale;
+- penalizzare la ripetizione;
+- selezionare un callback causale rilevante.
 
-- invent eligibility;
-- modify resources/clocks/memories/relationships/factions;
-- create a StateDelta;
-- hide a mandatory crisis beyond its fairness window;
-- use an LLM to choose gameplay state.
+La selezione **non** può:
 
-## 14.2 Determinism contract
+- inventare eleggibilità;
+- modificare risorse, pressioni, memorie, relazioni o agenda di fazione;
+- produrre uno `StateDelta`;
+- nascondere una crisi obbligatoria oltre la sua finestra di equità;
+- usare un LLM per scegliere lo stato di gioco.
 
-Director output must be either:
+## 14.2 Contratto di determinismo
 
-1. a pure deterministic function of authoritative persisted/derivable state/history; or
-2. explicitly persisted as part of replayable gameplay scheduling state.
+L'output della selezione deve essere:
 
-There must be **no hidden mutable Director state** required to reproduce a run.
+1. una funzione pura e deterministica di stato e storia autoritativi persistiti o derivabili; oppure
+2. esplicitamente persistito come parte dello stato di scheduling replayabile.
 
-Tie-breaks must be stable, e.g. deterministic event ID ordering or seeded deterministic RNG.
+Non deve esistere **alcuno stato mutabile nascosto** necessario a riprodurre una run.
 
-## 14.3 Provisional priority model
+I pareggi si risolvono in modo stabile: ordinamento crescente per `id` dell'evento.
 
-Exact weights are playtest material, not locked product math.
-
-Conceptual score:
+## 14.3 Modello di priorità — tre termini
 
 ```text
 priority = urgency
          + causal_relevance
-         + payoff_readiness
-         + novelty
-         + character_focus_value
-         - repetition_penalty
-         - fatigue_penalty
+         - repetition
 ```
 
-Stable tie-break required.
+dove:
 
-## 14.4 Quiet-turn rule
+- **urgency** — una soglia di pressione è stata superata, oppure una conseguenza ritardata è dovuta;
+- **causal_relevance** — l'evento cita una memoria saliente, un elemento di agenda attivo o un pattern rilevato;
+- **repetition** — turni trascorsi dall'ultima risoluzione della stessa famiglia, letti dalla storia degli eventi risolti.
 
-The Director should be able to output “no major event now” when:
+Novità e fatica sono la stessa grandezza vista da due lati e non richiedono termini separati. La prontezza del payoff è già `DelayedConsequenceState.triggerTurn` e non va duplicata in un peso.
 
-- no mandatory threshold event is due;
-- recent turns already contained high-attention decisions;
-- consequence/recovery surfacing is more valuable than another dilemma.
+I valori numerici esatti sono materiale da playtest, non matematica di prodotto bloccata.
+
+## 14.4 Quiet focus
+
+Il focus `QUIET` è ammesso solo quando:
+
+- nessun evento di soglia obbligatorio è dovuto;
+- nessuna crisi sta superando la propria finestra di equità.
+
+È preferibile quando i turni recenti contenevano già decisioni ad alta attenzione, o quando far emergere una conseguenza o un recupero vale più di un altro dilemma.
+
+Un turno silenzioso è una scelta della selezione, non l'assenza di un evento eleggibile: vedi il modello `GameplayFocus` in GQP-0.
 
 ---
+
 
 # 15. Pacing target
 
@@ -831,8 +915,8 @@ The player must be able to reconstruct cause without opening a raw debug log.
 Minimum presentation mechanisms:
 
 - character quote referencing an earlier choice;
-- clock tooltip listing top causal contributors;
-- faction bulletin naming a grievance/desire source;
+- pressure tooltip listing top causal contributors;
+- faction bulletin naming the agenda item behind it;
 - event subtitle such as “Consequence of the maintenance decision” when appropriate;
 - compact turn recap with 1–2 causal chains;
 - memory card on character sheet.
@@ -889,10 +973,10 @@ AI may:
 AI may NOT:
 
 - choose event eligibility;
-- choose Director selection;
+- choose event selection;
 - create authoritative memories;
 - change relationships;
-- change clocks/resources;
+- change pressures/resources;
 - invent a supported option;
 - decide an outcome.
 
@@ -900,19 +984,25 @@ AI may NOT:
 
 # 18. Recovery design
 
-Each major pressure requires at least one non-trivial recovery route.
+Ogni pressione principale richiede almeno un percorso di recupero non banale.
 
-Examples:
+## 18.1 Il recupero è gameplay, non un meccanismo esistente
 
-- EPIDEMIC: spend medicine + lose productive capacity; request external supply with leverage cost; isolate affected district with legitimacy cost.
-- INFRASTRUCTURE: shut down services; accept faction technical dependency; consume strategic resource stock.
-- LEGITIMACY: public concession; fulfill a promise; allow assembly; sacrifice institutional flexibility.
+`DelayedConsequenceState.reversible` **non implementa il recupero**. È un campo che dichiara che una conseguenza è annullabile in linea di principio; non contiene la decisione, il costo, né la regola che la annulla.
 
-Recovery cannot be a free “heal” button.
+Il recupero è un evento, una scelta o una regola successiva che cambia lo stato autoritativo **a un prezzo**. `DelayedConsequenceState` può essere riusato per la tempistica e per la catena causale — è già il posto giusto in cui far arrivare un effetto più tardi con la sua sorgente — ma il proof non parte da un motore di recupero esistente, perché non esiste.
 
-It must itself create a decision, cost, relationship or future dependency.
+## 18.2 Percorsi richiesti
+
+- **EPIDEMIC:** spendere medicine e perdere capacità produttiva; richiedere fornitura esterna con costo di leva politica; isolare un distretto pagando in soddisfazione.
+- **INFRASTRUCTURE:** fermare servizi; accettare dipendenza tecnica da una fazione; consumare stock strategico per una riparazione.
+
+Il recupero non può essere un pulsante di guarigione gratuito.
+
+Deve a sua volta creare una decisione, un costo, una relazione o una dipendenza futura.
 
 ---
+
 
 # 19. Loss without requiring permadeath
 
@@ -937,63 +1027,94 @@ A loss is meaningful only if at least two consequences are visible:
 Example:
 
 ```text
-Rian leaves Helioford
-→ engineer role vacant
-→ early infrastructure warning unavailable
-→ Mara remembers why he left
-→ a later repair option changes
+Tarek Oss leaves Helios Reach
+→ ruolo tecnico vacante
+→ avviso precoce sull'infrastruttura non più disponibile
+→ Mara Senn ricorda perché se n'è andato
+→ una successiva opzione di riparazione cambia
 ```
 
 ---
 
+
 # 20. Definition of Fun — first human gate
 
-This is not a claim that “fun” can be reduced to telemetry. These gates exist to prevent self-deception.
+Questo non è il tentativo di ridurre il divertimento a telemetria. Questi cancelli esistono per impedire l'autoinganno di chi ha scritto il gioco.
 
-For the **first real human/founder playtest** of a 12–15 turn run, the proof does not pass unless all critical criteria below are met:
+Per il **primo playtest umano/del fondatore** di una run da 12–15 turni, il proof non passa se i criteri critici non sono soddisfatti.
 
-## Critical
+## 20.1 Controlli osservabili — hard checks
 
-1. **Meaningful hesitation** — at least 2 major choices caused genuine hesitation beyond reading time.
-2. **Causal recall** — tester can explain at least 2 later situations as consequences of earlier choices.
-3. **Character recall** — tester can describe at least 3/5 characters by more than role/name alone; at least 2 descriptions include value, memory, vulnerability or relationship.
-4. **Behavior prediction** — before one important NPC response, tester can predict the likely reaction for a character-based reason.
-5. **Strategy change** — at least once the tester deliberately changes plan because the world reacted.
-6. **Fair uncertainty** — no major negative outcome is judged to have appeared without a reasonable prior signal.
-7. **One-more-turn** — at least once the tester genuinely wants to continue primarily to see how an unresolved situation develops.
+Tre criteri sono promossi a verifica osservabile perché non dipendono dal giudizio di chi valuta:
 
-## Strong positive signals
+1. **Esitazione misurabile.** La telemetria registra il tempo fra la comparsa dell'evento e la risoluzione della scelta. Un dilemma vero produce pause misurabilmente più lunghe del tempo di lettura. È l'unico segnale oggettivo disponibile su un campione di uno, e va strumentato (sezione 22).
+2. **Richiamo causale non assistito.** A fine run, senza guardare lo schermo né i log, il tester spiega almeno due situazioni tardive come conseguenze di scelte precedenti. Non assistito è la parte che conta: se serve l'UI per ricostruire la catena, i breadcrumb non stanno funzionando.
+3. **Divergenza deterministica di traiettoria.** Due run dallo stesso seed con scelte diverse devono produrre stati finali autoritativi materialmente diversi. Questo è **verificabile in automatico** e non richiede un essere umano; è già l'exit di GQP-B ed è l'unico controllo che può fallire senza che nessuno se ne accorga a sensazione.
 
-- regret about at least one defensible choice;
-- coherent surprise;
-- attachment/loss aversion toward at least one character;
-- spontaneous story retelling after the run;
-- different plausible strategy desired for a replay.
+## 20.2 Criteri qualitativi critici
 
-If critical criteria fail, iterate the proof. Do not compensate by adding content volume.
+Restano critici e restano giudizio umano:
+
+4. **Predizione del comportamento** — prima di una risposta NPC importante, il tester prevede la reazione probabile per una ragione fondata sul personaggio.
+5. **Desiderio di un altro turno** — almeno una volta il tester vuole continuare soprattutto per vedere come si sviluppa una situazione irrisolta.
+6. **Richiamo dei personaggi** — il tester descrive almeno 3 personaggi su 5 con qualcosa di più di ruolo e nome; almeno 2 descrizioni includono valore, memoria o relazione.
+7. **Cambio di strategia** — almeno una volta il tester cambia deliberatamente piano perché il mondo ha reagito.
+8. **Incertezza equa** — nessun esito negativo importante appare senza un segnale preventivo ragionevole.
+
+I punti 4 e 5 restano i due segnali qualitativi decisivi: sono ciò che distingue un sistema che funziona da un sistema interessante.
+
+## 20.3 Segnali positivi forti
+
+- rimpianto per almeno una scelta difendibile;
+- sorpresa coerente;
+- attaccamento o avversione alla perdita verso almeno un personaggio;
+- racconto spontaneo della storia dopo la run;
+- desiderio di una strategia diversa per un replay.
+
+## 20.4 Onestà del campione
+
+La telemetria del fondatore **non è prova statistica** e non va presentata come tale. Un campione di uno può dimostrare che qualcosa non funziona; non può dimostrare che funziona.
+
+Se i criteri critici falliscono, si itera il proof. Non si compensa aggiungendo volume di contenuto.
 
 ---
+
 
 # 21. Small-sample validation gate
 
-After the founder gate passes, test with a small independent sample before broad M2 expansion.
+## 21.1 Ordine obbligatorio dei cancelli
 
-Target: **minimum 5 independent testers**. Percentages below are directional, not statistical proof.
+```text
+GQP technical completion
+        ↓
+founder fun PASS
+        ↓
+independent small-sample PASS
+        ↓
+M2 expansion
+```
 
-Desired signals:
+L'ordine non è indicativo. **M2 non può essere pianificata, avviata o schedulata in parallelo a un campione non ancora superato.** Un fallimento del campione dopo che M2 è già partita non produce una correzione: produce la pressione a dichiarare superato il cancello.
 
-- ≥70% can link at least one late consequence to an earlier decision;
-- ≥70% want at least 3 more turns at session end;
-- ≥60% report at least one coherent surprise;
-- ≥60% correctly predict at least one NPC reaction for the right reason;
-- ≥70% remember at least 2 characters beyond role/name;
-- ≥50% report a deliberate strategy change;
-- event/crisis fatigue remains minority feedback;
-- no repeated complaint that outcomes feel arbitrary.
+Il PASS del fondatore autorizza il campione indipendente, non l'espansione.
 
-Failure means redesign/tuning before M2 content expansion.
+## 21.2 Segnali desiderati
+
+Target: **minimo 5 tester indipendenti**. Le percentuali sono direzionali e non costituiscono prova statistica: cinque persone non producono un intervallo di confidenza, producono un'indicazione.
+
+- ≥70% collega almeno una conseguenza tardiva a una decisione precedente;
+- ≥70% vuole almeno altri 3 turni a fine sessione;
+- ≥60% riporta almeno una sorpresa coerente;
+- ≥60% prevede correttamente almeno una reazione NPC per la ragione giusta;
+- ≥70% ricorda almeno 2 personaggi oltre ruolo e nome;
+- ≥50% riporta un cambio di strategia deliberato;
+- la fatica da eventi/crisi resta feedback minoritario;
+- nessuna lamentela ripetuta che gli esiti sembrino arbitrari.
+
+Il fallimento significa redesign o tuning **prima** dell'espansione di contenuto M2.
 
 ---
+
 
 # 22. Instrumentation
 
@@ -1002,13 +1123,13 @@ For playtest builds log deterministically:
 - Player Turn / World Tick;
 - presented event ID/variant;
 - eligible event IDs at selection time;
-- Director score/reason where applicable;
+- selection score/reason where applicable;
 - choice ID;
 - choice decision time (UI telemetry only, not gameplay authority);
 - StateDelta;
-- clock before/after;
+- pressure stage before/after;
 - created/updated salient memories;
-- created/cleared grievances/desires;
+- created/resolved faction agenda items;
 - delayed consequence source;
 - causal callback shown;
 - save/load continuity.
@@ -1046,6 +1167,7 @@ Current M1 already provides valuable foundations:
 - `CharacterState` with role, stress, morale, traits and memories;
 - `FactionState` with influence/reputation/resources/relations/memory tags;
 - `SettlementState` with stability/satisfaction/resourceStock;
+- `ProductionNodeState` with recipe/capacity/efficiency;
 - `DelayedConsequenceState` with trigger turn/source/effects;
 - separate Player Turn and World Tick;
 - `GameEvent` / `EventChoice` requirements/effects;
@@ -1054,67 +1176,113 @@ Current M1 already provides valuable foundations:
 
 The proof should **extend these contracts minimally**, not replace them wholesale.
 
-Implementation must decide, with tests, whether new proof data can be represented as backward-compatible optional fields or requires a systemic schema version change. Do not bump schemas casually; do not overload opaque string flags when structured data is required for deterministic behavior.
+## 24.1 Schema versioning — DECISIONE ESTERNA
+
+La semantica autoritativa introdotta dal proof richiede **`SystemicSimulationState` schema v2**.
+
+Questa è una decisione di prodotto deliberata, non una scorciatoia. La ragione è di sicurezza, non di comodità: rendere i campi nuovi opzionali su v1 li farebbe sopravvivere al round-trip **fuori** dalla garanzia sull'input ostile che il confine di persistenza M1 ha costruito, perché il validatore attuale non rifiuta i campi che non conosce. Un salvataggio manipolato potrebbe iniettare una pressione non finita o una relazione verso un personaggio inesistente e il confine non se ne accorgerebbe.
+
+Regole vincolanti:
+
+1. i salvataggi M1 legacy restano **schema v1** e devono continuare a caricarsi;
+2. il codice nuovo deve continuare a validare e caricare v1;
+3. lo scenario GQP viene creato **direttamente come v2**;
+4. **nessuna migrazione automatica v1 → v2**: un mondo M1 non diventa un mondo del proof per il fatto di essere aperto;
+5. il codice vecchio deve **rifiutare v2**, non caricarlo silenziosamente ignorando campi autoritativi che non comprende;
+6. la versione dell'envelope di persistenza **non** cambia per questo motivo: l'envelope descrive il trasporto, lo schema descrive il contenuto;
+7. ogni campo v2 riceve validazione di forma **e** di invariante su input ostile nella stessa slice in cui viene introdotto. Nessuna eccezione, nessun "lo validiamo dopo".
+
+Il punto 5 è quello che rende il bump necessario piuttosto che opzionale: senza un numero che cambia, una build precedente non ha modo di sapere che il mondo che sta aprendo contiene decisioni che non sa interpretare.
 
 ---
+
 
 # 25. Implementation slicing
 
 No large-bang implementation.
 
+Ogni slice deve poter essere abbandonata senza lasciare uno strato di fondazione orfano. Se una slice non si può buttare via, è troppo grande.
+
+Le slice sono `GQP-0`, `GQP-A`, `GQP-B`, `GQP-C`, `GQP-D`. Non vanno confuse con i principi `GQP-1` … `GQP-10` della sezione 3, che sono vincoli di design e non unità di lavoro.
+
+## GQP-0 — Structural hygiene BEFORE any proof feature
+
+Questa slice non aggiunge gameplay, contenuto o campi di dominio. Esiste perché il codice attuale ha tre punti in cui l'aggiunta di semantica nuova divergerebbe silenziosamente.
+
+Deliver:
+
+1. **Applicazione degli effetti condivisa.** `resolveChoice` e `applyDueConsequences` contengono oggi due implementazioni indipendenti della stessa semantica di `EventEffect`. Un effetto immediato e lo stesso effetto ritardato devono passare per un unico applicatore autoritativo, altrimenti una divergenza fra i due produce mondi diversi a seconda di *quando* l'effetto arriva.
+2. **Semantica di validazione della forma condivisa dove praticabile.** L'elenco dei tipi di effetto ammessi è dichiarato in più autorità (tipo, applicatore immediato, applicatore ritardato, validatore evento, validatore stato persistito). Una divergenza fra validatore e applicatore non è un fastidio di manutenzione: è un vettore di corruzione del salvataggio, perché il confine accetterebbe un effetto che nessuno sa applicare.
+3. **Modello `GameplayFocus` esplicito.**
+
+```text
+GameplayFocus = EVENT | QUIET
+```
+
+Il turno silenzioso è una decisione del gioco, non l'assenza di un valore. Rappresentarlo come `event: GameEvent | null` sparso fra controller, sessione e componenti produce controlli di nullità in ogni punto di lettura e un'omissione basta a rompere lo schermo. Un focus tipizzato costringe ogni consumatore a dichiarare cosa fa quando non c'è evento.
+
+4. **Selezione indipendente dall'ordine del catalogo, nel percorso GQP.** La selezione pesata attuale scorre l'insieme eleggibile nell'ordine dell'array. A parità di seed e turno, riordinare il catalogo cambia l'evento estratto. Nel percorso GQP l'insieme eleggibile va ordinato deterministicamente per `id` prima della selezione.
+
+**Vincolo esplicito:** non modificare il comportamento M1 già accettato solo per ordinare il suo catalogo legacy. Il baseline M1 resta protetto e le sue regressioni devono restare verdi invariate.
+
+Exit: nessuna feature nuova, nessun contenuto nuovo, suite esistente verde, e i quattro punti sopra verificati da test.
+
 ## GQP-A — Contract & deterministic scenario foundation
 
 Deliver:
 
-- proof scenario isolated from M1 baseline;
-- minimal character value/goal/vulnerability/relationship representation;
-- structured faction grievance/desire representation;
-- 3 clocks;
-- validation/persistence/replay coverage;
-- no UI ambition beyond inspectability.
+- scenario GQP derivato da Helios Reach, isolato dal baseline M1;
+- `SystemicSimulationState` schema v2 con le regole della sezione 24;
+- `coreValue`, `currentGoal`, relazioni fra personaggi;
+- `FactionAgendaItem` strutturato;
+- pressione EPIDEMIC esplicita e pressione INFRASTRUCTURE derivata;
+- storia degli eventi risolti (sezione 12.1);
+- validazione della forma e degli invarianti su input ostile per **ogni** campo nuovo, nella stessa slice;
+- nessuna ambizione di UI oltre l'ispezionabilità.
 
-Exit: state can round-trip and replay deterministically.
+Exit: lo stato fa round-trip e replay deterministico su file reale.
 
 ## GQP-B — Meaningful choice network
 
 Deliver:
 
-- first 4 event families;
-- multi-layer effects;
-- salient memory behavior hooks;
-- social propagation rules;
-- delayed consequences with causal breadcrumbs;
-- recovery paths.
+- prime tre famiglie di eventi;
+- effetti tipizzati minimi necessari (sezione 11.2);
+- hook comportamentali sulle memorie salienti;
+- propagazione sociale a tre canali;
+- conseguenze ritardate con breadcrumb causali;
+- almeno un percorso di recupero reale per ciascuna pressione.
 
-Exit: at least two clearly different deterministic trajectories from same starting seed/alternative choices.
+Exit: **due traiettorie deterministicamente divergenti dallo stesso seed sotto scelte diverse, verificate da un test**, non da un'impressione.
 
 ## GQP-C — Directed pacing
 
 Deliver:
 
-- remaining event families required for proof;
-- pattern detectors;
-- deterministic eligible queue selection;
-- novelty/cooldown;
-- quiet turns;
-- causal callback selection;
-- Normal/Analysis explanation surfaces.
+- famiglie di eventi rimanenti;
+- quattro pattern detector;
+- selezione a tre termini dentro il confine di selezione esistente;
+- novità/ripetizione derivata dalla storia risolta;
+- turni silenziosi;
+- selezione del callback causale;
+- superfici di spiegazione Normal.
 
-Exit: 12–15 turn reference runs do not require a hardcoded event sequence and produce materially different stories under different choices.
+Exit: run di riferimento da 12–15 turni senza sequenza hardcoded, con storie materialmente diverse sotto scelte diverse.
 
 ## GQP-D — Real Windows playtest build
 
 Deliver:
 
-- installed-app lifecycle remains valid;
-- exact proof scenario playable through real UI;
-- telemetry captured;
-- founder playtest performed;
-- Definition of Fun scored honestly.
+- ciclo di vita dell'app installata ancora valido;
+- scenario del proof giocabile attraverso l'UI reale;
+- telemetria catturata;
+- playtest del fondatore eseguito;
+- Definition of Fun valutata onestamente.
 
-Exit: PASS / ITERATE decision.
+Exit: decisione PASS / ITERATE.
 
 ---
+
 
 # 26. Explicit non-goals until proof passes
 
@@ -1131,7 +1299,7 @@ Do NOT build for this proof:
 - full genealogy;
 - complex law tree;
 - full faction internal subgroups;
-- generative Story Director;
+- generative or non-deterministic event selection;
 - AI-generated authoritative events/outcomes;
 - large visual/art production pass;
 - meta-progression;
@@ -1191,7 +1359,9 @@ The proof is DONE only when all are true:
 8. pacing includes real quiet/recovery turns without feeling empty;
 9. founder Definition of Fun critical gate passes;
 10. no P1/P2 correctness/replay/persistence issue remains;
-11. only after this, schedule small-sample validation and M2 expansion.
+11. only after all the above, the small-sample validation may be **scheduled**.
+
+M2 expansion is not part of this list and is not authorized by it. Completing the proof authorizes the founder gate; passing the founder gate authorizes the small-sample validation; **only a passed small-sample authorizes M2**, and M2 may not be scheduled in parallel with a sample that has not yet passed (section 21.1).
 
 ---
 
