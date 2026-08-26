@@ -157,11 +157,37 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn open_database(app: &AppHandle) -> Result<Connection, String> {
-    let path = database_path(app)?;
-    let connection = Connection::open(&path)
-        .map_err(|error| format!("Unable to open SQLite database {}: {error}", as_string(&path)))?;
+    open_database_at(&database_path(app)?)
+}
 
+/// Open, classify, migrate, and only then configure the file.
+///
+/// The order is the whole point, and it is stricter than it looks:
+///
+/// 1. connection-local settings only — `foreign_keys` lives in this handle and
+///    touches nothing on disk;
+/// 2. classify and either refuse or migrate atomically;
+/// 3. `journal_mode = WAL` **last**, because that one is persistent.
+///
+/// Step 3 was briefly step 1, which quietly broke the fail-closed contract:
+/// `journal_mode` rewrites the file's header and leaves `-wal`/`-shm` beside
+/// it, so a database written by a future build — one this build must refuse
+/// without touching — was being converted before anyone asked whether it was
+/// allowed to be opened at all. Refusing a file you have already modified is
+/// not refusing it.
+///
+/// WAL is not needed *during* the migration, and it must not move inside the
+/// migration transaction: `PRAGMA journal_mode` cannot run in one.
+///
+/// Taking a path rather than an `AppHandle` is what makes the real sequence
+/// testable against a real file; the command path is a one-line wrapper.
+fn open_database_at(path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(path)
+        .map_err(|error| format!("Unable to open SQLite database {}: {error}", as_string(path)))?;
+
+    configure_connection(&connection)?;
     migrate_database(&connection)?;
+    enable_write_ahead_logging(&connection)?;
 
     Ok(connection)
 }
@@ -243,17 +269,51 @@ fn migrate_database(connection: &Connection) -> Result<u32, String> {
     // Fresh, or a real v1. Both are brought forward by the same
     // `IF NOT EXISTS` statements: a v1 file keeps `metadata` and
     // `campaign_smoke` exactly as they are and gains `campaign_systemic`.
-    initialize_schema(connection)?;
-
+    //
+    // The two halves — creating the shape and declaring the version — commit
+    // together or not at all. Separately, they could strand a database that
+    // this same build would then refuse forever: a Fresh file that got its
+    // `metadata` table and lost the process before the version was written
+    // comes back as `Unversioned`, which is a hard refusal by design. A
+    // migration must never be able to produce a state its own build rejects.
+    //
+    // `BEGIN IMMEDIATE` rather than the default deferred begin: the write lock
+    // is taken up front, so a second process cannot start the same migration
+    // and discover the conflict halfway through.
     connection
-        .execute(
-            "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [DATABASE_SCHEMA_VERSION.to_string()],
-        )
-        .map_err(|error| format!("Unable to store SQLite schema version: {error}"))?;
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| format!("Unable to begin the schema migration: {error}"))?;
 
-    Ok(DATABASE_SCHEMA_VERSION)
+    let applied = initialize_schema(connection).and_then(|()| {
+        connection
+            .execute(
+                "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [DATABASE_SCHEMA_VERSION.to_string()],
+            )
+            .map(|_| ())
+            .map_err(|error| format!("Unable to store SQLite schema version: {error}"))
+    });
+
+    match applied {
+        Ok(()) => {
+            connection
+                .execute_batch("COMMIT")
+                .map_err(|error| format!("Unable to commit the schema migration: {error}"))?;
+            Ok(DATABASE_SCHEMA_VERSION)
+        }
+        Err(reason) => {
+            // The rollback failing would mean the connection is unusable; say
+            // so rather than reporting only the original cause, because the
+            // two situations need different responses from whoever reads it.
+            if let Err(rollback) = connection.execute_batch("ROLLBACK") {
+                return Err(format!(
+                    "{reason} (and the migration could not be rolled back: {rollback})"
+                ));
+            }
+            Err(reason)
+        }
+    }
 }
 
 /// Classify a database file without writing to it.
@@ -297,12 +357,39 @@ fn stored_schema(connection: &Connection) -> Result<StoredSchema, String> {
 /// Split out so the storage logic can be exercised against an in-memory
 /// database: the Tauri commands need an `AppHandle` and cannot run in a unit
 /// test, but what they actually do — the SQL — has no reason to be untestable.
+/// Connection-level settings, applied before any migration.
+///
+/// These are deliberately not part of `initialize_schema`. `PRAGMA
+/// journal_mode` cannot run inside a transaction, and the schema work now does
+/// — so a pragma left among the DDL would either fail or silently do nothing
+/// the moment the migration became atomic. They also are not schema: WAL is a
+/// property of the file, foreign keys a property of the connection, and neither
+/// is something a migration should be able to roll back.
+fn configure_connection(connection: &Connection) -> Result<(), String> {
+    // Connection-local only. Nothing here may write to the file, because at
+    // this point nobody has yet asked whether this file may be opened.
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|error| format!("Unable to configure the SQLite connection: {error}"))
+}
+
+/// Persistent journal configuration, applied only to a database this build has
+/// accepted.
+///
+/// Separate from `configure_connection` because it is a different kind of act:
+/// this one rewrites the file header and creates `-wal`/`-shm` companions. It
+/// therefore runs after classification and after any migration has committed —
+/// never before, and never inside the migration transaction.
+fn enable_write_ahead_logging(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL;")
+        .map_err(|error| format!("Unable to enable write-ahead logging: {error}"))
+}
+
 fn initialize_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA journal_mode = WAL;
-             CREATE TABLE IF NOT EXISTS metadata (
+            "CREATE TABLE IF NOT EXISTS metadata (
                key TEXT PRIMARY KEY NOT NULL,
                value TEXT NOT NULL
              );
@@ -481,7 +568,12 @@ fn get_database_status(app: AppHandle) -> Result<DatabaseStatus, String> {
     Ok(DatabaseStatus {
         ready: true,
         path: as_string(&path),
-        schema_version: SMOKE_SAVE_SCHEMA_VERSION,
+        // The database's own version, not a payload's. These are separate
+        // domains: the file on disk is at v2 because it gained the systemic
+        // table, while a smoke save is still a v1 document. Reporting the
+        // payload version here made the diagnostics screen claim the database
+        // had never been migrated.
+        schema_version: DATABASE_SCHEMA_VERSION,
     })
 }
 
@@ -1761,5 +1853,570 @@ mod systemic_persistence_tests {
                 "main.rs mentions {rule}: simulation validation belongs to game-core"
             );
         }
+    }
+
+    /// The database's version and a payload's version are different questions.
+    ///
+    /// The diagnostics screen reported the smoke payload version as if it were
+    /// the database's, so a fully migrated v2 database displayed as v1 — the
+    /// one screen whose job is to tell the truth about storage was the screen
+    /// getting it wrong.
+    #[test]
+    fn database_diagnostics_report_the_database_version_not_a_payload_version() {
+        // The field the command fills is `DatabaseStatus::schema_version`, and
+        // the value it must carry is the database's own.
+        assert_eq!(DATABASE_SCHEMA_VERSION, 2);
+
+        let status = DatabaseStatus {
+            ready: true,
+            path: "irrelevant".to_string(),
+            schema_version: DATABASE_SCHEMA_VERSION,
+        };
+        assert_eq!(status.schema_version, 2);
+
+        // Read the command's own source rather than trusting the constant
+        // named here: the defect was precisely that it named the wrong one.
+        let source = include_str!("main.rs");
+        let command = source
+            .split_once("fn get_database_status")
+            .expect("get_database_status exists")
+            .1;
+        let body = &command[..command.find("\nfn ").unwrap_or(command.len())];
+        assert!(
+            body.contains("schema_version: DATABASE_SCHEMA_VERSION"),
+            "get_database_status must report the database schema version"
+        );
+        assert!(
+            !body.contains(concat!("schema_version: SMOKE", "_SAVE_SCHEMA_VERSION")),
+            "get_database_status must not report a payload version"
+        );
+    }
+
+    /// A v1 smoke save is still a valid v1 smoke save.
+    ///
+    /// Correcting the diagnostics must not drag the payload validator along
+    /// with it: an existing P0 campaign on disk carries schemaVersion 1 and
+    /// has to keep loading.
+    #[test]
+    fn smoke_saves_remain_valid_at_schema_version_one() {
+        let campaign = SmokeCampaign {
+            campaign_id: "cmp_smoke".to_string(),
+            seed: 7419,
+            turn: 3,
+            ai_profile: "procedural".to_string(),
+            created_at: "2026-08-26T00:00:00Z".to_string(),
+            schema_version: 1,
+        };
+        assert!(validate_smoke_campaign(&campaign).is_ok());
+
+        // And a payload claiming the database's version is not thereby valid:
+        // the two numbers are not interchangeable in either direction.
+        let confused = SmokeCampaign {
+            schema_version: DATABASE_SCHEMA_VERSION,
+            ..campaign
+        };
+        assert!(
+            validate_smoke_campaign(&confused).is_err(),
+            "a smoke save at the database's version must be rejected"
+        );
+    }
+
+    /// Four version domains, four independent questions.
+    #[test]
+    fn the_version_domains_stay_distinct() {
+        // The exact values are pinned by
+        // `the_three_version_domains_are_separate_numbers`; what this adds is
+        // that the database axis can never collapse into a payload axis.
+        //
+        // The two payload versions happen to share a number today. That is a
+        // coincidence, not a rule, so nothing may be written that depends on
+        // it — the database version is what proves they are separate axes.
+        assert_ne!(
+            DATABASE_SCHEMA_VERSION, SMOKE_SAVE_SCHEMA_VERSION,
+            "the database version and the smoke payload version are not the same domain"
+        );
+        assert_ne!(
+            DATABASE_SCHEMA_VERSION, SYSTEMIC_ENVELOPE_VERSION,
+            "the database version and the systemic envelope version are not the same domain"
+        );
+    }
+
+    // ----------------------------------------------------------------- atomic
+    //
+    // A migration must never be able to leave a database in a state that this
+    // same build then refuses. The dangerous window was between creating the
+    // schema and declaring the version: a Fresh file that got its `metadata`
+    // table and lost the process before the version landed comes back as
+    // `Unversioned`, which is a permanent refusal by design.
+    //
+    // The failures below are injected through the database itself — an index
+    // occupying the name a table needs — so nothing in production carries a
+    // test hook. `CREATE TABLE IF NOT EXISTS x` does not absorb a collision
+    // with an *index* named `x`; it fails, exactly where a crash would.
+
+    /// Make `CREATE TABLE IF NOT EXISTS <name>` fail on this connection.
+    fn block_table_name(db: &Connection, name: &str) {
+        db.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS blocker_{name}(a);
+             CREATE INDEX {name} ON blocker_{name}(a);"
+        ))
+        .expect("blocker");
+    }
+
+    /// Release the block so a retry can succeed.
+    fn unblock_table_name(db: &Connection, name: &str) {
+        db.execute_batch(&format!("DROP INDEX {name};")).expect("unblock");
+    }
+
+    fn table_exists(db: &Connection, name: &str) -> bool {
+        db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("query")
+            > 0
+    }
+
+    fn stored_version(db: &Connection) -> Option<String> {
+        db.query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn atomic_1_fresh_migration_publishes_shape_and_version_together() {
+        let db = Connection::open_in_memory().expect("db");
+        assert_eq!(migrate_database(&db).expect("migrate"), 2);
+
+        // Everything the version claims is actually there.
+        for table in ["metadata", "campaign_smoke", "campaign_systemic"] {
+            assert!(table_exists(&db, table), "{table} missing");
+        }
+        assert_eq!(stored_version(&db).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn atomic_2_v1_migration_gains_the_table_and_keeps_the_legacy_row() {
+        let db = Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             CREATE TABLE campaign_smoke (
+               campaign_id TEXT PRIMARY KEY NOT NULL,
+               payload TEXT NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+             INSERT INTO campaign_smoke(campaign_id, payload, updated_at)
+               VALUES ('p0_run', '{\"turn\":6}', 1787604343);",
+        )
+        .expect("v1 fixture");
+
+        assert_eq!(migrate_database(&db).expect("migrate"), 2);
+        assert!(table_exists(&db, "campaign_systemic"));
+        assert_eq!(stored_version(&db).as_deref(), Some("2"));
+
+        let payload: String = db
+            .query_row(
+                "SELECT payload FROM campaign_smoke WHERE campaign_id = 'p0_run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row survives");
+        assert_eq!(payload, "{\"turn\":6}");
+    }
+
+    #[test]
+    fn atomic_3_a_failed_fresh_migration_leaves_no_unversioned_tombstone() {
+        let db = Connection::open_in_memory().expect("db");
+        // Fails on the second DDL statement, after `metadata` has been created
+        // inside the transaction — precisely the window that used to strand a
+        // database.
+        block_table_name(&db, "campaign_smoke");
+
+        let error = migrate_database(&db).expect_err("must fail");
+        assert!(error.contains("campaign_smoke"), "unexpected error: {error}");
+
+        // The whole attempt is gone. Without the transaction, `metadata` would
+        // exist here with no version in it, and `stored_schema` would classify
+        // the file as Unversioned — refused by every later open.
+        assert!(!table_exists(&db, "metadata"), "metadata survived a failed migration");
+        assert!(matches!(stored_schema(&db).expect("classify"), StoredSchema::Fresh));
+    }
+
+    #[test]
+    fn atomic_4_a_failed_v1_migration_rolls_back_whole_and_keeps_the_legacy_row() {
+        let db = Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             CREATE TABLE campaign_smoke (
+               campaign_id TEXT PRIMARY KEY NOT NULL,
+               payload TEXT NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+             INSERT INTO campaign_smoke(campaign_id, payload, updated_at)
+               VALUES ('p0_run', '{\"turn\":6}', 1787604343);",
+        )
+        .expect("v1 fixture");
+
+        block_table_name(&db, "campaign_systemic");
+        let error = migrate_database(&db).expect_err("must fail");
+        assert!(error.contains("campaign_systemic"), "unexpected error: {error}");
+
+        // Still a v1 database, in every respect a v1 database is.
+        assert_eq!(stored_version(&db).as_deref(), Some("1"));
+        assert!(matches!(stored_schema(&db).expect("classify"), StoredSchema::Declared(1)));
+        assert!(!table_exists(&db, "campaign_systemic"));
+
+        let payload: String = db
+            .query_row(
+                "SELECT payload FROM campaign_smoke WHERE campaign_id = 'p0_run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row untouched");
+        assert_eq!(payload, "{\"turn\":6}");
+    }
+
+    #[test]
+    fn atomic_5_a_migration_can_be_retried_after_the_failure_clears() {
+        // Fresh, then v1: both must be recoverable, because a rollback that
+        // cannot be retried is only a tidier way to lose the database.
+        let fresh = Connection::open_in_memory().expect("db");
+        block_table_name(&fresh, "campaign_smoke");
+        migrate_database(&fresh).expect_err("first attempt fails");
+        unblock_table_name(&fresh, "campaign_smoke");
+        assert_eq!(migrate_database(&fresh).expect("retry succeeds"), 2);
+        assert_eq!(stored_version(&fresh).as_deref(), Some("2"));
+
+        let upgraded = Connection::open_in_memory().expect("db");
+        upgraded
+            .execute_batch(
+                "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+                 INSERT INTO metadata(key, value) VALUES ('schema_version', '1');",
+            )
+            .expect("v1 fixture");
+        block_table_name(&upgraded, "campaign_systemic");
+        migrate_database(&upgraded).expect_err("first attempt fails");
+        unblock_table_name(&upgraded, "campaign_systemic");
+        assert_eq!(migrate_database(&upgraded).expect("retry succeeds"), 2);
+        assert_eq!(stored_version(&upgraded).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn atomic_6_a_future_schema_is_refused_with_no_writes() {
+        let db = Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '99');",
+        )
+        .expect("future fixture");
+
+        migrate_database(&db).expect_err("must refuse");
+        // Refusing after writing is not refusing.
+        assert_eq!(stored_version(&db).as_deref(), Some("99"));
+        assert!(!table_exists(&db, "campaign_systemic"));
+        assert!(!table_exists(&db, "campaign_smoke"));
+    }
+
+    #[test]
+    fn atomic_7_an_unversioned_database_is_refused_with_no_writes() {
+        let db = Connection::open_in_memory().expect("db");
+        db.execute_batch("CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);")
+            .expect("unversioned fixture");
+
+        migrate_database(&db).expect_err("must refuse");
+        assert!(stored_version(&db).is_none());
+        assert!(!table_exists(&db, "campaign_systemic"));
+        assert!(!table_exists(&db, "campaign_smoke"));
+    }
+
+    #[test]
+    fn atomic_8_a_current_database_is_left_exactly_as_it_was() {
+        let db = Connection::open_in_memory().expect("db");
+        assert_eq!(migrate_database(&db).expect("first"), 2);
+        db.execute(
+            "INSERT INTO campaign_systemic(campaign_id, envelope_version, payload, updated_at)
+             VALUES ('cmp_7419', 1, '{\"systemic\":true}', 1787604343)",
+            [],
+        )
+        .expect("a saved campaign");
+
+        // A no-op: it returns the stored version without touching anything.
+        assert_eq!(migrate_database(&db).expect("second"), 2);
+        assert_eq!(stored_version(&db).as_deref(), Some("2"));
+        let payload: String = db
+            .query_row(
+                "SELECT payload FROM campaign_systemic WHERE campaign_id = 'cmp_7419'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("campaign survives a re-open");
+        assert_eq!(payload, "{\"systemic\":true}");
+    }
+
+    #[test]
+    fn atomic_9_pragmas_are_not_part_of_the_migration() {
+        // `PRAGMA journal_mode` cannot run inside a transaction. If a pragma
+        // were left among the DDL, making the migration atomic would either
+        // break it or silently stop applying it — so the split is checked here
+        // rather than left to whoever edits the SQL next.
+        let source = include_str!("main.rs");
+        let schema = source
+            .split_once("fn initialize_schema")
+            .expect("initialize_schema exists")
+            .1;
+        let body = &schema[..schema.find("\nfn ").unwrap_or(schema.len())];
+        assert!(
+            !body.contains("PRAGMA"),
+            "initialize_schema runs inside a transaction and must not carry pragmas"
+        );
+
+        // And it is not in `configure_connection` either, which runs before the
+        // database has been classified. The only place a persistent journal
+        // change may live is the function that runs after acceptance.
+        let configure = source
+            .split_once("fn configure_connection")
+            .expect("configure_connection exists")
+            .1;
+        let configure_body = &configure[..configure.find("\nfn ").unwrap_or(configure.len())];
+        assert!(
+            !configure_body.contains("journal_mode"),
+            "configure_connection runs before classification and must not write to the file"
+        );
+
+        let wal = source
+            .split_once("fn enable_write_ahead_logging")
+            .expect("enable_write_ahead_logging exists")
+            .1;
+        assert!(wal.contains("journal_mode"));
+    }
+
+    // ------------------------------------------------- fail-closed, on a file
+    //
+    // These drive `open_database_at` — the real open/classify/migrate/configure
+    // sequence — against a real file, because the invariant being protected is
+    // about file state and an in-memory database cannot show it.
+    //
+    // The rule: a database this build refuses must come out of the attempt
+    // byte-for-byte as it went in. `PRAGMA journal_mode` is the sharp edge —
+    // it rewrites the file header and leaves `-wal`/`-shm` behind — so every
+    // refusal case checks the journal mode explicitly. Move that pragma back
+    // ahead of classification and tests 1, 2 and 3 fail.
+
+    /// A unique scratch database path, removed when the guard drops.
+    struct ScratchDb {
+        path: std::path::PathBuf,
+    }
+
+    impl ScratchDb {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "chronosaga-test-{tag}-{}-{unique}.sqlite3",
+                std::process::id()
+            ));
+            let _ = fs::remove_file(&path);
+            Self { path }
+        }
+
+        /// Build the starting file, then close it, leaving only the file behind.
+        fn seed(&self, sql: &str) {
+            let db = Connection::open(&self.path).expect("seed open");
+            db.execute_batch(sql).expect("seed sql");
+            drop(db);
+        }
+
+        fn journal_mode(&self) -> String {
+            let db = Connection::open(&self.path).expect("open");
+            let mode: String = db
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("journal_mode");
+            drop(db);
+            mode
+        }
+
+        fn companions_exist(&self) -> bool {
+            let wal = self.path.with_extension("sqlite3-wal");
+            let shm = self.path.with_extension("sqlite3-shm");
+            wal.exists() || shm.exists()
+        }
+
+        fn open(&self) -> Result<Connection, String> {
+            open_database_at(&self.path)
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(self.path.with_extension("sqlite3-wal"));
+            let _ = fs::remove_file(self.path.with_extension("sqlite3-shm"));
+        }
+    }
+
+    /// Everything a refusal must leave untouched, captured as one value.
+    fn file_fingerprint(path: &std::path::Path) -> (u64, Vec<u8>) {
+        let bytes = fs::read(path).expect("read database");
+        (bytes.len() as u64, bytes)
+    }
+
+    const V1_FIXTURE: &str = "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+         CREATE TABLE campaign_smoke (
+           campaign_id TEXT PRIMARY KEY NOT NULL,
+           payload TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
+         );
+         INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+         INSERT INTO campaign_smoke(campaign_id, payload, updated_at)
+           VALUES ('p0_run', '{\"turn\":6}', 1787604343);";
+
+    #[test]
+    fn onfile_1_a_future_database_is_refused_without_touching_the_file() {
+        let db = ScratchDb::new("future");
+        db.seed(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '99');",
+        );
+        assert_eq!(db.journal_mode(), "delete", "fixture must start outside WAL");
+        let before = file_fingerprint(&db.path);
+
+        let error = db.open().expect_err("must refuse a future database");
+        assert!(error.contains("newer version"), "unexpected error: {error}");
+
+        // The refusal cost the file nothing: same bytes, same journal mode, no
+        // WAL companions created.
+        assert_eq!(db.journal_mode(), "delete", "a refused database was converted to WAL");
+        assert!(!db.companions_exist(), "a refused database gained WAL companions");
+        assert_eq!(file_fingerprint(&db.path), before, "a refused database was rewritten");
+    }
+
+    #[test]
+    fn onfile_2_an_unversioned_database_is_refused_without_touching_the_file() {
+        let db = ScratchDb::new("unversioned");
+        db.seed(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);",
+        );
+        assert_eq!(db.journal_mode(), "delete");
+        let before = file_fingerprint(&db.path);
+
+        let error = db.open().expect_err("must refuse an unversioned database");
+        assert!(error.contains("no schema version"), "unexpected error: {error}");
+
+        assert_eq!(db.journal_mode(), "delete");
+        assert!(!db.companions_exist());
+        assert_eq!(file_fingerprint(&db.path), before);
+    }
+
+    #[test]
+    fn onfile_3_a_never_shipped_version_is_refused_without_touching_the_file() {
+        let db = ScratchDb::new("nevershipped");
+        db.seed(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '0');",
+        );
+        assert_eq!(db.journal_mode(), "delete");
+        let before = file_fingerprint(&db.path);
+
+        let error = db.open().expect_err("must refuse a version no release produced");
+        assert!(error.contains("never existed"), "unexpected error: {error}");
+
+        assert_eq!(db.journal_mode(), "delete");
+        assert!(!db.companions_exist());
+        assert_eq!(file_fingerprint(&db.path), before);
+    }
+
+    #[test]
+    fn onfile_4_a_v1_database_migrates_and_only_then_gets_wal() {
+        let db = ScratchDb::new("v1");
+        db.seed(&format!("PRAGMA journal_mode = DELETE;\n{V1_FIXTURE}"));
+        assert_eq!(db.journal_mode(), "delete");
+
+        let connection = db.open().expect("v1 must be accepted");
+
+        let version: String = connection
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, "2");
+
+        let payload: String = connection
+            .query_row(
+                "SELECT payload FROM campaign_smoke WHERE campaign_id = 'p0_run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the legacy row survives a real migration");
+        assert_eq!(payload, "{\"turn\":6}");
+
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("mode");
+        assert_eq!(mode, "wal", "an accepted database should end up in WAL");
+    }
+
+    #[test]
+    fn onfile_5_a_current_database_opens_and_keeps_its_campaign() {
+        let db = ScratchDb::new("current");
+        {
+            let first = db.open().expect("fresh open");
+            first
+                .execute(
+                    "INSERT INTO campaign_systemic(campaign_id, envelope_version, payload, updated_at)
+                     VALUES ('cmp_7419', 1, '{\"systemic\":true}', 1787604343)",
+                    [],
+                )
+                .expect("save a campaign");
+        }
+
+        let reopened = db.open().expect("a current database opens");
+        let payload: String = reopened
+            .query_row(
+                "SELECT payload FROM campaign_systemic WHERE campaign_id = 'cmp_7419'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("campaign survives the reopen");
+        assert_eq!(payload, "{\"systemic\":true}");
+
+        let version: String = reopened
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, "2");
+    }
+
+    #[test]
+    fn onfile_6_a_fresh_database_becomes_v2_and_then_wal() {
+        let db = ScratchDb::new("fresh");
+        let connection = db.open().expect("fresh open");
+
+        for table in ["metadata", "campaign_smoke", "campaign_systemic"] {
+            let found: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("query");
+            assert_eq!(found, 1, "{table} missing from a fresh database");
+        }
+
+        let version: String = connection
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, "2");
+
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("mode");
+        assert_eq!(mode, "wal");
     }
 }

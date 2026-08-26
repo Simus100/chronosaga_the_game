@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GameEvent, WorldState } from "@paa/game-types";
 import { DesktopP0Screen } from "./components/DesktopP0Screen";
+import { SystemicPlayScreen } from "./components/SystemicPlayScreen";
 import { isChronosagaDesktop } from "./platform/desktop";
 
 type Resolution = {
@@ -8,9 +9,35 @@ type Resolution = {
   narration?: { narration: string };
 };
 
+/**
+ * The desktop app opens on the game, with diagnostics one click away.
+ *
+ * `DesktopP0Screen` is not replaced: it proved P0 and is still how the runtime,
+ * the model payload and the database are inspected. It is simply no longer the
+ * only thing Chronosaga can show.
+ */
 export function App() {
-  if (isChronosagaDesktop()) return <DesktopP0Screen />;
+  if (isChronosagaDesktop()) return <DesktopShell />;
   return <WebSimulationScreen />;
+}
+
+type DesktopSurface = "play" | "diagnostics";
+
+function DesktopShell() {
+  const [surface, setSurface] = useState<DesktopSurface>("play");
+
+  if (surface === "diagnostics") {
+    return (
+      <div className="surface">
+        <button className="surface__switch" onClick={() => setSurface("play")}>
+          ← TORNA AL GIOCO
+        </button>
+        <DesktopP0Screen />
+      </div>
+    );
+  }
+
+  return <SystemicPlayScreen onExit={() => setSurface("diagnostics")} />;
 }
 
 function WebSimulationScreen() {
