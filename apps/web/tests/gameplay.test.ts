@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WorldState } from "@paa/game-types";
 import { createSystemicScenario, runWorldTick } from "@paa/game-core";
+import { systemicEvents } from "@paa/game-data";
 import {
   choiceAvailable,
   currentEvent,
@@ -734,5 +735,140 @@ describe("P2: persistence and gameplay cannot overlap", () => {
     // The lock is never represented inside the world.
     expect(source).not.toContain("state.ioBusy");
     expect(source).not.toContain("simulation.busy");
+  });
+});
+
+describe("P2: event prose cannot promise mechanics the core does not have", () => {
+  /**
+   * Copy is a contract with the player about causality. When the text says a
+   * choice costs water every turn from now on and no such mechanic exists, the
+   * player builds a wrong model of the world and then distrusts the model that
+   * is right. So these tests check claims against effects, not spelling.
+   */
+
+  const events = Object.fromEntries(systemicEvents.map(event => [event.id, event]));
+
+  /** Every effect a choice actually carries. */
+  function effectsOf(eventId: string, choiceId: string) {
+    const choice = events[eventId]!.choices.find(candidate => candidate.id === choiceId);
+    if (!choice) throw new Error(`no choice ${choiceId} on ${eventId}`);
+    return choice.effects ?? [];
+  }
+
+  /** All prose on an event: body plus every choice's label and description. */
+  function proseOf(eventId: string): string {
+    const event = events[eventId]!;
+    return [
+      event.body,
+      ...event.choices.flatMap(choice => [choice.label, choice.description ?? ""])
+    ].join(" ").toLowerCase();
+  }
+
+  it("4: deferring the recycler no longer promises a recurring water loss", () => {
+    const effects = effectsOf("evt_recycler_maintenance", "defer_service");
+
+    // What it actually does: raise pressure, set a flag. No resource leaves,
+    // now or later, and no tick mechanic reads the flag.
+    expect(effects.map(effect => effect.type).sort()).toEqual(["FLAG_SET", "PRESSURE_DELTA"]);
+    expect(effects.some(effect => effect.type === "RESOURCE_DELTA")).toBe(false);
+
+    const prose = proseOf("evt_recycler_maintenance");
+    // The specific false promise, and the general shape of it.
+    expect(prose).not.toContain("turni a venire");
+    expect(prose).not.toContain("ogni turno");
+    expect(prose).not.toMatch(/cost[ai] acqua/);
+  });
+
+  it("5a: no choice describes a resource it does not spend", () => {
+    for (const event of systemicEvents) {
+      for (const choice of event.choices) {
+        const spent = new Set(
+          (choice.effects ?? [])
+            .filter(effect => effect.type === "RESOURCE_DELTA")
+            .map(effect => String(effect.key))
+        );
+        const text = `${choice.label} ${choice.description ?? ""}`.toLowerCase();
+
+        // Naming a resource in a cost sentence means spending it.
+        for (const [word, key] of [
+          ["unità d'acqua", "water"],
+          ["unità di energia", "energy"]
+        ] as const) {
+          if (text.includes(word)) {
+            expect(spent.has(key), `${event.id}/${choice.id} names ${key} without spending it`).toBe(true);
+          }
+        }
+
+        // And a stated amount must be the amount.
+        const amount = text.match(/(\d+) unità/);
+        if (amount) {
+          const declared = Number(amount[1]);
+          const actual = (choice.effects ?? [])
+            .filter(effect => effect.type === "RESOURCE_DELTA")
+            .map(effect => Math.abs(Number(effect.value)));
+          expect(actual, `${event.id}/${choice.id} says ${declared}`).toContain(declared);
+        }
+      }
+    }
+  });
+
+  it("5b: no prose claims production suffers, because water is not an input", () => {
+    // The recycler recipe takes energy and yields water. Spending water
+    // therefore cannot slow production — it thins the margin that population
+    // consumption eats into. This is checked against the scenario, not memory.
+    const scenario = createSystemicScenario(7419);
+    const nodes = scenario.simulation!.settlements
+      .flatMap(settlement => settlement.productionNodeIds)
+      .map(id => scenario.simulation!.productionNodes.find(node => node.id === id)!)
+      .filter(Boolean);
+
+    expect(nodes.length).toBeGreaterThan(0);
+    for (const node of nodes) {
+      expect(Object.keys(node.inputs ?? {}), `${node.id} takes water as an input`).not.toContain("water");
+    }
+
+    for (const event of systemicEvents) {
+      expect(proseOf(event.id), `${event.id} claims production suffers`).not.toContain("produzione");
+    }
+  });
+
+  it("5c: a choice that stresses one character does not claim to affect everyone", () => {
+    const effects = effectsOf("evt_reservoir_rationing", "ration_strictly");
+    const stressed = effects.filter(effect => effect.type === "CHARACTER_STRESS");
+    expect(stressed).toHaveLength(1);
+    expect(stressed[0]!.targetId).toBe("brann_001");
+
+    const choice = events["evt_reservoir_rationing"]!.choices.find(c => c.id === "ration_strictly")!;
+    expect(choice.description?.toLowerCase()).not.toContain("tutti");
+  });
+
+  it("5d: worldPressure is not described as an outcome the tick produces", async () => {
+    // `PRESSURE_DELTA` moves a number that `runWorldTick` never reads. Until
+    // something consumes it, prose must not present it as a consequence the
+    // world will deliver.
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const tick = readFileSync(
+      fileURLToPath(new URL("../../../packages/game-core/src/state/run-world-tick.ts", import.meta.url)),
+      "utf8"
+    );
+    expect(tick).not.toContain("worldPressure");
+
+    for (const event of systemicEvents) {
+      expect(proseOf(event.id), `${event.id} promises discontent`).not.toContain("malcontento");
+    }
+  });
+
+  it("5e: every systemic event still resolves against the real core", () => {
+    // The copy edits must not have touched anything the engine reads.
+    let session = newSystemicGame();
+    for (const event of systemicEvents) {
+      for (const choice of event.choices) {
+        expect(choice.effects?.length ?? 0).toBeGreaterThan(0);
+      }
+    }
+    const before = session.state.simulation!.settlements[0]!.resourceStock.water!;
+    session = playChoice(session, "release_reserve");
+    expect(session.state.simulation!.settlements[0]!.resourceStock.water).toBe(before - 4);
   });
 });

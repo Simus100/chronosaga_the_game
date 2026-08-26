@@ -481,7 +481,12 @@ fn get_database_status(app: AppHandle) -> Result<DatabaseStatus, String> {
     Ok(DatabaseStatus {
         ready: true,
         path: as_string(&path),
-        schema_version: SMOKE_SAVE_SCHEMA_VERSION,
+        // The database's own version, not a payload's. These are separate
+        // domains: the file on disk is at v2 because it gained the systemic
+        // table, while a smoke save is still a v1 document. Reporting the
+        // payload version here made the diagnostics screen claim the database
+        // had never been migrated.
+        schema_version: DATABASE_SCHEMA_VERSION,
     })
 }
 
@@ -1761,5 +1766,91 @@ mod systemic_persistence_tests {
                 "main.rs mentions {rule}: simulation validation belongs to game-core"
             );
         }
+    }
+
+    /// The database's version and a payload's version are different questions.
+    ///
+    /// The diagnostics screen reported the smoke payload version as if it were
+    /// the database's, so a fully migrated v2 database displayed as v1 — the
+    /// one screen whose job is to tell the truth about storage was the screen
+    /// getting it wrong.
+    #[test]
+    fn database_diagnostics_report_the_database_version_not_a_payload_version() {
+        // The field the command fills is `DatabaseStatus::schema_version`, and
+        // the value it must carry is the database's own.
+        assert_eq!(DATABASE_SCHEMA_VERSION, 2);
+
+        let status = DatabaseStatus {
+            ready: true,
+            path: "irrelevant".to_string(),
+            schema_version: DATABASE_SCHEMA_VERSION,
+        };
+        assert_eq!(status.schema_version, 2);
+
+        // Read the command's own source rather than trusting the constant
+        // named here: the defect was precisely that it named the wrong one.
+        let source = include_str!("main.rs");
+        let command = source
+            .split_once("fn get_database_status")
+            .expect("get_database_status exists")
+            .1;
+        let body = &command[..command.find("\nfn ").unwrap_or(command.len())];
+        assert!(
+            body.contains("schema_version: DATABASE_SCHEMA_VERSION"),
+            "get_database_status must report the database schema version"
+        );
+        assert!(
+            !body.contains(concat!("schema_version: SMOKE", "_SAVE_SCHEMA_VERSION")),
+            "get_database_status must not report a payload version"
+        );
+    }
+
+    /// A v1 smoke save is still a valid v1 smoke save.
+    ///
+    /// Correcting the diagnostics must not drag the payload validator along
+    /// with it: an existing P0 campaign on disk carries schemaVersion 1 and
+    /// has to keep loading.
+    #[test]
+    fn smoke_saves_remain_valid_at_schema_version_one() {
+        let campaign = SmokeCampaign {
+            campaign_id: "cmp_smoke".to_string(),
+            seed: 7419,
+            turn: 3,
+            ai_profile: "procedural".to_string(),
+            created_at: "2026-08-26T00:00:00Z".to_string(),
+            schema_version: 1,
+        };
+        assert!(validate_smoke_campaign(&campaign).is_ok());
+
+        // And a payload claiming the database's version is not thereby valid:
+        // the two numbers are not interchangeable in either direction.
+        let confused = SmokeCampaign {
+            schema_version: DATABASE_SCHEMA_VERSION,
+            ..campaign
+        };
+        assert!(
+            validate_smoke_campaign(&confused).is_err(),
+            "a smoke save at the database's version must be rejected"
+        );
+    }
+
+    /// Four version domains, four independent questions.
+    #[test]
+    fn the_version_domains_stay_distinct() {
+        // The exact values are pinned by
+        // `the_three_version_domains_are_separate_numbers`; what this adds is
+        // that the database axis can never collapse into a payload axis.
+        //
+        // The two payload versions happen to share a number today. That is a
+        // coincidence, not a rule, so nothing may be written that depends on
+        // it — the database version is what proves they are separate axes.
+        assert_ne!(
+            DATABASE_SCHEMA_VERSION, SMOKE_SAVE_SCHEMA_VERSION,
+            "the database version and the smoke payload version are not the same domain"
+        );
+        assert_ne!(
+            DATABASE_SCHEMA_VERSION, SYSTEMIC_ENVELOPE_VERSION,
+            "the database version and the systemic envelope version are not the same domain"
+        );
     }
 }

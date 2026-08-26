@@ -14,12 +14,17 @@ import type { GameEvent } from "@paa/game-types";
  *
  * ```text
  * choice        water leaves the settlement stock
- * world tick    production runs short, consumption bites
- * cohorts       satisfaction falls
+ * world tick    population consumption draws on a thinner stock
+ * cohorts       satisfaction falls as the shortage margin closes
  * politics      groups react to their cohorts
- * faction       resource pressure flag is raised
- * memory        the quartermaster remembers the shortage
+ * memory        a character who lives through it carries the tag
  * ```
+ *
+ * Note what is NOT in that chain: production. The recycler's recipe takes
+ * energy and yields water, so spending water does not slow production — it
+ * shortens the margin population consumption eats into. Prose that promised
+ * otherwise would teach the player the wrong causal model, which is worse
+ * than prose that says less.
  *
  * Deliberately few. A narrow first playable loop needs enough content to show
  * cause and effect, not a content library.
@@ -40,7 +45,8 @@ export const systemicEvents: GameEvent[] = [
         id: "release_reserve",
         label: "APRIRE LA RISERVA",
         description:
-          "Distribuire subito 4 unità d'acqua. La popolazione è servita oggi; la produzione ne risentirà.",
+          "Distribuire subito 4 unità d'acqua. La popolazione è servita oggi, e la riserva su cui " +
+          "il consumo attinge si assottiglia.",
         requirements: { resources: { water: 4 } },
         effects: [
           { type: "RESOURCE_DELTA", key: "water", value: -4 },
@@ -51,7 +57,7 @@ export const systemicEvents: GameEvent[] = [
         id: "hold_reserve",
         label: "TRATTENERE LA RISERVA",
         description:
-          "Nessuna distribuzione straordinaria. Lo stock regge, il malcontento cresce.",
+          "Nessuna distribuzione straordinaria. Lo stock regge; la decisione resta a verbale.",
         effects: [
           { type: "PRESSURE_DELTA", value: 1 },
           { type: "FLAG_SET", key: "reserve_withheld", value: true }
@@ -61,7 +67,7 @@ export const systemicEvents: GameEvent[] = [
         id: "ration_strictly",
         label: "RAZIONARE",
         description:
-          "Mezza distribuzione, sotto controllo di Brann Vale. Costa poco e scontenta un po' tutti.",
+          "Mezza distribuzione, sotto controllo di Brann Vale. Costa poco alla cisterna e molto a lui.",
         requirements: { resources: { water: 2 } },
         effects: [
           { type: "RESOURCE_DELTA", key: "water", value: -2 },
@@ -76,8 +82,8 @@ export const systemicEvents: GameEvent[] = [
     version: 1,
     title: "IL RICICLATORE CHIEDE MANUTENZIONE",
     body:
-      "Tarek Oss riferisce che il riciclatore perde efficienza. Fermarlo costa energia adesso; " +
-      "lasciarlo andare costa acqua per tutti i turni a venire.",
+      "Tarek Oss riferisce che il riciclatore perde efficienza. Fermarlo costa energia adesso. " +
+      "Lasciarlo andare non costa nulla oggi, e Tarek non promette che resti così.",
     category: "settlement",
     tags: ["production", "energy", "systemic"],
     weight: 1.5,
