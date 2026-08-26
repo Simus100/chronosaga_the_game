@@ -157,12 +157,37 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn open_database(app: &AppHandle) -> Result<Connection, String> {
-    let path = database_path(app)?;
-    let connection = Connection::open(&path)
-        .map_err(|error| format!("Unable to open SQLite database {}: {error}", as_string(&path)))?;
+    open_database_at(&database_path(app)?)
+}
+
+/// Open, classify, migrate, and only then configure the file.
+///
+/// The order is the whole point, and it is stricter than it looks:
+///
+/// 1. connection-local settings only — `foreign_keys` lives in this handle and
+///    touches nothing on disk;
+/// 2. classify and either refuse or migrate atomically;
+/// 3. `journal_mode = WAL` **last**, because that one is persistent.
+///
+/// Step 3 was briefly step 1, which quietly broke the fail-closed contract:
+/// `journal_mode` rewrites the file's header and leaves `-wal`/`-shm` beside
+/// it, so a database written by a future build — one this build must refuse
+/// without touching — was being converted before anyone asked whether it was
+/// allowed to be opened at all. Refusing a file you have already modified is
+/// not refusing it.
+///
+/// WAL is not needed *during* the migration, and it must not move inside the
+/// migration transaction: `PRAGMA journal_mode` cannot run in one.
+///
+/// Taking a path rather than an `AppHandle` is what makes the real sequence
+/// testable against a real file; the command path is a one-line wrapper.
+fn open_database_at(path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(path)
+        .map_err(|error| format!("Unable to open SQLite database {}: {error}", as_string(path)))?;
 
     configure_connection(&connection)?;
     migrate_database(&connection)?;
+    enable_write_ahead_logging(&connection)?;
 
     Ok(connection)
 }
@@ -341,12 +366,24 @@ fn stored_schema(connection: &Connection) -> Result<StoredSchema, String> {
 /// property of the file, foreign keys a property of the connection, and neither
 /// is something a migration should be able to roll back.
 fn configure_connection(connection: &Connection) -> Result<(), String> {
+    // Connection-local only. Nothing here may write to the file, because at
+    // this point nobody has yet asked whether this file may be opened.
     connection
-        .execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA journal_mode = WAL;",
-        )
+        .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|error| format!("Unable to configure the SQLite connection: {error}"))
+}
+
+/// Persistent journal configuration, applied only to a database this build has
+/// accepted.
+///
+/// Separate from `configure_connection` because it is a different kind of act:
+/// this one rewrites the file header and creates `-wal`/`-shm` companions. It
+/// therefore runs after classification and after any migration has committed —
+/// never before, and never inside the migration transaction.
+fn enable_write_ahead_logging(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL;")
+        .map_err(|error| format!("Unable to enable write-ahead logging: {error}"))
 }
 
 fn initialize_schema(connection: &Connection) -> Result<(), String> {
@@ -2139,10 +2176,247 @@ mod systemic_persistence_tests {
             "initialize_schema runs inside a transaction and must not carry pragmas"
         );
 
+        // And it is not in `configure_connection` either, which runs before the
+        // database has been classified. The only place a persistent journal
+        // change may live is the function that runs after acceptance.
         let configure = source
             .split_once("fn configure_connection")
             .expect("configure_connection exists")
             .1;
-        assert!(configure.contains("journal_mode"));
+        let configure_body = &configure[..configure.find("\nfn ").unwrap_or(configure.len())];
+        assert!(
+            !configure_body.contains("journal_mode"),
+            "configure_connection runs before classification and must not write to the file"
+        );
+
+        let wal = source
+            .split_once("fn enable_write_ahead_logging")
+            .expect("enable_write_ahead_logging exists")
+            .1;
+        assert!(wal.contains("journal_mode"));
+    }
+
+    // ------------------------------------------------- fail-closed, on a file
+    //
+    // These drive `open_database_at` — the real open/classify/migrate/configure
+    // sequence — against a real file, because the invariant being protected is
+    // about file state and an in-memory database cannot show it.
+    //
+    // The rule: a database this build refuses must come out of the attempt
+    // byte-for-byte as it went in. `PRAGMA journal_mode` is the sharp edge —
+    // it rewrites the file header and leaves `-wal`/`-shm` behind — so every
+    // refusal case checks the journal mode explicitly. Move that pragma back
+    // ahead of classification and tests 1, 2 and 3 fail.
+
+    /// A unique scratch database path, removed when the guard drops.
+    struct ScratchDb {
+        path: std::path::PathBuf,
+    }
+
+    impl ScratchDb {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "chronosaga-test-{tag}-{}-{unique}.sqlite3",
+                std::process::id()
+            ));
+            let _ = fs::remove_file(&path);
+            Self { path }
+        }
+
+        /// Build the starting file, then close it, leaving only the file behind.
+        fn seed(&self, sql: &str) {
+            let db = Connection::open(&self.path).expect("seed open");
+            db.execute_batch(sql).expect("seed sql");
+            drop(db);
+        }
+
+        fn journal_mode(&self) -> String {
+            let db = Connection::open(&self.path).expect("open");
+            let mode: String = db
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("journal_mode");
+            drop(db);
+            mode
+        }
+
+        fn companions_exist(&self) -> bool {
+            let wal = self.path.with_extension("sqlite3-wal");
+            let shm = self.path.with_extension("sqlite3-shm");
+            wal.exists() || shm.exists()
+        }
+
+        fn open(&self) -> Result<Connection, String> {
+            open_database_at(&self.path)
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(self.path.with_extension("sqlite3-wal"));
+            let _ = fs::remove_file(self.path.with_extension("sqlite3-shm"));
+        }
+    }
+
+    /// Everything a refusal must leave untouched, captured as one value.
+    fn file_fingerprint(path: &std::path::Path) -> (u64, Vec<u8>) {
+        let bytes = fs::read(path).expect("read database");
+        (bytes.len() as u64, bytes)
+    }
+
+    const V1_FIXTURE: &str = "CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+         CREATE TABLE campaign_smoke (
+           campaign_id TEXT PRIMARY KEY NOT NULL,
+           payload TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
+         );
+         INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+         INSERT INTO campaign_smoke(campaign_id, payload, updated_at)
+           VALUES ('p0_run', '{\"turn\":6}', 1787604343);";
+
+    #[test]
+    fn onfile_1_a_future_database_is_refused_without_touching_the_file() {
+        let db = ScratchDb::new("future");
+        db.seed(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '99');",
+        );
+        assert_eq!(db.journal_mode(), "delete", "fixture must start outside WAL");
+        let before = file_fingerprint(&db.path);
+
+        let error = db.open().expect_err("must refuse a future database");
+        assert!(error.contains("newer version"), "unexpected error: {error}");
+
+        // The refusal cost the file nothing: same bytes, same journal mode, no
+        // WAL companions created.
+        assert_eq!(db.journal_mode(), "delete", "a refused database was converted to WAL");
+        assert!(!db.companions_exist(), "a refused database gained WAL companions");
+        assert_eq!(file_fingerprint(&db.path), before, "a refused database was rewritten");
+    }
+
+    #[test]
+    fn onfile_2_an_unversioned_database_is_refused_without_touching_the_file() {
+        let db = ScratchDb::new("unversioned");
+        db.seed(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);",
+        );
+        assert_eq!(db.journal_mode(), "delete");
+        let before = file_fingerprint(&db.path);
+
+        let error = db.open().expect_err("must refuse an unversioned database");
+        assert!(error.contains("no schema version"), "unexpected error: {error}");
+
+        assert_eq!(db.journal_mode(), "delete");
+        assert!(!db.companions_exist());
+        assert_eq!(file_fingerprint(&db.path), before);
+    }
+
+    #[test]
+    fn onfile_3_a_never_shipped_version_is_refused_without_touching_the_file() {
+        let db = ScratchDb::new("nevershipped");
+        db.seed(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '0');",
+        );
+        assert_eq!(db.journal_mode(), "delete");
+        let before = file_fingerprint(&db.path);
+
+        let error = db.open().expect_err("must refuse a version no release produced");
+        assert!(error.contains("never existed"), "unexpected error: {error}");
+
+        assert_eq!(db.journal_mode(), "delete");
+        assert!(!db.companions_exist());
+        assert_eq!(file_fingerprint(&db.path), before);
+    }
+
+    #[test]
+    fn onfile_4_a_v1_database_migrates_and_only_then_gets_wal() {
+        let db = ScratchDb::new("v1");
+        db.seed(&format!("PRAGMA journal_mode = DELETE;\n{V1_FIXTURE}"));
+        assert_eq!(db.journal_mode(), "delete");
+
+        let connection = db.open().expect("v1 must be accepted");
+
+        let version: String = connection
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, "2");
+
+        let payload: String = connection
+            .query_row(
+                "SELECT payload FROM campaign_smoke WHERE campaign_id = 'p0_run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the legacy row survives a real migration");
+        assert_eq!(payload, "{\"turn\":6}");
+
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("mode");
+        assert_eq!(mode, "wal", "an accepted database should end up in WAL");
+    }
+
+    #[test]
+    fn onfile_5_a_current_database_opens_and_keeps_its_campaign() {
+        let db = ScratchDb::new("current");
+        {
+            let first = db.open().expect("fresh open");
+            first
+                .execute(
+                    "INSERT INTO campaign_systemic(campaign_id, envelope_version, payload, updated_at)
+                     VALUES ('cmp_7419', 1, '{\"systemic\":true}', 1787604343)",
+                    [],
+                )
+                .expect("save a campaign");
+        }
+
+        let reopened = db.open().expect("a current database opens");
+        let payload: String = reopened
+            .query_row(
+                "SELECT payload FROM campaign_systemic WHERE campaign_id = 'cmp_7419'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("campaign survives the reopen");
+        assert_eq!(payload, "{\"systemic\":true}");
+
+        let version: String = reopened
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, "2");
+    }
+
+    #[test]
+    fn onfile_6_a_fresh_database_becomes_v2_and_then_wal() {
+        let db = ScratchDb::new("fresh");
+        let connection = db.open().expect("fresh open");
+
+        for table in ["metadata", "campaign_smoke", "campaign_systemic"] {
+            let found: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("query");
+            assert_eq!(found, 1, "{table} missing from a fresh database");
+        }
+
+        let version: String = connection
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, "2");
+
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("mode");
+        assert_eq!(mode, "wal");
     }
 }
