@@ -797,6 +797,7 @@ familyId
 eventId
 choiceId
 playerTurn
+worldTick
 ```
 
 `familyId` è obbligatorio e non deducibile da `eventId`. La ripetizione che il proof deve penalizzare è definita **per famiglia** — riproporre la stessa domanda con un'istanza diversa è comunque ripetizione — e una storia che conserva solo l'id dell'istanza non permette di calcolarla.
@@ -806,9 +807,12 @@ Regole:
 1. `familyId` è un **identificatore di gameplay stabile**, non un'etichetta di visualizzazione. Non cambia quando cambia il titolo, e non è il nome mostrato al giocatore;
 2. l'identità storica di famiglia **non si deriva dal catalogo eventi corrente**: il catalogo è mutabile e un evento futuro rimosso o rinominato non deve poter riscrivere il passato di una run salvata. La storia porta con sé ciò che serve a interpretarla;
 3. `playerTurn` è il **Player Turn sul quale la decisione è stata risolta**, con semantica pre-incremento coerente con `StateDelta.turn`: il turno di origine della decisione, non quello risultante;
-4. registra **decisioni risolte autoritativamente**, non render di React e non la semplice presentazione di un evento;
-5. lo stato di gioco non si modifica per il fatto che l'UI ha mostrato qualcosa. Un beat quiet e un evento presentato ma non risolto non scrivono nulla;
-6. è l'unica fonte ammessa per novità e ripetizione nel proof.
+4. `worldTick` è il valore autoritativo di `SystemicSimulationState.tick` **al momento in cui la decisione è stata risolta**. Una scelta non fa avanzare il tick, quindi qui non c'è ambiguità di pre o post incremento: è il tick durante il quale la decisione è avvenuta. Serve al limite di vivacità della sezione 14.6, che si misura in tick e non in turni perché è il tick a scorrere durante i beat quiet;
+5. registra **decisioni risolte autoritativamente**, non render di React e non la semplice presentazione di un evento;
+6. lo stato di gioco non si modifica per il fatto che l'UI ha mostrato qualcosa. Un beat quiet e un evento presentato ma non risolto non scrivono nulla;
+7. è l'unica fonte ammessa per novità, ripetizione e limite del quiet nel proof.
+
+Entrambi i campi temporali sono richiesti perché rispondono a domande diverse: `playerTurn` misura **quante decisioni** sono passate — è la scala giusta per la ripetizione — mentre `worldTick` misura **quanto mondo** è passato, ed è l'unica scala che avanza anche quando il giocatore non decide nulla.
 
 Derivarla dalle memorie non è praticabile: le memorie vengono scritte solo quando una regola del World Tick lo decide, non a ogni scelta, e una storia con buchi produce penalità di ripetizione arbitrarie.
 
@@ -908,7 +912,8 @@ I pareggi si risolvono in modo stabile: ordinamento crescente per `id` dell'even
 Da questo discendono due vincoli che il resto della sezione 14 deve rispettare, e che valgono come test di correttezza del design:
 
 1. **ogni input della selezione è dato autoritativo.** Il Gameplay Beat non è un contatore autoritativo, quindi **nessun termine della selezione può misurare i beat**. La telemetria dell'UI non è mai un input;
-2. **due selezioni consecutive non possono ricevere input identici.** Se lo ricevessero, una funzione deterministica restituirebbe lo stesso risultato, per sempre. Vedi 14.5.
+2. **due selezioni consecutive non possono ricevere input identici.** Se lo ricevessero, una funzione deterministica restituirebbe lo stesso risultato, per sempre. Vedi 14.5;
+3. **input diversi non bastano.** Un selettore deterministico può legittimamente restituire lo stesso output per stati diversi: la sequenza `QUIET → tick → QUIET → tick → QUIET…` ha input sempre nuovi e non termina mai. Il determinismo non implica la vivacità, e va garantita separatamente. Vedi 14.6.
 
 ## 14.3 Modello di priorità — tre termini
 
@@ -947,7 +952,8 @@ I valori numerici esatti sono materiale da playtest, non matematica di prodotto 
 Il focus `QUIET` è ammesso solo quando:
 
 - nessun evento di soglia obbligatorio è dovuto;
-- nessuna crisi sta superando la propria finestra di equità.
+- nessuna crisi sta superando la propria finestra di equità;
+- **il limite di quiet della sezione 14.6 non è stato raggiunto.**
 
 È preferibile quando i turni recenti contenevano già decisioni ad alta attenzione, o quando far emergere una conseguenza o un recupero vale più di un altro dilemma.
 
@@ -970,13 +976,70 @@ selezione
 
 Fra un beat quiet e la selezione successiva deve avvenire una **progressione autoritativa**. Non è un ritmo arbitrario e non è un contatore finto: è un punto in cui il mondo cambia davvero.
 
-Per il proof questa progressione è il **World Tick**, che esiste già ed è già autoritativo. Un tick fa avanzare `simulation.tick`, applica produzione e consumo, fa emergere conseguenze dovute e può cambiare l'eleggibilità. Gli input della selezione successiva sono quindi necessariamente diversi da quelli della precedente, e il ciclo non può chiudersi.
+Per il proof questa progressione è il **World Tick**, che esiste già ed è già autoritativo. Un tick fa avanzare `simulation.tick` e `day`, applica produzione e consumo, fa emergere conseguenze dovute e può cambiare l'eleggibilità.
 
-Il punto qualificante è **non** che un numero si sia mosso, ma che il mondo sia cambiato in modo osservabile e ricostruibile. Una progressione che esistesse solo per incrementare un contatore, senza produrre alcun effetto sullo stato, non soddisfa questo invariante: sarebbe lo stesso ciclo con un contatore in più.
+**Questo chiude il ciclo a stato identico, e non basta.** Gli input della selezione successiva sono diversi, ma un selettore deterministico può restituire lo stesso output per input diversi: `QUIET → tick → QUIET → tick → QUIET…` non si ripete mai e non finisce mai. Quello è un problema di **vivacità**, non di determinismo, e va chiuso separatamente nella sezione 14.6.
+
+### Progressione autoritativa e progressione rilevante non sono la stessa cosa
+
+`runWorldTick` fa **sempre** avanzare `simulation.tick` e `day`. Sono contabilità: cambiano lo stato autoritativo per definizione, ma non dimostrano che sia successo qualcosa.
+
+```text
+PROGRESSIONE AUTORITATIVA     lo stato è cambiato
+                              (tick e day bastano)
+
+PROGRESSIONE RILEVANTE        c'è qualcosa da mostrare al giocatore
+                              (conseguenza, segnale, presagio, cambio di
+                               recupero, reazione di personaggio o fazione,
+                               variazione di pressione, o altro sviluppo
+                               leggibile del mondo)
+```
+
+La prima è il requisito minimo perché una nuova selezione sia lecita. La seconda è il requisito perché un beat quiet sia **presentabile**. Un tick che muove solo `tick` e `day` soddisfa la prima e non la seconda: il beat quiet che ne risulta è vuoto, ed è l'anti-pattern della sezione 23.
 
 Ne segue che il beat quiet è **il momento in cui la simulazione avanza**, ed è per questo che può contenere conseguenze, segnali e anticipazione: quelle sono ciò che il tick ha prodotto. Un beat quiet vuoto — un tick che non produce nulla da mostrare — resta l'anti-pattern della sezione 23.
 
 **Nessun contatore autoritativo di Gameplay Beat viene introdotto.** Il beat resta unità di ritmo e di presentazione; ciò che rende il ciclo replayabile è lo stato che il tick ha già il compito di far avanzare.
+
+## 14.6 Quiet limitato — contratto di vivacità
+
+La sezione 14.5 garantisce che il gioco non si fermi sullo stesso stato. Non garantisce che arrivi mai a una decisione.
+
+**Invariante richiesto:** una sequenza di beat quiet è **limitata dallo stato autoritativo**. `QUIET` non può essere scelto indefinitamente solo perché nessun evento urgente vince il punteggio.
+
+Il limite si misura in tick, non in turni: durante una sequenza quiet il Player Turn per definizione non avanza, quindi è l'unica scala che scorre.
+
+```text
+ticksSinceLastResolvedDecision = simulation.tick − lastResolved.worldTick
+```
+
+dove `lastResolved` è la voce più recente della storia (sezione 12.3), **qualunque** famiglia. Se la storia è vuota — nessuna decisione risolta, partita appena iniziata — il riferimento è il tick iniziale dello scenario, che nello scenario del proof è `0`. Non serve un campo aggiuntivo: la mancanza di storia è essa stessa un dato autoritativo.
+
+`QUIET` è ammesso solo dentro una **finestra deterministica limitata** di tick. Per l'ipotesi iniziale del proof la finestra è di **un solo intervallo di World Tick consecutivo** fra due occasioni di decisione.
+
+**Il numero è provvisorio; l'invariante no.** La costante è materiale da playtest e può cambiare senza che il contratto cambi. Ciò che non può cambiare è che il limite esista e sia derivabile da dati persistiti.
+
+### Quando il limite è raggiunto
+
+```text
+limite raggiunto
+   ├── esiste ≥1 evento eleggibile
+   │      → la selezione DEVE restituire un EVENT,
+   │        scelto con le normali regole di priorità (14.3)
+   │
+   └── zero eventi eleggibili
+          → FALLIMENTO CHIUSO
+```
+
+Il secondo ramo è deliberato. Zero eventi eleggibili al limite del quiet **non è uno stato di gioco**: è un difetto di contenuto, di eleggibilità o di progettazione dello scenario, e nel Gameplay Quality Proof deve **fallire in modo chiuso** e diventare osservabile in sviluppo e in test.
+
+Non va nascosto dietro beat di ritmo infiniti, e non va tappato con un evento riempitivo inventato per l'occasione. Un filler farebbe esattamente ciò che questo documento esiste per impedire: farebbe sembrare vivo un loop che non lo è, e sposterebbe la scoperta del difetto a dopo l'espansione dei contenuti.
+
+### Replay e persistenza
+
+Il limite è derivato da `simulation.tick` e da `lastResolved.worldTick`, entrambi persistiti e validati sotto schema v2. Ne segue che **salvare e ricaricare dentro il proof non azzera il limite**: il conteggio non vive in memoria e non è ricostruito dal nulla alla riapertura.
+
+Nessun input di telemetria, nessuno stato mutabile nascosto del selettore, nessun orologio di sistema, nessuno stato di render dell'UI, nessun LLM.
 
 ---
 
@@ -999,6 +1062,8 @@ The proof should NOT hardcode an exact event rhythm, but target approximately:
 Un beat quiet può contenere conseguenze, segnali e recap: è tempo di gioco, non tempo morto. Ciò che non contiene è una decisione autoritativa significativa, ed è per questo che non fa avanzare il Player Turn.
 
 Ciò che un beat quiet contiene **è** quanto la progressione autoritativa ha prodotto: il World Tick che separa una selezione dalla successiva (sezione 14.5). Il ritmo non è quindi una sequenza di schermate, ma l'alternanza fra selezione e avanzamento del mondo.
+
+I 3–5 beat quiet indicati sopra sono un **target di ritmo**, non un permesso: quanti beat quiet possano susseguirsi è deciso dal limite della sezione 14.6, che è un contratto e non una preferenza. Se il ritmo desiderato e il limite non coincidono, è il contenuto a doversi adeguare, non il limite.
 
 A useful reference density:
 
@@ -1239,6 +1304,7 @@ For playtest builds log deterministically:
 - presented event ID/variant;
 - eligible event IDs at selection time;
 - selection score/reason where applicable;
+- ticksSinceLastResolvedDecision al momento della selezione, e se il limite di quiet era raggiunto;
 - family ID;
 - choice ID;
 - choice decision time (UI telemetry only, not gameplay authority);
@@ -1308,6 +1374,8 @@ Regole vincolanti:
 6. la versione dell'envelope di persistenza **non** cambia per questo motivo: l'envelope descrive il trasporto, lo schema descrive il contenuto;
 7. ogni campo v2 riceve validazione di forma **e** di invariante su input ostile nella stessa slice in cui viene introdotto. Nessuna eccezione, nessun "lo validiamo dopo".
 
+Questo vale in particolare per `playerTurn` e `worldTick` nella storia delle decisioni risolte (sezione 12.3): sono interi non negativi, non possono superare i corrispondenti contatori correnti del mondo caricato, e da essi dipendono sia la penalità di ripetizione sia il limite di vivacità. Un salvataggio manipolato che dichiarasse un `worldTick` futuro renderebbe il limite di quiet inefficace, quindi la validazione di questi due campi non è formale ma sostanziale.
+
 Il punto 5 è quello che rende il bump necessario piuttosto che opzionale: senza un numero che cambia, una build precedente non ha modo di sapere che il mondo che sta aprendo contiene decisioni che non sa interpretare.
 
 ---
@@ -1356,7 +1424,7 @@ Deliver:
 - `coreValue`, `currentGoal`, relazioni fra personaggi;
 - `FactionAgendaItem` strutturato;
 - pressione EPIDEMIC esplicita e pressione INFRASTRUCTURE derivata;
-- storia degli eventi risolti con `familyId` (sezione 12.3);
+- storia degli eventi risolti con `familyId`, `playerTurn` e `worldTick` (sezione 12.3);
 - `GameplayFocus` distinto dal Player Turn (sezione 4.3);
 - validazione della forma e degli invarianti su input ostile per **ogni** campo nuovo, nella stessa slice;
 - nessuna ambizione di UI oltre l'ispezionabilità.
@@ -1385,6 +1453,7 @@ Deliver:
 - selezione a tre termini dentro il confine di selezione esistente;
 - novità/ripetizione per famiglia, misurata in Player Turn e derivata dalla storia risolta (sezione 14.3);
 - beat quiet che non consumano Player Turn, con la progressione autoritativa fra una selezione e la successiva (sezione 14.5);
+- limite di quiet derivato dallo stato autoritativo, con fallimento chiuso quando al limite non esiste alcun evento eleggibile (sezione 14.6);
 - selezione del callback causale;
 - superfici di spiegazione Normal.
 
@@ -1478,10 +1547,11 @@ The proof is DONE only when all are true:
 6. no major faction reaction depends only on a reputation scalar;
 7. at least one setback creates a meaningful recovery decision;
 8. pacing includes real quiet/recovery beats, which do not consume a Player Turn, without feeling empty;
-9. no run can stall on identical authoritative inputs: every quiet beat is followed by an authoritative progression before the next selection (section 14.5);
-10. founder Definition of Fun critical gate passes;
-11. no P1/P2 correctness/replay/persistence issue remains;
-12. only after all the above, the small-sample validation may be **scheduled**.
+9. no run can enter an unbounded QUIET sequence, even across changing authoritative states: quiet is bounded by authoritative state (section 14.6), and every quiet beat is still preceded by an authoritative progression (section 14.5);
+10. reaching the quiet bound with zero eligible events fails closed as an observable content/eligibility defect, and is never hidden behind further pacing beats or a filler event;
+11. founder Definition of Fun critical gate passes;
+12. no P1/P2 correctness/replay/persistence issue remains;
+13. only after all the above, the small-sample validation may be **scheduled**.
 
 M2 expansion is not part of this list and is not authorized by it. Completing the proof authorizes the founder gate; passing the founder gate authorizes the small-sample validation; **only a passed small-sample authorizes M2**, and M2 may not be scheduled in parallel with a sample that has not yet passed (section 21.1).
 
