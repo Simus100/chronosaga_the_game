@@ -206,19 +206,20 @@ Un errore normale deve produrre una nuova situazione, non soltanto una spirale i
 
 Ogni major pressure deve offrire almeno una recovery path finché non viene raggiunto un vero stato di collasso causato da accumulo di decisioni/stato.
 
-## GQP-8 — Quiet turns are gameplay
+## GQP-8 — Quiet beats are gameplay
 
-Non ogni turno deve presentare una major choice.
+Non ogni beat deve presentare una major choice.
 
-Un quiet turn può contenere:
+Un beat quiet può contenere:
 
 - consequence surfacing;
-- recovery;
 - planning;
-- resource redistribution;
 - small character interaction;
 - recap;
-- foreshadowing.
+- foreshadowing;
+- anticipazione di una soglia in avvicinamento.
+
+Recupero e redistribuzione di risorse compaiono in un beat quiet solo quando **non** costituiscono una scelta autoritativa significativa. Se lo sono — se il mondo cambia perché il giocatore ha deciso — quello è un beat `EVENT`, consuma un Player Turn e produce uno `StateDelta` (sezione 4.3).
 
 Il turno deve però mantenere almeno una tensione o opportunità leggibile.
 
@@ -261,7 +262,7 @@ Target:
 2 pressures           1 esplicita + 1 derivata
 5 event families
 4 pattern detectors
-12–15 player turns
+12–15 gameplay beats   di cui 4–6 consumano un Player Turn (sezione 4.3)
 persistent save/load
 procedural/grounded text sufficient
 0 generative AI required
@@ -287,7 +288,30 @@ Lo scenario è **Helios Reach**, riusato e non sostituito. Vedi sezione 6.
 
 Il proof deve essere implementabile come variante separata e gated, senza distruggere il baseline M1 già accettato e validato sull'app Windows installata.
 
-## 4.3 Stato P0 — nota di contesto
+## 4.3 Gameplay Beat, Player Turn e World Tick sono tre cose diverse
+
+`GAME_SYSTEMS_SCHEMA_v0.1` §46 separa già due contatori, e M1 li ha implementati e validati. Il proof ne aggiunge un terzo concetto — **di ritmo, non di stato** — e la distinzione va tenuta ferma perché confonderli è il modo più rapido di rompere un invariante già accettato.
+
+```text
+World Tick     avanzamento della simulazione
+               contatore autoritativo: simulation.tick
+
+Player Turn    UNA decisione significativa del giocatore
+               contatore autoritativo: WorldState.turn
+
+Gameplay Beat  un ciclo di focus presentato al giocatore
+               NON è un contatore autoritativo: è un'unità di ritmo
+```
+
+Nessuno dei tre è 1:1 con gli altri.
+
+**Regola vincolante.** Un focus `QUIET` **non incrementa il Player Turn** per il solo fatto di essere stato presentato. Presentare qualcosa non è decidere qualcosa.
+
+Se un recupero, una redistribuzione o un'altra interazione costituisce una **scelta autoritativa significativa**, allora quella interazione è un focus `EVENT` con le sue scelte, consuma un Player Turn e produce uno `StateDelta`. Non è un beat quiet. La distinzione non è di tono narrativo ma di autorità: se il mondo cambia per decisione del giocatore, è un Player Turn.
+
+Il proof non modifica in alcun modo la semantica M1 di Player Turn e World Tick.
+
+## 4.4 Stato P0 — nota di contesto
 
 Per evitare ambiguità di stato: la fattibilità P0 è **già accettata** ai fini del gameplay. La qualificazione di release e hardware, e lo stato `releaseApproved` dei modelli, restano preoccupazioni separate e deliberatamente differite. Questo documento non riapre P0 e non modifica la storia della roadmap.
 
@@ -489,6 +513,8 @@ FactionAgendaItem:
   intensity / severity
   satisfy / resolve condition
 ```
+
+`kind`, `subject` quando rilevante per il gameplay e la condizione di soddisfacimento/risoluzione sono **valori tipizzati**, non prosa: vedi la regola normativa 13.1. La causale porta un `CausalSource` esistente.
 
 `kind` è una distinzione **semantica reale**, non un segno algebrico. Un desiderio non è un rancore con severità negativa: un desiderio si soddisfa concedendo qualcosa, un rancore si risolve riparando qualcosa, e le due condizioni non sono l'una l'inverso dell'altra. Modellarli come un unico asse numerico renderebbe impossibile distinguere una fazione appagata da una fazione placata.
 
@@ -767,16 +793,22 @@ Un detector rileva **potenziale narrativo**. Non fabbrica un esito.
 La logica di novità e ripetizione richiede una storia che oggi non esiste in alcuna forma nel `WorldState`. Va persistita, in forma minima:
 
 ```text
+familyId
 eventId
 choiceId
 playerTurn
 ```
 
+`familyId` è obbligatorio e non deducibile da `eventId`. La ripetizione che il proof deve penalizzare è definita **per famiglia** — riproporre la stessa domanda con un'istanza diversa è comunque ripetizione — e una storia che conserva solo l'id dell'istanza non permette di calcolarla.
+
 Regole:
 
-1. registra **decisioni risolte autoritativamente**, non render di React e non la semplice presentazione di un evento;
-2. lo stato di gioco non si modifica per il fatto che l'UI ha mostrato qualcosa;
-3. è l'unica fonte ammessa per novità e ripetizione nel proof.
+1. `familyId` è un **identificatore di gameplay stabile**, non un'etichetta di visualizzazione. Non cambia quando cambia il titolo, e non è il nome mostrato al giocatore;
+2. l'identità storica di famiglia **non si deriva dal catalogo eventi corrente**: il catalogo è mutabile e un evento futuro rimosso o rinominato non deve poter riscrivere il passato di una run salvata. La storia porta con sé ciò che serve a interpretarla;
+3. `playerTurn` è il **Player Turn sul quale la decisione è stata risolta**, con semantica pre-incremento coerente con `StateDelta.turn`: il turno di origine della decisione, non quello risultante;
+4. registra **decisioni risolte autoritativamente**, non render di React e non la semplice presentazione di un evento;
+5. lo stato di gioco non si modifica per il fatto che l'UI ha mostrato qualcosa. Un beat quiet e un evento presentato ma non risolto non scrivono nulla;
+6. è l'unica fonte ammessa per novità e ripetizione nel proof.
 
 Derivarla dalle memorie non è praticabile: le memorie vengono scritte solo quando una regola del World Tick lo decide, non a ogni scelta, e una storia con buchi produce penalità di ripetizione arbitrarie.
 
@@ -803,6 +835,36 @@ Derivarla dalle memorie non è praticabile: le memorie vengono scritte solo quan
 React must not implement eligibility arithmetic or hidden simulation rules.
 
 Rust/Tauri remains platform/persistence authority only.
+
+## 13.1 Nessuna regola di gioco può ramificare su prosa
+
+**Regola normativa.** Nessuna regola di gameplay può prendere una decisione confrontando testo leggibile da un essere umano.
+
+Ogni valore autoritativo nuovo che guida comportamento deve essere uno di:
+
+- un **enum chiuso** del proof;
+- un **id semantico stabile**;
+- un **id di regola o predicato deterministico tipizzato**, con argomenti validati contro input ostile.
+
+Etichette, riassunti, titoli e descrizioni restano **dati di presentazione** e nessuna regola li legge.
+
+La regola si applica come minimo a:
+
+| valore | forma richiesta |
+|---|---|
+| `coreValue` | enum chiuso |
+| `currentGoal` | enum chiuso o id semantico stabile |
+| tipo di relazione | enum chiuso |
+| behavior hook della memoria | id di regola tipizzato |
+| `FactionAgendaItem.kind` | enum chiuso: `desire \| grievance` |
+| `FactionAgendaItem.subject` quando rilevante per il gameplay | id semantico stabile |
+| condizione di soddisfacimento/risoluzione dell'agenda | id di predicato tipizzato con argomenti validati |
+| id dei pattern | enum chiuso |
+| id delle famiglie di eventi | id semantico stabile |
+
+Il motivo non è stilistico. Una regola che confronta prosa si rompe silenziosamente quando qualcuno corregge un refuso, e un salvataggio che porta prosa come stato autoritativo non è validabile contro input ostile: non esiste modo di dire se una stringa libera è legittima. Un enum sì.
+
+**Non costruire un linguaggio di espressioni generico.** Servono i contratti tipizzati più piccoli sufficienti al proof: un predicato con un nome e argomenti tipizzati, non un interprete.
 
 ---
 
@@ -855,7 +917,7 @@ dove:
 
 - **urgency** — una soglia di pressione è stata superata, oppure una conseguenza ritardata è dovuta;
 - **causal_relevance** — l'evento cita una memoria saliente, un elemento di agenda attivo o un pattern rilevato;
-- **repetition** — turni trascorsi dall'ultima risoluzione della stessa famiglia, letti dalla storia degli eventi risolti.
+- **repetition** — beat trascorsi dall'ultima risoluzione della stessa **famiglia**, letti da `familyId` nella storia degli eventi risolti (sezione 12.3).
 
 Novità e fatica sono la stessa grandezza vista da due lati e non richiedono termini separati. La prontezza del payoff è già `DelayedConsequenceState.triggerTurn` e non va duplicata in un peso.
 
@@ -870,22 +932,29 @@ Il focus `QUIET` è ammesso solo quando:
 
 È preferibile quando i turni recenti contenevano già decisioni ad alta attenzione, o quando far emergere una conseguenza o un recupero vale più di un altro dilemma.
 
-Un turno silenzioso è una scelta della selezione, non l'assenza di un evento eleggibile: vedi il modello `GameplayFocus` in GQP-0.
+Un beat quiet è una scelta della selezione, non l'assenza di un evento eleggibile: vedi il modello `GameplayFocus` in GQP-0.
+
+**Un focus `QUIET` non consuma un Player Turn** (sezione 4.3). Se l'interazione offerta durante il beat è una decisione autoritativa significativa, quella è un focus `EVENT` e non un beat quiet.
 
 ---
 
 
 # 15. Pacing target
 
+Il ritmo si misura in **Gameplay Beat**, non in Player Turn. Vedi sezione 4.3: un beat è un ciclo di focus, un Player Turn è una decisione significativa, e i due non coincidono.
+
 The proof should NOT hardcode an exact event rhythm, but target approximately:
 
 ```text
-12–15 Player Turns
-4–6 major dilemmas
-1–2 crisis/payoff moments
-several signals/consequences
-3–5 quiet/recovery turns
+12–15 Gameplay Beats (focus cycles)
+   di cui:
+   4–6 beat di decisione significativa   → questi consumano un Player Turn
+   3–5 beat quiet / anticipazione        → questi NON consumano un Player Turn
+   1–2 momenti di crisi / payoff
+   diversi beat di segnale e conseguenza
 ```
+
+Un beat quiet può contenere conseguenze, segnali e recap: è tempo di gioco, non tempo morto. Ciò che non contiene è una decisione autoritativa significativa, ed è per questo che non fa avanzare il Player Turn.
 
 A useful reference density:
 
@@ -904,7 +973,7 @@ DILEMMA
 → AFTERMATH
 ```
 
-The actual sequence must emerge from eligibility/state, not from turn number scripting.
+The actual sequence must emerge from eligibility/state, not from beat-number or turn-number scripting.
 
 ---
 
@@ -1041,7 +1110,7 @@ Tarek Oss leaves Helios Reach
 
 Questo non è il tentativo di ridurre il divertimento a telemetria. Questi cancelli esistono per impedire l'autoinganno di chi ha scritto il gioco.
 
-Per il **primo playtest umano/del fondatore** di una run da 12–15 turni, il proof non passa se i criteri critici non sono soddisfatti.
+Per il **primo playtest umano/del fondatore** di una run da 12–15 Gameplay Beat (sezione 4.3), il proof non passa se i criteri critici non sono soddisfatti.
 
 ## 20.1 Controlli osservabili — hard checks
 
@@ -1120,10 +1189,12 @@ Il fallimento significa redesign o tuning **prima** dell'espansione di contenuto
 
 For playtest builds log deterministically:
 
-- Player Turn / World Tick;
+- Gameplay Beat index / Player Turn / World Tick, registrati separatamente;
+- gameplay focus del beat: `EVENT` o `QUIET`;
 - presented event ID/variant;
 - eligible event IDs at selection time;
 - selection score/reason where applicable;
+- family ID;
 - choice ID;
 - choice decision time (UI telemetry only, not gameplay authority);
 - StateDelta;
@@ -1152,7 +1223,7 @@ Reject or redesign a feature/event if it exhibits any of these:
 - character personality reset between events;
 - major delayed outcome with no breadcrumb;
 - repeated crisis family without state-sensitive variation;
-- quiet turn that contains neither recovery, planning, consequence nor anticipation;
+- quiet beat that contains neither planning, consequence, character interaction nor anticipation;
 - recovery with no cost;
 - new system whose primary effect is dashboard complexity;
 - AI prose promising mechanics the Core does not implement.
@@ -1219,7 +1290,9 @@ Deliver:
 GameplayFocus = EVENT | QUIET
 ```
 
-Il turno silenzioso è una decisione del gioco, non l'assenza di un valore. Rappresentarlo come `event: GameEvent | null` sparso fra controller, sessione e componenti produce controlli di nullità in ogni punto di lettura e un'omissione basta a rompere lo schermo. Un focus tipizzato costringe ogni consumatore a dichiarare cosa fa quando non c'è evento.
+Il beat quiet è una decisione del gioco, non l'assenza di un valore. Rappresentarlo come `event: GameEvent | null` sparso fra controller, sessione e componenti produce controlli di nullità in ogni punto di lettura e un'omissione basta a rompere lo schermo. Un focus tipizzato costringe ogni consumatore a dichiarare cosa fa quando non c'è evento.
+
+`GameplayFocus` è un concetto di **ritmo**, non di stato autoritativo: non introduce un contatore e non tocca la semantica M1 di Player Turn e World Tick (sezione 4.3). In particolare un focus `QUIET` non incrementa il Player Turn.
 
 4. **Selezione indipendente dall'ordine del catalogo, nel percorso GQP.** La selezione pesata attuale scorre l'insieme eleggibile nell'ordine dell'array. A parità di seed e turno, riordinare il catalogo cambia l'evento estratto. Nel percorso GQP l'insieme eleggibile va ordinato deterministicamente per `id` prima della selezione.
 
@@ -1236,7 +1309,8 @@ Deliver:
 - `coreValue`, `currentGoal`, relazioni fra personaggi;
 - `FactionAgendaItem` strutturato;
 - pressione EPIDEMIC esplicita e pressione INFRASTRUCTURE derivata;
-- storia degli eventi risolti (sezione 12.1);
+- storia degli eventi risolti con `familyId` (sezione 12.3);
+- `GameplayFocus` distinto dal Player Turn (sezione 4.3);
 - validazione della forma e degli invarianti su input ostile per **ogni** campo nuovo, nella stessa slice;
 - nessuna ambizione di UI oltre l'ispezionabilità.
 
@@ -1262,12 +1336,12 @@ Deliver:
 - famiglie di eventi rimanenti;
 - quattro pattern detector;
 - selezione a tre termini dentro il confine di selezione esistente;
-- novità/ripetizione derivata dalla storia risolta;
-- turni silenziosi;
+- novità/ripetizione per famiglia, derivata dalla storia risolta;
+- beat quiet che non consumano Player Turn;
 - selezione del callback causale;
 - superfici di spiegazione Normal.
 
-Exit: run di riferimento da 12–15 turni senza sequenza hardcoded, con storie materialmente diverse sotto scelte diverse.
+Exit: run di riferimento da 12–15 Gameplay Beat senza sequenza hardcoded, con storie materialmente diverse sotto scelte diverse.
 
 ## GQP-D — Real Windows playtest build
 
@@ -1356,7 +1430,7 @@ The proof is DONE only when all are true:
 5. at least two characters demonstrate memory/relationship-driven future behavior;
 6. no major faction reaction depends only on a reputation scalar;
 7. at least one setback creates a meaningful recovery decision;
-8. pacing includes real quiet/recovery turns without feeling empty;
+8. pacing includes real quiet/recovery beats, which do not consume a Player Turn, without feeling empty;
 9. founder Definition of Fun critical gate passes;
 10. no P1/P2 correctness/replay/persistence issue remains;
 11. only after all the above, the small-sample validation may be **scheduled**.
