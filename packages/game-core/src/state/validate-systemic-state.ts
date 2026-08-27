@@ -1,4 +1,5 @@
 import type { EventEffect, WorldState } from "@paa/game-types";
+import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
 
 export interface SystemicValidationResult {
   ok: boolean;
@@ -465,7 +466,7 @@ function validateEffect(
     return;
   }
 
-  const allowed = ["RESOURCE_DELTA", "FLAG_SET", "PRESSURE_DELTA", "CHARACTER_STRESS"];
+  const allowed: readonly string[] = EVENT_EFFECT_TYPES;
   const type = effect.type;
   if (typeof type !== "string" || !allowed.includes(type)) {
     errors.push(`${label} has unsupported effect type '${String(type)}'`);

@@ -1,3 +1,4 @@
+import { EVENT_EFFECT_TYPES } from "./event-effect.js";
 export interface EventValidationResult {
   ok: boolean;
   errors: string[];
@@ -20,12 +21,7 @@ function validateEffect(effect: unknown, label: string, errors: string[]): void 
   }
 
   const type = text(effect.type);
-  const allowed = new Set([
-    "RESOURCE_DELTA",
-    "FLAG_SET",
-    "PRESSURE_DELTA",
-    "CHARACTER_STRESS"
-  ]);
+  const allowed = new Set<string>(EVENT_EFFECT_TYPES);
   if (!type || !allowed.has(type)) {
     errors.push(`${label} has unsupported effect type`);
     return;

@@ -293,7 +293,24 @@ function EventPanel({
   /** True while persistence holds the lock: a turn cannot be taken mid-write. */
   locked: boolean;
 }) {
-  const { state, event } = session;
+  const { state, focus } = session;
+
+  // Exhaustive on the focus, so a quiet beat has a declared appearance rather
+  // than an accidental one. GQP-0 never produces this branch — no quiet policy
+  // exists yet — but the screen is ready for the one GQP-C will add.
+  if (focus.kind === "quiet") {
+    return (
+      <section className="panel panel--event">
+        <span className="panel__tag">PAUSA</span>
+        <h2>NESSUNA DECISIONE IN ATTESA</h2>
+        <p className="event__body">
+          Il mondo prosegue. Esegui un World Tick per vedere cosa produce.
+        </p>
+      </section>
+    );
+  }
+
+  const event = focus.event;
   return (
     <section className="panel panel--event">
       <span className="panel__tag">{event.category.toUpperCase()}</span>

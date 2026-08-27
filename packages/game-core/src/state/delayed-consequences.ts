@@ -1,52 +1,14 @@
 import type {
   DelayedConsequenceState,
-  EventEffect,
   StateChange,
   StateDelta,
   WorldState
 } from "@paa/game-types";
-import { applyAuthoritativeResourceDelta } from "./resource-authority.js";
+import { applyEventEffect } from "../events/event-effect.js";
 
 function requireSimulation(state: WorldState) {
   if (!state.simulation) throw new Error("Systemic simulation state is required");
   return state.simulation;
-}
-
-function applyEffect(next: WorldState, effect: EventEffect, changes: StateChange[]): void {
-  if (effect.type === "RESOURCE_DELTA") {
-    if (!effect.key) throw new Error("RESOURCE_DELTA requires key");
-    // Same authority as a player choice. A consequence that landed on the flat
-    // projection would be erased by the next tick exactly as a choice was.
-    applyAuthoritativeResourceDelta(next, effect.key, Number(effect.value), changes);
-    return;
-  }
-
-  if (effect.type === "FLAG_SET") {
-    if (!effect.key) throw new Error("FLAG_SET requires key");
-    const before = next.flags[effect.key];
-    const after = effect.value;
-    next.flags[effect.key] = after;
-    changes.push({ type: "flag", key: effect.key, before, after });
-    return;
-  }
-
-  if (effect.type === "PRESSURE_DELTA") {
-    const before = next.worldPressure;
-    const after = Math.max(0, before + Number(effect.value));
-    next.worldPressure = after;
-    changes.push({ type: "worldPressure", key: "worldPressure", before, after });
-    return;
-  }
-
-  if (effect.type === "CHARACTER_STRESS") {
-    if (!effect.targetId) throw new Error("CHARACTER_STRESS requires targetId");
-    const character = next.party.find(candidate => candidate.id === effect.targetId);
-    if (!character) throw new Error(`Unknown character '${effect.targetId}'`);
-    const before = character.stress;
-    const after = Math.max(0, Math.min(100, before + Number(effect.value)));
-    character.stress = after;
-    changes.push({ type: "characterStress", key: character.id, before, after });
-  }
 }
 
 /**
@@ -114,7 +76,7 @@ export function applyDueConsequences(
     .sort((a, b) => a.triggerTurn - b.triggerTurn || a.id.localeCompare(b.id));
 
   for (const consequence of due) {
-    for (const effect of consequence.effects) applyEffect(next, effect, changes);
+    for (const effect of consequence.effects) applyEventEffect(next, effect, changes);
     const before = consequence.status;
     consequence.status = "applied";
     appliedIds.push(consequence.id);

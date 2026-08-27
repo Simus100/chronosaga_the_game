@@ -28,12 +28,42 @@ import type { SystemicPersistence } from "../platform/persistence";
 /** The events this slice plays with. */
 export const PLAYABLE_EVENTS: GameEvent[] = [...systemicEvents, ...demoEvents];
 
+/**
+ * What the game is asking of the player right now.
+ *
+ * `QUIET` is a decision the game makes, not the absence of one. Modelling it as
+ * `event: GameEvent | null` would scatter a null check across every consumer,
+ * and the one place somebody forgets is the place the screen breaks. A
+ * discriminated union makes the compiler ask the question instead.
+ *
+ * This is pacing and presentation, never authority: `GameplayFocus` is not part
+ * of `WorldState`, is not persisted, is not a Gameplay Beat counter, and a
+ * `quiet` focus does not advance the Player Turn.
+ *
+ * GQP-0 introduces the shape only. The policy that decides when a quiet focus
+ * is produced, and the bound that stops it repeating, belong to GQP-C.
+ */
+export type GameplayFocus =
+  | { readonly kind: "event"; readonly event: GameEvent }
+  | { readonly kind: "quiet" };
+
 /** What the screen needs to draw one moment of play. */
 export interface GameplaySession {
   readonly state: WorldState;
-  readonly event: GameEvent;
+  readonly focus: GameplayFocus;
   /** Newest first. Presentation only; never part of the world. */
   readonly feed: readonly FeedEntry[];
+}
+
+/**
+ * The event a session is offering, or `undefined` during a quiet focus.
+ *
+ * A narrowing helper for the callers that legitimately only care about the
+ * event case. It does not replace exhaustive handling where the quiet case
+ * needs its own behaviour.
+ */
+export function focusedEvent(session: GameplaySession): GameEvent | undefined {
+  return session.focus.kind === "event" ? session.focus.event : undefined;
 }
 
 /** One authoritative change, as the consequence feed shows it. */
@@ -59,7 +89,50 @@ function entry(kind: FeedEntry["kind"], label: string, delta: StateDelta): FeedE
  * have just changed. A remembered event is a stale event.
  */
 export function currentEvent(state: WorldState): GameEvent {
+  // Still M1's selector, deliberately. `selectEventStable` is the
+  // order-independent path GQP will select through; switching the live M1 flow
+  // to it would change which event this accepted baseline offers at each turn,
+  // which is a gameplay change GQP-0 is not allowed to make.
   return selectEvent(PLAYABLE_EVENTS, state);
+}
+
+/**
+ * The focus the world is currently offering.
+ *
+ * GQP-0 always resolves to an event, which is exactly M1's behaviour: no quiet
+ * policy exists yet, and inventing one here would be gameplay this slice is not
+ * allowed to add. What changes is the shape, so that the quiet case has a
+ * declared home before GQP-C fills it.
+ */
+export function currentFocus(state: WorldState): GameplayFocus {
+  return { kind: "event", event: currentEvent(state) };
+}
+
+/**
+ * Whether a new focus may be selected from this session.
+ *
+ * A quiet focus changes neither the world nor its history. Selecting again from
+ * an unchanged world would therefore return the same answer, and a game that
+ * asks the same question forever is not paused — it is stuck. So a quiet
+ * session must see an authoritative progression before it may select again.
+ *
+ * The progression is read from the world itself — the World Tick counter, which
+ * `runWorldTick` always advances — rather than from a flag this module keeps.
+ * That matters: a remembered flag would be hidden selector state, it would not
+ * survive a save, and it could disagree with the world it claims to describe.
+ *
+ * GQP-0 provides the boundary. The bounded-quiet policy of GQP-C decides how
+ * many such progressions a quiet sequence may consume before an event must be
+ * offered.
+ */
+export function canSelectNewFocus(session: GameplaySession, state: WorldState): boolean {
+  if (session.focus.kind === "event") return true;
+  return worldTickOf(state) !== worldTickOf(session.state);
+}
+
+/** The authoritative World Tick, or 0 for a world without a simulation. */
+function worldTickOf(state: WorldState): number {
+  return state.simulation?.tick ?? 0;
 }
 
 /** Whether the player may take this choice, per the core's own rule. */
@@ -71,7 +144,7 @@ export function choiceAvailable(state: WorldState, event: GameEvent, choiceId: s
 /** Start a fresh systemic campaign. */
 export function newSystemicGame(seed = 7419): GameplaySession {
   const state = createSystemicScenario(seed);
-  return { state, event: currentEvent(state), feed: [] };
+  return { state, focus: currentFocus(state), feed: [] };
 }
 
 /**
@@ -83,7 +156,9 @@ export function newSystemicGame(seed = 7419): GameplaySession {
  * that caused them.
  */
 export function playChoice(session: GameplaySession, choiceId: string): GameplaySession {
-  const choice = session.event.choices.find(candidate => candidate.id === choiceId);
+  const event = focusedEvent(session);
+  if (event === undefined) throw new Error("no event is being offered");
+  const choice = event.choices.find(candidate => candidate.id === choiceId);
   if (choice === undefined) throw new Error(`unknown choice '${choiceId}'`);
   if (!canChoose(choice, session.state)) {
     throw new Error(`choice '${choiceId}' does not meet its requirements`);
@@ -99,7 +174,7 @@ export function playChoice(session: GameplaySession, choiceId: string): Gameplay
       ? [entry("consequence", `Conseguenze: ${due.appliedIds.join(", ")}`, due.delta), ...feed]
       : feed;
 
-  return { state, event: currentEvent(state), feed: withConsequences };
+  return { state, focus: currentFocus(state), feed: withConsequences };
 }
 
 /** Advance the simulation by one World Tick. */
@@ -108,7 +183,7 @@ export function playWorldTick(session: GameplaySession): GameplaySession {
   const state = ticked.state;
   return {
     state,
-    event: currentEvent(state),
+    focus: currentFocus(state),
     feed: [entry("world_tick", `World Tick ${ticked.trace.tick}`, ticked.delta), ...session.feed]
   };
 }
@@ -204,5 +279,5 @@ export async function loadGame(
   }
 
   const state = validated.state;
-  return { ok: true, session: { state, event: currentEvent(state), feed: [] } };
+  return { ok: true, session: { state, focus: currentFocus(state), feed: [] } };
 }
