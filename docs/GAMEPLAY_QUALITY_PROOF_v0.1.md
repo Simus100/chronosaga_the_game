@@ -905,6 +905,11 @@ Non deve esistere **alcuno stato mutabile nascosto** necessario a riprodurre una
 
 I pareggi si risolvono in modo stabile: ordinamento crescente per `id` dell'evento.
 
+Da questo discendono due vincoli che il resto della sezione 14 deve rispettare, e che valgono come test di correttezza del design:
+
+1. **ogni input della selezione è dato autoritativo.** Il Gameplay Beat non è un contatore autoritativo, quindi **nessun termine della selezione può misurare i beat**. La telemetria dell'UI non è mai un input;
+2. **due selezioni consecutive non possono ricevere input identici.** Se lo ricevessero, una funzione deterministica restituirebbe lo stesso risultato, per sempre. Vedi 14.5.
+
 ## 14.3 Modello di priorità — tre termini
 
 ```text
@@ -917,7 +922,21 @@ dove:
 
 - **urgency** — una soglia di pressione è stata superata, oppure una conseguenza ritardata è dovuta;
 - **causal_relevance** — l'evento cita una memoria saliente, un elemento di agenda attivo o un pattern rilevato;
-- **repetition** — beat trascorsi dall'ultima risoluzione della stessa **famiglia**, letti da `familyId` nella storia degli eventi risolti (sezione 12.3).
+- **repetition** — decisioni significative trascorse dall'ultima risoluzione della stessa **famiglia**, lette da `familyId` nella storia degli eventi risolti (sezione 12.3).
+
+La ripetizione **non si misura in beat**. I beat quiet non sono persistiti — deliberatamente — quindi una distanza contata in beat non sarebbe derivabile dallo stato autoritativo e romperebbe il replay. Si misura in Player Turn, che sono persistiti e che contano esattamente ciò che deve pesare: le decisioni prese, non le schermate viste.
+
+Formula esatta, con la semantica pre-incremento già documentata in 12.3:
+
+```text
+elapsed(family) = WorldState.turn − lastResolved(family).playerTurn
+```
+
+dove `lastResolved(family)` è la voce più recente della storia con quel `familyId`.
+
+Poiché `resolveChoice` scrive nel delta il turno di **origine** e porta il mondo a `turn + 1`, subito dopo aver risolto una famiglia si ha `elapsed = 1`. È il valore minimo possibile, cioè la penalità massima, e cresce di uno a ogni decisione significativa successiva. Una famiglia mai risolta non ha voce in storia e non riceve penalità.
+
+Nessun campo di scheduling aggiuntivo è necessario: la storia della sezione 12.3 contiene già tutto.
 
 Novità e fatica sono la stessa grandezza vista da due lati e non richiedono termini separati. La prontezza del payoff è già `DelayedConsequenceState.triggerTurn` e non va duplicata in un peso.
 
@@ -935,6 +954,29 @@ Il focus `QUIET` è ammesso solo quando:
 Un beat quiet è una scelta della selezione, non l'assenza di un evento eleggibile: vedi il modello `GameplayFocus` in GQP-0.
 
 **Un focus `QUIET` non consuma un Player Turn** (sezione 4.3). Se l'interazione offerta durante il beat è una decisione autoritativa significativa, quella è un focus `EVENT` e non un beat quiet.
+
+## 14.5 Ciclo di vita dopo un beat quiet
+
+Un beat quiet non cambia lo stato autoritativo e non scrive storia. Questo è voluto, e produce un problema che va chiuso esplicitamente: **una funzione deterministica invocata due volte sugli stessi input restituisce lo stesso risultato**. Se la selezione potesse essere richiamata subito dopo un `QUIET`, con stato e storia immutati, restituirebbe `QUIET` di nuovo, e la partita si fermerebbe in un ciclo perfettamente deterministico e perfettamente inutile.
+
+**Invariante del ciclo di vita:**
+
+```text
+selezione
+   → QUIET
+   → progressione autoritativa deterministica
+   → selezione successiva
+```
+
+Fra un beat quiet e la selezione successiva deve avvenire una **progressione autoritativa**. Non è un ritmo arbitrario e non è un contatore finto: è un punto in cui il mondo cambia davvero.
+
+Per il proof questa progressione è il **World Tick**, che esiste già ed è già autoritativo. Un tick fa avanzare `simulation.tick`, applica produzione e consumo, fa emergere conseguenze dovute e può cambiare l'eleggibilità. Gli input della selezione successiva sono quindi necessariamente diversi da quelli della precedente, e il ciclo non può chiudersi.
+
+Il punto qualificante è **non** che un numero si sia mosso, ma che il mondo sia cambiato in modo osservabile e ricostruibile. Una progressione che esistesse solo per incrementare un contatore, senza produrre alcun effetto sullo stato, non soddisfa questo invariante: sarebbe lo stesso ciclo con un contatore in più.
+
+Ne segue che il beat quiet è **il momento in cui la simulazione avanza**, ed è per questo che può contenere conseguenze, segnali e anticipazione: quelle sono ciò che il tick ha prodotto. Un beat quiet vuoto — un tick che non produce nulla da mostrare — resta l'anti-pattern della sezione 23.
+
+**Nessun contatore autoritativo di Gameplay Beat viene introdotto.** Il beat resta unità di ritmo e di presentazione; ciò che rende il ciclo replayabile è lo stato che il tick ha già il compito di far avanzare.
 
 ---
 
@@ -955,6 +997,8 @@ The proof should NOT hardcode an exact event rhythm, but target approximately:
 ```
 
 Un beat quiet può contenere conseguenze, segnali e recap: è tempo di gioco, non tempo morto. Ciò che non contiene è una decisione autoritativa significativa, ed è per questo che non fa avanzare il Player Turn.
+
+Ciò che un beat quiet contiene **è** quanto la progressione autoritativa ha prodotto: il World Tick che separa una selezione dalla successiva (sezione 14.5). Il ritmo non è quindi una sequenza di schermate, ma l'alternanza fra selezione e avanzamento del mondo.
 
 A useful reference density:
 
@@ -1189,7 +1233,8 @@ Il fallimento significa redesign o tuning **prima** dell'espansione di contenuto
 
 For playtest builds log deterministically:
 
-- Gameplay Beat index / Player Turn / World Tick, registrati separatamente;
+- Player Turn e World Tick, registrati separatamente e letti dallo stato autoritativo;
+- indice del Gameplay Beat, **locale alla telemetria**: è un progressivo della sessione di log, non uno stato di gioco, e nessuna regola può leggerlo (sezione 14.2);
 - gameplay focus del beat: `EVENT` o `QUIET`;
 - presented event ID/variant;
 - eligible event IDs at selection time;
@@ -1205,7 +1250,7 @@ For playtest builds log deterministically:
 - causal callback shown;
 - save/load continuity.
 
-Telemetry must not change authoritative simulation results.
+Telemetry must not change authoritative simulation results, and no telemetry value may be an input to event selection.
 
 ---
 
@@ -1294,6 +1339,8 @@ Il beat quiet è una decisione del gioco, non l'assenza di un valore. Rappresent
 
 `GameplayFocus` è un concetto di **ritmo**, non di stato autoritativo: non introduce un contatore e non tocca la semantica M1 di Player Turn e World Tick (sezione 4.3). In particolare un focus `QUIET` non incrementa il Player Turn.
 
+Poiché il focus non è persistito, GQP-0 deve anche rendere esplicito nel confine di gioco che **una nuova selezione avviene solo dopo una progressione autoritativa** (sezione 14.5). È un vincolo di ciclo di vita, non un contatore: nessun campo nuovo.
+
 4. **Selezione indipendente dall'ordine del catalogo, nel percorso GQP.** La selezione pesata attuale scorre l'insieme eleggibile nell'ordine dell'array. A parità di seed e turno, riordinare il catalogo cambia l'evento estratto. Nel percorso GQP l'insieme eleggibile va ordinato deterministicamente per `id` prima della selezione.
 
 **Vincolo esplicito:** non modificare il comportamento M1 già accettato solo per ordinare il suo catalogo legacy. Il baseline M1 resta protetto e le sue regressioni devono restare verdi invariate.
@@ -1336,8 +1383,8 @@ Deliver:
 - famiglie di eventi rimanenti;
 - quattro pattern detector;
 - selezione a tre termini dentro il confine di selezione esistente;
-- novità/ripetizione per famiglia, derivata dalla storia risolta;
-- beat quiet che non consumano Player Turn;
+- novità/ripetizione per famiglia, misurata in Player Turn e derivata dalla storia risolta (sezione 14.3);
+- beat quiet che non consumano Player Turn, con la progressione autoritativa fra una selezione e la successiva (sezione 14.5);
 - selezione del callback causale;
 - superfici di spiegazione Normal.
 
@@ -1431,9 +1478,10 @@ The proof is DONE only when all are true:
 6. no major faction reaction depends only on a reputation scalar;
 7. at least one setback creates a meaningful recovery decision;
 8. pacing includes real quiet/recovery beats, which do not consume a Player Turn, without feeling empty;
-9. founder Definition of Fun critical gate passes;
-10. no P1/P2 correctness/replay/persistence issue remains;
-11. only after all the above, the small-sample validation may be **scheduled**.
+9. no run can stall on identical authoritative inputs: every quiet beat is followed by an authoritative progression before the next selection (section 14.5);
+10. founder Definition of Fun critical gate passes;
+11. no P1/P2 correctness/replay/persistence issue remains;
+12. only after all the above, the small-sample validation may be **scheduled**.
 
 M2 expansion is not part of this list and is not authorized by it. Completing the proof authorizes the founder gate; passing the founder gate authorizes the small-sample validation; **only a passed small-sample authorizes M2**, and M2 may not be scheduled in parallel with a sample that has not yet passed (section 21.1).
 
