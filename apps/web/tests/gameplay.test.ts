@@ -6,7 +6,9 @@ import {
   canSelectNewFocus,
   choiceAvailable,
   currentEvent,
-  currentFocus,
+  advanceSession,
+  bootstrapSession,
+  QuietProgressionRequired,
   focusedEvent,
   loadGame,
   newSystemicGame,
@@ -976,5 +978,111 @@ describe("GQP-0 G: a quiet focus cannot re-select without the world moving", () 
 
     const ticked = playWorldTick(session).state;
     expect(canSelectNewFocus(quietA, ticked)).toBe(canSelectNewFocus(quietB, ticked));
+  });
+});
+
+describe("GQP-0 P2: the transition boundary enforces the rule, it does not offer it", () => {
+  /**
+   * The earlier tests proved the predicate answers correctly. They did not
+   * prove a caller must consult it. These drive the operation that actually
+   * builds the next session, which is the only thing a future GQP-C caller
+   * will reach for.
+   */
+
+  it("A: an event session transitions normally, as M1 always did", () => {
+    const session = newSystemicGame();
+    const next = advanceSession(session, session.state, session.feed);
+    expect(next.focus.kind).toBe("event");
+    expect(next.state).toBe(session.state);
+  });
+
+  it("B: a quiet session at the same World Tick is refused by the transition", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+
+    // Not `canSelectNewFocus(...) === false` — the operation itself.
+    expect(() => advanceSession(quiet, quiet.state, quiet.feed)).toThrow(QuietProgressionRequired);
+
+    // And a world that merely looks equal is refused too: the tick decides,
+    // not object identity.
+    const twin = structuredClone(quiet.state);
+    expect(() => advanceSession(quiet, twin, quiet.feed)).toThrow(QuietProgressionRequired);
+  });
+
+  it("C: a World Tick unblocks the transition", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+
+    // playWorldTick is itself a guarded transition, and it is allowed because
+    // the tick it performs is the progression the rule asks for.
+    const ticked = playWorldTick(quiet);
+    expect(ticked.state.simulation!.tick).toBe(quiet.state.simulation!.tick + 1);
+    expect(ticked.focus.kind).toBe("event");
+
+    // The explicit transition agrees.
+    expect(() => advanceSession(quiet, ticked.state, [])).not.toThrow();
+  });
+
+  it("D: a refused transition changes nothing at all", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const before = structuredClone(quiet.state);
+
+    expect(() => advanceSession(quiet, quiet.state, quiet.feed)).toThrow();
+
+    // No Player Turn, no tick, no silent progress of any kind.
+    expect(quiet.state.turn).toBe(before.turn);
+    expect(quiet.state.simulation!.tick).toBe(before.simulation!.tick);
+    expect(quiet.state).toEqual(before);
+    expect(quiet.focus.kind).toBe("quiet");
+  });
+
+  it("E: bootstrap needs no progression and no artificial tick", () => {
+    const fresh = newSystemicGame();
+    expect(fresh.focus.kind).toBe("event");
+    expect(fresh.state.simulation!.tick).toBe(0);
+    expect(fresh.state.turn).toBe(1);
+
+    const direct = bootstrapSession(createSystemicScenario(7419));
+    expect(direct.focus.kind).toBe("event");
+    expect(direct.state).toEqual(fresh.state);
+    expect(direct.feed).toEqual([]);
+  });
+
+  it("F: the M1 sequence is unchanged by the boundary", () => {
+    // Choice then tick, exactly as the earlier regressions describe it.
+    const session = newSystemicGame();
+    const afterChoice = playChoice(session, "release_reserve");
+    expect(afterChoice.state.turn).toBe(session.state.turn + 1);
+    expect(afterChoice.state.simulation!.tick).toBe(session.state.simulation!.tick);
+
+    const afterTick = playWorldTick(afterChoice);
+    expect(afterTick.state.turn).toBe(afterChoice.state.turn);
+    expect(afterTick.state.simulation!.tick).toBe(afterChoice.state.simulation!.tick + 1);
+    expect(afterTick.state).toEqual(runWorldTick(afterChoice.state).state);
+  });
+
+  it("the controller exports no unguarded way to derive a focus", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const source = readFileSync(
+      fileURLToPath(new URL("../src/gameplay/controller.ts", import.meta.url)),
+      "utf8"
+    );
+
+    // `currentFocus` takes only a world, so it cannot honour the lifecycle
+    // rule. It must stay internal; exporting it would reopen the bypass this
+    // whole boundary exists to close.
+    expect(source).toContain("function currentFocus(");
+    expect(source).not.toContain("export function currentFocus(");
+
+    // The two doors are declared, and the transition is the one that checks.
+    expect(source).toContain("export function bootstrapSession(");
+    expect(source).toContain("export function advanceSession(");
+    expect(source).toContain("throw new QuietProgressionRequired()");
+
+    // Every session the controller returns comes from one of the two doors.
+    const literals = source.match(/focus:\s*currentFocus\(/g) ?? [];
+    expect(literals).toHaveLength(2);
   });
 });

@@ -97,15 +97,34 @@ export function currentEvent(state: WorldState): GameEvent {
 }
 
 /**
- * The focus the world is currently offering.
+ * The focus the world is currently offering, derived from state alone.
+ *
+ * Deliberately **not exported**. Deriving a focus from a world is exactly the
+ * operation that must not be available to a caller holding an existing quiet
+ * session: it takes no previous session, so it cannot honour the lifecycle
+ * rule, and a caller could loop on it forever without ever consulting a guard.
+ * The two exported doors are `bootstrapSession` and `advanceSession`, and both
+ * of them decide first whether deriving is legal.
  *
  * GQP-0 always resolves to an event, which is exactly M1's behaviour: no quiet
  * policy exists yet, and inventing one here would be gameplay this slice is not
  * allowed to add. What changes is the shape, so that the quiet case has a
  * declared home before GQP-C fills it.
  */
-export function currentFocus(state: WorldState): GameplayFocus {
+function currentFocus(state: WorldState): GameplayFocus {
   return { kind: "event", event: currentEvent(state) };
+}
+
+/**
+ * Refusal of a transition that would re-ask the question the world has not yet
+ * answered. A distinct type so a caller can tell this apart from a rule
+ * violation about the choice itself.
+ */
+export class QuietProgressionRequired extends Error {
+  constructor() {
+    super("a quiet focus requires an authoritative World Tick before the next selection");
+    this.name = "QuietProgressionRequired";
+  }
 }
 
 /**
@@ -121,9 +140,9 @@ export function currentFocus(state: WorldState): GameplayFocus {
  * That matters: a remembered flag would be hidden selector state, it would not
  * survive a save, and it could disagree with the world it claims to describe.
  *
- * GQP-0 provides the boundary. The bounded-quiet policy of GQP-C decides how
- * many such progressions a quiet sequence may consume before an event must be
- * offered.
+ * This predicate is a **query**, not the enforcement. Asking it is optional;
+ * `advanceSession` asks it for you, and is the only exported way to move an
+ * existing session forward.
  */
 export function canSelectNewFocus(session: GameplaySession, state: WorldState): boolean {
   if (session.focus.kind === "event") return true;
@@ -135,6 +154,40 @@ function worldTickOf(state: WorldState): number {
   return state.simulation?.tick ?? 0;
 }
 
+/**
+ * Begin a session from a world, with no previous session to answer to.
+ *
+ * The only legal way to derive a focus without a predecessor. A new campaign
+ * and a load have nothing to bypass: there is no quiet state whose lifecycle
+ * could be violated, because there is no earlier session at all.
+ */
+export function bootstrapSession(state: WorldState): GameplaySession {
+  return { state, focus: currentFocus(state), feed: [] };
+}
+
+/**
+ * Move an existing session to the world an authoritative action produced.
+ *
+ * This is where the lifecycle rule is *enforced* rather than merely offered.
+ * `canSelectNewFocus` alone was a guard callers had to remember to ask, and a
+ * predicate nobody is obliged to call is a convention, not an invariant — the
+ * next caller to derive a focus straight from a world would have reopened the
+ * loop without touching a single line of guarded code.
+ *
+ * Refusal is deliberate and total: no old focus returned, no counter nudged, no
+ * tick run on the caller's behalf, no filler event, no state touched. The
+ * caller must perform the authoritative progression itself, because inventing
+ * one here would be precisely the fake progress the contract forbids.
+ */
+export function advanceSession(
+  previous: GameplaySession,
+  nextState: WorldState,
+  feed: readonly FeedEntry[]
+): GameplaySession {
+  if (!canSelectNewFocus(previous, nextState)) throw new QuietProgressionRequired();
+  return { state: nextState, focus: currentFocus(nextState), feed };
+}
+
 /** Whether the player may take this choice, per the core's own rule. */
 export function choiceAvailable(state: WorldState, event: GameEvent, choiceId: string): boolean {
   const choice = event.choices.find(candidate => candidate.id === choiceId);
@@ -143,8 +196,7 @@ export function choiceAvailable(state: WorldState, event: GameEvent, choiceId: s
 
 /** Start a fresh systemic campaign. */
 export function newSystemicGame(seed = 7419): GameplaySession {
-  const state = createSystemicScenario(seed);
-  return { state, focus: currentFocus(state), feed: [] };
+  return bootstrapSession(createSystemicScenario(seed));
 }
 
 /**
@@ -174,18 +226,17 @@ export function playChoice(session: GameplaySession, choiceId: string): Gameplay
       ? [entry("consequence", `Conseguenze: ${due.appliedIds.join(", ")}`, due.delta), ...feed]
       : feed;
 
-  return { state, focus: currentFocus(state), feed: withConsequences };
+  return advanceSession(session, state, withConsequences);
 }
 
 /** Advance the simulation by one World Tick. */
 export function playWorldTick(session: GameplaySession): GameplaySession {
   const ticked = runWorldTick(session.state);
   const state = ticked.state;
-  return {
-    state,
-    focus: currentFocus(state),
-    feed: [entry("world_tick", `World Tick ${ticked.trace.tick}`, ticked.delta), ...session.feed]
-  };
+  return advanceSession(session, state, [
+    entry("world_tick", `World Tick ${ticked.trace.tick}`, ticked.delta),
+    ...session.feed
+  ]);
 }
 
 /** How a save attempt ended, in the words the screen will use. */
@@ -279,5 +330,7 @@ export async function loadGame(
   }
 
   const state = validated.state;
-  return { ok: true, session: { state, focus: currentFocus(state), feed: [] } };
+  // A load is a bootstrap: the world being opened has no earlier session in
+  // this run whose quiet state it must respect.
+  return { ok: true, session: bootstrapSession(state) };
 }
