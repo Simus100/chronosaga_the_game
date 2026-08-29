@@ -7,7 +7,6 @@ import {
   choiceAvailable,
   currentEvent,
   advanceSession,
-  bootstrapSession,
   QuietProgressionRequired,
   focusedEvent,
   loadGame,
@@ -1043,10 +1042,10 @@ describe("GQP-0 P2: the transition boundary enforces the rule, it does not offer
     expect(fresh.state.simulation!.tick).toBe(0);
     expect(fresh.state.turn).toBe(1);
 
-    const direct = bootstrapSession(createSystemicScenario(7419));
-    expect(direct.focus.kind).toBe("event");
-    expect(direct.state).toEqual(fresh.state);
-    expect(direct.feed).toEqual([]);
+    // Bootstrap is reachable only through the two operations that genuinely
+    // create or recover a lifecycle. There is no exported raw constructor.
+    expect(fresh.state).toEqual(createSystemicScenario(7419));
+    expect(fresh.feed).toEqual([]);
   });
 
   it("F: the M1 sequence is unchanged by the boundary", () => {
@@ -1076,13 +1075,74 @@ describe("GQP-0 P2: the transition boundary enforces the rule, it does not offer
     expect(source).toContain("function currentFocus(");
     expect(source).not.toContain("export function currentFocus(");
 
-    // The two doors are declared, and the transition is the one that checks.
-    expect(source).toContain("export function bootstrapSession(");
+    // Bootstrap is internal too: it derives a focus while claiming there is no
+    // predecessor, and only `newSystemicGame` and `loadGame` can honestly make
+    // that claim. Exporting it would move the bypass up one level.
+    expect(source).toContain("function bootstrapSession(");
+    expect(source).not.toContain("export function bootstrapSession(");
+
+    // The one exported transition is the one that checks.
     expect(source).toContain("export function advanceSession(");
     expect(source).toContain("throw new QuietProgressionRequired()");
 
     // Every session the controller returns comes from one of the two doors.
     const literals = source.match(/focus:\s*currentFocus\(/g) ?? [];
     expect(literals).toHaveLength(2);
+  });
+});
+
+describe("GQP-0 P2b: the exported surface offers no unguarded lifecycle entry", () => {
+  it("C, D: no raw bootstrap and no raw focus derivation are exported", async () => {
+    // An API property, asserted as one: what the module hands out.
+    const api = await import("../src/gameplay/controller");
+    const exported = Object.keys(api).sort();
+
+    expect(exported).not.toContain("bootstrapSession");
+    expect(exported).not.toContain("currentFocus");
+    expect(exported).not.toContain("deriveCurrentFocus");
+
+    // And the shape of what remains is the shape we intend.
+    expect(exported).toEqual([
+      "PLAYABLE_EVENTS",
+      "QuietProgressionRequired",
+      "advanceSession",
+      "canSelectNewFocus",
+      "choiceAvailable",
+      "currentEvent",
+      "focusedEvent",
+      "loadGame",
+      "newSystemicGame",
+      "playChoice",
+      "playWorldTick",
+      "saveGame"
+    ]);
+  });
+
+  it("E: a quiet session has no exported way to obtain a focus without progression", async () => {
+    const api = await import("../src/gameplay/controller");
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const before = structuredClone(quiet.state);
+
+    // The guarded transition refuses.
+    expect(() => api.advanceSession(quiet, quiet.state, [])).toThrow(QuietProgressionRequired);
+    // The choice path refuses before touching anything.
+    expect(() => api.playChoice(quiet, "release_reserve")).toThrow(/no event is being offered/);
+
+    // The only remaining exported commands either create a lifecycle of their
+    // own (newSystemicGame) or perform the progression themselves
+    // (playWorldTick). Neither launders this session's quiet state.
+    expect(api.newSystemicGame().state.simulation!.tick).toBe(0);
+    expect(quiet.state).toEqual(before);
+  });
+
+  it("F: after a World Tick the lifecycle permits the next focus", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const ticked = playWorldTick(quiet);
+    expect(ticked.focus.kind).toBe("event");
+    expect(ticked.state.simulation!.tick).toBe(quiet.state.simulation!.tick + 1);
+    // And the Player Turn was not spent by the quiet beat or by the tick.
+    expect(ticked.state.turn).toBe(session.state.turn);
   });
 });

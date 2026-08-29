@@ -241,3 +241,125 @@ describe("F: the GQP selection path does not depend on catalogue order", () => {
     expect(() => selectEventStable([], scenario())).toThrow(/No eligible events/);
   });
 });
+
+describe("C: a failed effect leaves no half-applied world", () => {
+  /**
+   * A choice or a consequence carries a list. If the second effect throws
+   * after the first has already changed something, the caller must not receive
+   * — or keep — a world that is half-way through a decision. Both operations
+   * work on a clone, so the proof is that the original is untouched and the
+   * partial clone is unreachable.
+   */
+  const partial = [
+    { type: "RESOURCE_DELTA", key: "water", value: -3 },
+    { type: "CHARACTER_STRESS", targetId: "nobody_999", value: 5 }
+  ] as EventEffect[];
+
+  it("an immediate choice that throws mid-list leaves the original world intact", () => {
+    const before = scenario();
+    const snapshot = structuredClone(before);
+
+    expect(() =>
+      resolveChoice(before, { id: "half", label: "HALF", effects: partial }, "test")
+    ).toThrow(/Unknown character/);
+
+    // The first effect did land — on the clone, which nobody can reach.
+    expect(before).toEqual(snapshot);
+    expect(before.simulation!.settlements[0]!.resourceStock.water)
+      .toBe(snapshot.simulation!.settlements[0]!.resourceStock.water);
+    expect(before.turn).toBe(snapshot.turn);
+  });
+
+  it("a delayed consequence that throws mid-list leaves the stored world intact", () => {
+    const scheduled = scheduleDelayedConsequence(scenario(), {
+      id: "con_half",
+      triggerTurn: 1,
+      visibility: "visible",
+      scope: "settlement",
+      effects: partial,
+      reversible: false,
+      status: "pending",
+      source: { kind: "system", id: "test" }
+    }).state;
+    const snapshot = structuredClone(scheduled);
+
+    expect(() => applyDueConsequences(scheduled, 1)).toThrow(/Unknown character/);
+
+    expect(scheduled).toEqual(snapshot);
+    // And the consequence is still pending: a throw does not mark it applied.
+    expect(scheduled.simulation!.delayedConsequences[0]!.status).toBe("pending");
+  });
+});
+
+describe("a non-finite value never reaches the world", () => {
+  it("the applicator refuses what the validators already reject", () => {
+    const rejected = [
+      { type: "RESOURCE_DELTA", key: "water", value: "abc" },
+      { type: "PRESSURE_DELTA", value: Number.NaN },
+      { type: "CHARACTER_STRESS", targetId: "brann_001", value: Number.POSITIVE_INFINITY }
+    ] as EventEffect[];
+
+    for (const effect of rejected) {
+      const state = scenario();
+      const snapshot = structuredClone(state);
+      expect(() => applyEventEffect(state, effect, [])).toThrow(/finite numeric value/);
+      // Refused before writing, not after.
+      expect(state).toEqual(snapshot);
+    }
+  });
+
+  it("a legitimate string value on FLAG_SET is untouched by the check", () => {
+    const state = scenario();
+    const changes: StateChange[] = [];
+    applyEventEffect(state, { type: "FLAG_SET", key: "note", value: "text" }, changes);
+    expect(state.flags.note).toBe("text");
+    expect(changes).toHaveLength(1);
+  });
+});
+
+describe("I: stable selection edge cases", () => {
+  const make = (id: string, weight: number): GameEvent => ({
+    id,
+    version: 1,
+    title: id,
+    body: id,
+    category: "test",
+    tags: [],
+    weight,
+    choices: [{ id: `${id}_c`, label: "C", effects: [] }]
+  });
+
+  it("many permutations of the same set select the same event", () => {
+    const set = [make("e_a", 1), make("e_b", 2), make("e_c", 3), make("e_d", 0.5)];
+    const expected = selectEventStable([...set], scenario()).id;
+    // Every rotation, plus the reversal: a cheap stand-in for "any order".
+    for (let shift = 0; shift < set.length; shift += 1) {
+      const rotated = [...set.slice(shift), ...set.slice(0, shift)];
+      expect(selectEventStable(rotated, scenario()).id).toBe(expected);
+      expect(selectEventStable([...rotated].reverse(), scenario()).id).toBe(expected);
+    }
+  });
+
+  it("zero and negative weights cannot make selection order-sensitive", () => {
+    // The floor of 0.001 already existed in the legacy selector; what matters
+    // here is only that it does not reintroduce array-position dependence.
+    const odd = [make("e_zero", 0), make("e_neg", -5), make("e_ok", 2)];
+    const expected = selectEventStable([...odd], scenario()).id;
+    expect(selectEventStable([...odd].reverse(), scenario()).id).toBe(expected);
+  });
+
+  it("duplicate ids do not crash, and stay deterministic", () => {
+    // Not a supported catalogue — ids are meant to be unique — but a selector
+    // that became nondeterministic here would hide the authoring mistake.
+    const dupes = [make("e_same", 1), make("e_same", 2), make("e_other", 1)];
+    const first = selectEventStable([...dupes], scenario());
+    expect(selectEventStable([...dupes], scenario())).toEqual(first);
+  });
+
+  it("an ineligible catalogue is refused rather than guessed", () => {
+    const gated: GameEvent[] = [
+      { ...make("e_gated", 1), requirements: { flagsAll: ["never_set_flag"] } }
+    ];
+    expect(() => selectEventStable(gated, scenario())).toThrow(/No eligible events/);
+  });
+});

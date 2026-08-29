@@ -18,6 +18,24 @@ export const EVENT_EFFECT_TYPES = [
 ] as const satisfies readonly EventEffect["type"][];
 
 /**
+ * The numeric payload of an effect, refused if it is not a finite number.
+ *
+ * Both validators already require this, so a validated effect never fails here.
+ * The check exists because the applicator is the single authority: `Number()`
+ * on an unvalidated payload turns `"abc"` into `NaN`, and a resource stock of
+ * `NaN` is not an error anyone notices until a save fails validation several
+ * turns later. Refusing at the point of application keeps the corruption from
+ * ever entering the world.
+ */
+function finiteValue(effect: EventEffect): number {
+  const value = Number(effect.value);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${effect.type} requires a finite numeric value`);
+  }
+  return value;
+}
+
+/**
  * The one place an `EventEffect` becomes a change to the world.
  *
  * Before this module the same effect had two implementations: one inside
@@ -55,7 +73,7 @@ export function applyEventEffect(
     if (!effect.key) throw new Error("RESOURCE_DELTA requires key");
     // The authoritative path, not the flat projection: a change written to the
     // projection is erased by the next tick that recomputes it.
-    applyAuthoritativeResourceDelta(state, effect.key, Number(effect.value), changes);
+    applyAuthoritativeResourceDelta(state, effect.key, finiteValue(effect), changes);
     return;
   }
 
@@ -70,7 +88,7 @@ export function applyEventEffect(
 
   if (effect.type === "PRESSURE_DELTA") {
     const before = state.worldPressure;
-    const after = Math.max(0, before + Number(effect.value));
+    const after = Math.max(0, before + finiteValue(effect));
     state.worldPressure = after;
     changes.push({ type: "worldPressure", key: "worldPressure", before, after });
     return;
@@ -81,7 +99,7 @@ export function applyEventEffect(
     const character = state.party.find(candidate => candidate.id === effect.targetId);
     if (!character) throw new Error(`Unknown character '${effect.targetId}'`);
     const before = character.stress;
-    const after = Math.max(0, Math.min(100, before + Number(effect.value)));
+    const after = Math.max(0, Math.min(100, before + finiteValue(effect)));
     character.stress = after;
     changes.push({ type: "characterStress", key: character.id, before, after });
     return;

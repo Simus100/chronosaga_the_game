@@ -157,11 +157,17 @@ function worldTickOf(state: WorldState): number {
 /**
  * Begin a session from a world, with no previous session to answer to.
  *
- * The only legal way to derive a focus without a predecessor. A new campaign
- * and a load have nothing to bypass: there is no quiet state whose lifecycle
- * could be violated, because there is no earlier session at all.
+ * Deliberately **not exported**, for the same reason `currentFocus` is not:
+ * legality here depends entirely on the caller's intent, and the controller
+ * cannot tell a genuine bootstrap from a quiet session being laundered. A
+ * caller holding a quiet session could have called this with its own state and
+ * received a fresh focus, which is the lifecycle escape route one level up.
+ *
+ * A bootstrap is legitimate only through an operation that actually creates or
+ * recovers a lifecycle — `newSystemicGame` and `loadGame`. Those two know they
+ * have no predecessor because of what they *are*, not because they were told.
  */
-export function bootstrapSession(state: WorldState): GameplaySession {
+function bootstrapSession(state: WorldState): GameplaySession {
   return { state, focus: currentFocus(state), feed: [] };
 }
 
