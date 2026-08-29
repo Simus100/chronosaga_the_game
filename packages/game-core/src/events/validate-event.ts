@@ -39,8 +39,15 @@ function validateEffect(effect: unknown, label: string, errors: string[]): void 
   ) {
     errors.push(`${label} ${type} requires a finite numeric value`);
   }
-  if (type === "FLAG_SET" && !["string", "number", "boolean"].includes(typeof effect.value)) {
-    errors.push(`${label} FLAG_SET requires string, number or boolean value`);
+  if (type === "FLAG_SET") {
+    if (!["string", "number", "boolean"].includes(typeof effect.value)) {
+      errors.push(`${label} FLAG_SET requires string, number or boolean value`);
+    } else if (typeof effect.value === "number" && !Number.isFinite(effect.value)) {
+      // The save validator already refuses this. Accepting it here would let an
+      // authored event be played and then fail to store, which is drift between
+      // the two authorities rather than a stricter rule in one of them.
+      errors.push(`${label} FLAG_SET value must be a finite number, got ${String(effect.value)}`);
+    }
   }
 }
 

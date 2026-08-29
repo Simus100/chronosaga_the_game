@@ -103,8 +103,8 @@ export function currentEvent(state: WorldState): GameEvent {
  * operation that must not be available to a caller holding an existing quiet
  * session: it takes no previous session, so it cannot honour the lifecycle
  * rule, and a caller could loop on it forever without ever consulting a guard.
- * The two exported doors are `bootstrapSession` and `advanceSession`, and both
- * of them decide first whether deriving is legal.
+ * Every path that reaches it — bootstrap or transition — decides first whether
+ * deriving is legal.
  *
  * GQP-0 always resolves to an event, which is exactly M1's behaviour: no quiet
  * policy exists yet, and inventing one here would be gameplay this slice is not
@@ -141,8 +141,8 @@ export class QuietProgressionRequired extends Error {
  * survive a save, and it could disagree with the world it claims to describe.
  *
  * This predicate is a **query**, not the enforcement. Asking it is optional;
- * `advanceSession` asks it for you, and is the only exported way to move an
- * existing session forward.
+ * the internal transition asks it on every move of an existing session, and
+ * the exported commands are the only way to reach that transition.
  */
 export function canSelectNewFocus(session: GameplaySession, state: WorldState): boolean {
   if (session.focus.kind === "event") return true;
@@ -184,8 +184,16 @@ function bootstrapSession(state: WorldState): GameplaySession {
  * tick run on the caller's behalf, no filler event, no state touched. The
  * caller must perform the authoritative progression itself, because inventing
  * one here would be precisely the fake progress the contract forbids.
+ *
+ * **Internal**, for the same reason `bootstrapSession` is. It accepts a
+ * `WorldState` and promises it is "the world an authoritative action produced",
+ * but it has no way to check that claim: a caller could hand it a hand-edited
+ * world with `turn = 999` and receive it back as the session's authoritative
+ * state. The Simulation Core owns state mutation, so the exported commands are
+ * the ones that actually perform a Core operation — `playChoice` and
+ * `playWorldTick` — and they pass the world *they* produced.
  */
-export function advanceSession(
+function advanceSession(
   previous: GameplaySession,
   nextState: WorldState,
   feed: readonly FeedEntry[]

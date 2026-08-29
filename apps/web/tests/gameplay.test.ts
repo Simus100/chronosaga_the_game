@@ -6,8 +6,6 @@ import {
   canSelectNewFocus,
   choiceAvailable,
   currentEvent,
-  advanceSession,
-  QuietProgressionRequired,
   focusedEvent,
   loadGame,
   newSystemicGame,
@@ -988,52 +986,44 @@ describe("GQP-0 P2: the transition boundary enforces the rule, it does not offer
    * will reach for.
    */
 
-  it("A: an event session transitions normally, as M1 always did", () => {
+  it("A, D: a choice is a Core-owned mutation, and M1 semantics hold", () => {
     const session = newSystemicGame();
-    const next = advanceSession(session, session.state, session.feed);
+    const water = session.state.simulation!.settlements[0]!.resourceStock.water!;
+    const next = playChoice(session, "release_reserve");
+
     expect(next.focus.kind).toBe("event");
-    expect(next.state).toBe(session.state);
+    // The Core produced this world: the stock moved by the effect's amount and
+    // the Player Turn advanced once.
+    expect(next.state.simulation!.settlements[0]!.resourceStock.water).toBe(water - 4);
+    expect(next.state.turn).toBe(session.state.turn + 1);
+    expect(next.state.simulation!.tick).toBe(session.state.simulation!.tick);
   });
 
-  it("B: a quiet session at the same World Tick is refused by the transition", () => {
+  it("E: a World Tick is a Core-owned mutation", () => {
     const session = newSystemicGame();
-    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
-
-    // Not `canSelectNewFocus(...) === false` — the operation itself.
-    expect(() => advanceSession(quiet, quiet.state, quiet.feed)).toThrow(QuietProgressionRequired);
-
-    // And a world that merely looks equal is refused too: the tick decides,
-    // not object identity.
-    const twin = structuredClone(quiet.state);
-    expect(() => advanceSession(quiet, twin, quiet.feed)).toThrow(QuietProgressionRequired);
+    const next = playWorldTick(session);
+    expect(next.state).toEqual(runWorldTick(session.state).state);
+    expect(next.state.simulation!.tick).toBe(session.state.simulation!.tick + 1);
+    expect(next.state.turn).toBe(session.state.turn);
   });
 
-  it("C: a World Tick unblocks the transition", () => {
-    const session = newSystemicGame();
-    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
-
-    // playWorldTick is itself a guarded transition, and it is allowed because
-    // the tick it performs is the progression the rule asks for.
-    const ticked = playWorldTick(quiet);
-    expect(ticked.state.simulation!.tick).toBe(quiet.state.simulation!.tick + 1);
-    expect(ticked.focus.kind).toBe("event");
-
-    // The explicit transition agrees.
-    expect(() => advanceSession(quiet, ticked.state, [])).not.toThrow();
-  });
-
-  it("D: a refused transition changes nothing at all", () => {
+  it("F: a quiet session refuses a choice before touching anything", () => {
     const session = newSystemicGame();
     const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
     const before = structuredClone(quiet.state);
 
-    expect(() => advanceSession(quiet, quiet.state, quiet.feed)).toThrow();
-
-    // No Player Turn, no tick, no silent progress of any kind.
-    expect(quiet.state.turn).toBe(before.turn);
-    expect(quiet.state.simulation!.tick).toBe(before.simulation!.tick);
+    expect(() => playChoice(quiet, "release_reserve")).toThrow(/no event is being offered/);
     expect(quiet.state).toEqual(before);
     expect(quiet.focus.kind).toBe("quiet");
+  });
+
+  it("G: a quiet session may tick, and the tick yields the next focus", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const ticked = playWorldTick(quiet);
+    expect(ticked.state.simulation!.tick).toBe(quiet.state.simulation!.tick + 1);
+    expect(ticked.focus.kind).toBe("event");
+    expect(ticked.state.turn).toBe(session.state.turn);
   });
 
   it("E: bootstrap needs no progression and no artificial tick", () => {
@@ -1082,7 +1072,8 @@ describe("GQP-0 P2: the transition boundary enforces the rule, it does not offer
     expect(source).not.toContain("export function bootstrapSession(");
 
     // The one exported transition is the one that checks.
-    expect(source).toContain("export function advanceSession(");
+    expect(source).toContain("function advanceSession(");
+    expect(source).not.toContain("export function advanceSession(");
     expect(source).toContain("throw new QuietProgressionRequired()");
 
     // Every session the controller returns comes from one of the two doors.
@@ -1100,12 +1091,17 @@ describe("GQP-0 P2b: the exported surface offers no unguarded lifecycle entry", 
     expect(exported).not.toContain("bootstrapSession");
     expect(exported).not.toContain("currentFocus");
     expect(exported).not.toContain("deriveCurrentFocus");
+    // A raw transition trusts the caller's claim that `nextState` came from an
+    // authoritative action, and cannot check it.
+    expect(exported).not.toContain("advanceSession");
 
     // And the shape of what remains is the shape we intend.
+    // H: no exported operation accepts an arbitrary WorldState and turns it
+    // into the next session. What remains is commands that perform a Core
+    // operation themselves, plus read-only queries.
     expect(exported).toEqual([
       "PLAYABLE_EVENTS",
       "QuietProgressionRequired",
-      "advanceSession",
       "canSelectNewFocus",
       "choiceAvailable",
       "currentEvent",
@@ -1124,8 +1120,6 @@ describe("GQP-0 P2b: the exported surface offers no unguarded lifecycle entry", 
     const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
     const before = structuredClone(quiet.state);
 
-    // The guarded transition refuses.
-    expect(() => api.advanceSession(quiet, quiet.state, [])).toThrow(QuietProgressionRequired);
     // The choice path refuses before touching anything.
     expect(() => api.playChoice(quiet, "release_reserve")).toThrow(/no event is being offered/);
 

@@ -348,12 +348,55 @@ describe("I: stable selection edge cases", () => {
     expect(selectEventStable([...odd].reverse(), scenario()).id).toBe(expected);
   });
 
-  it("duplicate ids do not crash, and stay deterministic", () => {
-    // Not a supported catalogue — ids are meant to be unique — but a selector
-    // that became nondeterministic here would hide the authoring mistake.
-    const dupes = [make("e_same", 1), make("e_same", 2), make("e_other", 1)];
-    const first = selectEventStable([...dupes], scenario());
-    expect(selectEventStable([...dupes], scenario())).toEqual(first);
+  it("duplicate ids fail closed, in either catalogue order", () => {
+    // A stable sort leaves equal keys in input order, so two events sharing an
+    // id would still be chosen by array position: same `.id`, different weight,
+    // body and choices. The old test compared two calls in the *same* order and
+    // proved only repeat-determinism, which is not the property that matters.
+    const one = { ...make("dup", 1), title: "ONE" };
+    const two = { ...make("dup", 100), title: "TWO" };
+    const forward = [one, two, make("e_other", 1)];
+    const reversed = [...forward].reverse();
+
+    expect(() => selectEventStable(forward, scenario())).toThrow(/Duplicate event id 'dup'/);
+    expect(() => selectEventStable(reversed, scenario())).toThrow(/Duplicate event id 'dup'/);
+  });
+
+  it("a duplicate hidden by eligibility is still refused", () => {
+    // The whole catalogue is checked, not the eligible subset: an id collision
+    // is a content defect even while today's requirements hide it.
+    const gatedDupe: GameEvent = {
+      ...make("dup", 1),
+      requirements: { flagsAll: ["never_set_flag"] }
+    };
+    const catalogue = [make("dup", 1), gatedDupe, make("e_ok", 1)];
+    expect(() => selectEventStable(catalogue, scenario())).toThrow(/Duplicate event id/);
+  });
+
+  it("permutations select the same event OBJECT, not merely the same id", () => {
+    const set = [make("p_a", 1), make("p_b", 2), make("p_c", 3), make("p_d", 4)];
+    const expected = selectEventStable([...set], scenario());
+    for (let shift = 0; shift < set.length; shift += 1) {
+      const rotated = [...set.slice(shift), ...set.slice(0, shift)];
+      // Identity, not just the id string.
+      expect(selectEventStable(rotated, scenario())).toBe(expected);
+      expect(selectEventStable([...rotated].reverse(), scenario())).toBe(expected);
+    }
+  });
+
+  it("ordering does not depend on locale collation", () => {
+    // `localeCompare` can order these differently depending on runtime ICU
+    // data; code-unit comparison cannot. Uppercase sorts before lowercase in
+    // code units, which is the point: the answer is the same everywhere.
+    const cased = [make("Z_upper", 1), make("a_lower", 1), make("B_upper", 1)];
+    const expected = selectEventStable([...cased], scenario()).id;
+    for (const permutation of [
+      [cased[1]!, cased[2]!, cased[0]!],
+      [cased[2]!, cased[0]!, cased[1]!],
+      [...cased].reverse()
+    ]) {
+      expect(selectEventStable(permutation, scenario()).id).toBe(expected);
+    }
   });
 
   it("an ineligible catalogue is refused rather than guessed", () => {
@@ -361,5 +404,85 @@ describe("I: stable selection edge cases", () => {
       { ...make("e_gated", 1), requirements: { flagsAll: ["never_set_flag"] } }
     ];
     expect(() => selectEventStable(gated, scenario())).toThrow(/No eligible events/);
+  });
+});
+
+describe("E: validator and applicator agree on every value shape", () => {
+  /**
+   * The invariant, stated both ways:
+   *
+   *   anything either validator accepts is safe for the applicator;
+   *   anything malformed enough to corrupt the world is refused by the
+   *   applicator even if it bypassed validation.
+   *
+   * The first half is what the coercive helper broke: `Number("3")` is finite,
+   * so the applicator accepted a string the validators reject.
+   */
+
+  const asEvent = (effect: unknown): unknown => ({
+    id: "evt_probe",
+    version: 1,
+    title: "PROBE",
+    body: "probe",
+    category: "test",
+    tags: [],
+    weight: 1,
+    choices: [{ id: "only", label: "ONLY", effects: [effect] }]
+  });
+
+  const cases: Array<[string, unknown, boolean]> = [
+    // label, effect, accepted by the event validator
+    ["RESOURCE_DELTA number", { type: "RESOURCE_DELTA", key: "water", value: -2 }, true],
+    ["RESOURCE_DELTA string \"3\"", { type: "RESOURCE_DELTA", key: "water", value: "3" }, false],
+    ["RESOURCE_DELTA true", { type: "RESOURCE_DELTA", key: "water", value: true }, false],
+    ["PRESSURE_DELTA number", { type: "PRESSURE_DELTA", value: 2 }, true],
+    ["PRESSURE_DELTA string \"2\"", { type: "PRESSURE_DELTA", value: "2" }, false],
+    ["PRESSURE_DELTA NaN", { type: "PRESSURE_DELTA", value: Number.NaN }, false],
+    ["PRESSURE_DELTA Infinity", { type: "PRESSURE_DELTA", value: Number.POSITIVE_INFINITY }, false],
+    ["CHARACTER_STRESS number", { type: "CHARACTER_STRESS", targetId: "brann_001", value: 3 }, true],
+    ["CHARACTER_STRESS false", { type: "CHARACTER_STRESS", targetId: "brann_001", value: false }, false],
+    ["CHARACTER_STRESS Infinity", { type: "CHARACTER_STRESS", targetId: "brann_001", value: Number.NEGATIVE_INFINITY }, false],
+    ["FLAG_SET string", { type: "FLAG_SET", key: "f", value: "text" }, true],
+    ["FLAG_SET boolean", { type: "FLAG_SET", key: "f", value: true }, true],
+    ["FLAG_SET finite number", { type: "FLAG_SET", key: "f", value: 7 }, true],
+    ["FLAG_SET NaN", { type: "FLAG_SET", key: "f", value: Number.NaN }, false],
+    ["FLAG_SET Infinity", { type: "FLAG_SET", key: "f", value: Number.POSITIVE_INFINITY }, false]
+  ];
+
+  it.each(cases)("%s: validator and applicator reach the same verdict", (_label, effect, accepted) => {
+    expect(validateGameEvent(asEvent(effect)).ok).toBe(accepted);
+
+    const state = scenario();
+    const snapshot = structuredClone(state);
+    const attempt = () => applyEventEffect(state, effect as EventEffect, []);
+
+    if (accepted) {
+      expect(attempt).not.toThrow();
+    } else {
+      // Refused, and refused before writing.
+      expect(attempt).toThrow();
+      expect(state).toEqual(snapshot);
+    }
+  });
+
+  it("the save validator agrees with the event validator on FLAG_SET numbers", () => {
+    // These two used to disagree: an authored event carrying a NaN flag was
+    // accepted, played, and then refused at save time.
+    const world = scenario();
+    world.simulation!.delayedConsequences.push({
+      id: "con_nan_flag",
+      triggerTurn: 1,
+      visibility: "visible",
+      scope: "settlement",
+      effects: [{ type: "FLAG_SET", key: "f", value: Number.NaN } as EventEffect],
+      reversible: false,
+      status: "pending",
+      source: { kind: "system", id: "test" }
+    } as DelayedConsequenceState);
+
+    // JSON cannot carry NaN, so the save boundary meets it as null; both
+    // validators refuse the shape, from their own side.
+    expect(validateSystemicWorldState(JSON.parse(JSON.stringify(world))).ok).toBe(false);
+    expect(validateGameEvent(asEvent({ type: "FLAG_SET", key: "f", value: Number.NaN })).ok).toBe(false);
   });
 });

@@ -18,17 +18,44 @@ import { isEventEligible } from "./eligibility.js";
  * unchanged, including the cursor derivation, so the two paths agree whenever
  * the catalogue happens to be sorted already.
  *
+ * Two details make that claim actually true rather than nearly true.
+ *
+ * **Sorting by id only orders a catalogue whose ids are unique.** A stable sort
+ * leaves equal keys in their input order, so two different events sharing an id
+ * would still be picked by array position — the selected `.id` would look
+ * identical while the selected *event* differed in weight, body and choices.
+ * Duplicate identity is an authoring defect, and it is refused rather than
+ * resolved: deduplicating, or taking the first, would invent an identity the
+ * content did not declare.
+ *
+ * **`localeCompare` is not a replay-safe comparator.** Its result depends on
+ * the runtime's locale and ICU data, so the same catalogue could order
+ * differently on two machines — the exact class of nondeterminism this function
+ * exists to remove. The comparison is done on code units instead.
+ *
  * `selectEvent` is deliberately left alone: M1's selection sequence is accepted
  * and its regressions expect exactly the sequence it produces today. Sorting
  * its input to fix a hazard the GQP path needs would silently rewrite a
  * validated baseline, which is the more expensive kind of correctness.
  */
 export function selectEventStable(events: GameEvent[], state: WorldState): GameEvent {
+  // Checked across the whole supplied catalogue, not only the eligible subset:
+  // a duplicate id is a content defect whether or not today's eligibility
+  // happens to hide the collision.
+  const seen = new Set<string>();
+  for (const event of events) {
+    if (seen.has(event.id)) {
+      throw new Error(`Duplicate event id '${event.id}' in the selection catalogue`);
+    }
+    seen.add(event.id);
+  }
+
   const eligible = events
     .filter(event => isEventEligible(event, state))
-    // Stable by construction: ids are unique, so the comparison never ties and
-    // never depends on the sort implementation's stability guarantees.
-    .sort((a, b) => a.id.localeCompare(b.id));
+    // Code units, not locale collation: the ordering must be the same on every
+    // machine that replays the run. Ids are proven unique above, so equality
+    // here means the same event, and the sort's stability never matters.
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   if (!eligible.length) throw new Error("No eligible events");
 

@@ -18,19 +18,46 @@ export const EVENT_EFFECT_TYPES = [
 ] as const satisfies readonly EventEffect["type"][];
 
 /**
- * The numeric payload of an effect, refused if it is not a finite number.
+ * The numeric payload of an effect. Required to *be* a finite number, not to
+ * be convertible into one.
  *
- * Both validators already require this, so a validated effect never fails here.
- * The check exists because the applicator is the single authority: `Number()`
- * on an unvalidated payload turns `"abc"` into `NaN`, and a resource stock of
- * `NaN` is not an error anyone notices until a save fails validation several
- * turns later. Refusing at the point of application keeps the corruption from
- * ever entering the world.
+ * The first version of this helper coerced with `Number()`, and that quietly
+ * inverted the property the whole slice exists to establish. `Number("3")` is
+ * `3`, `Number(true)` is `1`, `Number(null)` is `0` — all finite, all accepted
+ * by the applicator, and all **rejected** by both validators, which require
+ * `typeof value === "number"`. Validator stricter than applicator is the same
+ * defect as applicator stricter than validator, seen from the other side: the
+ * two authorities disagreed about what a valid effect is.
+ *
+ * Compile-time typing does not help here. This is a hostile runtime boundary:
+ * the payload may have come from a save file or an authored catalogue, and
+ * `EventEffect["value"]` is `number | string | boolean` by declaration.
  */
-function finiteValue(effect: EventEffect): number {
-  const value = Number(effect.value);
-  if (!Number.isFinite(value)) {
+function numericValue(effect: EventEffect): number {
+  const value = effect.value;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`${effect.type} requires a finite numeric value`);
+  }
+  return value;
+}
+
+/**
+ * The flag payload, refused if it is a number the save boundary would later
+ * reject.
+ *
+ * A `NaN` flag compares false against everything including itself, so an event
+ * gated on it simply stops appearing and nothing reports why — and the save
+ * validator refuses it, which means the world could be played and then not
+ * stored. The applicator must never knowingly place a value in `WorldState`
+ * that the authoritative save validator will reject.
+ */
+function flagValue(effect: EventEffect): string | number | boolean {
+  const value = effect.value;
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error(`FLAG_SET requires a finite number, got ${String(value)}`);
+  }
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+    throw new Error("FLAG_SET requires a string, number or boolean value");
   }
   return value;
 }
@@ -73,14 +100,14 @@ export function applyEventEffect(
     if (!effect.key) throw new Error("RESOURCE_DELTA requires key");
     // The authoritative path, not the flat projection: a change written to the
     // projection is erased by the next tick that recomputes it.
-    applyAuthoritativeResourceDelta(state, effect.key, finiteValue(effect), changes);
+    applyAuthoritativeResourceDelta(state, effect.key, numericValue(effect), changes);
     return;
   }
 
   if (effect.type === "FLAG_SET") {
     if (!effect.key) throw new Error("FLAG_SET requires key");
+    const after = flagValue(effect);
     const before = state.flags[effect.key];
-    const after = effect.value;
     state.flags[effect.key] = after;
     changes.push({ type: "flag", key: effect.key, before, after });
     return;
@@ -88,7 +115,7 @@ export function applyEventEffect(
 
   if (effect.type === "PRESSURE_DELTA") {
     const before = state.worldPressure;
-    const after = Math.max(0, before + finiteValue(effect));
+    const after = Math.max(0, before + numericValue(effect));
     state.worldPressure = after;
     changes.push({ type: "worldPressure", key: "worldPressure", before, after });
     return;
@@ -99,7 +126,7 @@ export function applyEventEffect(
     const character = state.party.find(candidate => candidate.id === effect.targetId);
     if (!character) throw new Error(`Unknown character '${effect.targetId}'`);
     const before = character.stress;
-    const after = Math.max(0, Math.min(100, before + finiteValue(effect)));
+    const after = Math.max(0, Math.min(100, before + numericValue(effect)));
     character.stress = after;
     changes.push({ type: "characterStress", key: character.id, before, after });
     return;
