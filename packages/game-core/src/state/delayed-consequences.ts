@@ -73,7 +73,12 @@ export function applyDueConsequences(
 
   const due = simulation.delayedConsequences
     .filter(consequence => consequence.status === "pending" && consequence.triggerTurn <= throughTurn)
-    .sort((a, b) => a.triggerTurn - b.triggerTurn || a.id.localeCompare(b.id));
+    // Code units, not locale collation. `localeCompare` depends on the
+    // runtime's locale and ICU data, so two machines replaying the same save
+    // could apply two consequences due on the same turn in opposite orders —
+    // and effects on the same field do not commute. The tie-break must be the
+    // same everywhere, which is what makes a replay a replay.
+    .sort((a, b) => a.triggerTurn - b.triggerTurn || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   for (const consequence of due) {
     for (const effect of consequence.effects) applyEventEffect(next, effect, changes);

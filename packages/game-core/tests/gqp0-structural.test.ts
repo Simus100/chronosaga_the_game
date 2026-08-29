@@ -486,3 +486,164 @@ describe("E: validator and applicator agree on every value shape", () => {
     expect(validateGameEvent(asEvent({ type: "FLAG_SET", key: "f", value: Number.NaN })).ok).toBe(false);
   });
 });
+
+describe("P2-1: a malformed identifier is refused on both sides", () => {
+  /**
+   * The validators test `text(effect.key)?.trim()`; the applicator tested only
+   * truthiness, and `" "` is truthy. A whitespace key therefore passed the
+   * refusal and reached the world, creating `flags[" "]` or a stock under a
+   * name nothing could reference again.
+   */
+  const blank: Array<[string, unknown]> = [
+    ["RESOURCE_DELTA key ' '", { type: "RESOURCE_DELTA", key: " ", value: -1 }],
+    ["RESOURCE_DELTA key ''", { type: "RESOURCE_DELTA", key: "", value: -1 }],
+    ["RESOURCE_DELTA key '\t\n'", { type: "RESOURCE_DELTA", key: "\t\n", value: -1 }],
+    ["FLAG_SET key ' '", { type: "FLAG_SET", key: " ", value: true }],
+    ["FLAG_SET key ''", { type: "FLAG_SET", key: "", value: true }],
+    ["CHARACTER_STRESS targetId ' '", { type: "CHARACTER_STRESS", targetId: " ", value: 1 }],
+    ["CHARACTER_STRESS targetId ''", { type: "CHARACTER_STRESS", targetId: "", value: 1 }]
+  ];
+
+  it.each(blank)("%s: validator and applicator both refuse", (_label, effect) => {
+    const event = {
+      id: "evt_blank",
+      version: 1,
+      title: "BLANK",
+      body: "blank",
+      category: "test",
+      tags: [],
+      weight: 1,
+      choices: [{ id: "only", label: "ONLY", effects: [effect] }]
+    };
+    expect(validateGameEvent(event).ok).toBe(false);
+
+    const state = scenario();
+    const snapshot = structuredClone(state);
+    expect(() => applyEventEffect(state, effect as EventEffect, [])).toThrow();
+    // Refused without authoritative mutation.
+    expect(state).toEqual(snapshot);
+  });
+
+  it("a whitespace key never appears in the world", () => {
+    const state = scenario();
+    expect(() =>
+      applyEventEffect(state, { type: "FLAG_SET", key: " ", value: true } as EventEffect, [])
+    ).toThrow(/non-empty identifier/);
+    expect(Object.keys(state.flags)).not.toContain(" ");
+  });
+});
+
+describe("P2-2: a finite input may not leave a non-finite world", () => {
+  /**
+   * `Number.MAX_VALUE + Number.MAX_VALUE` is `Infinity`. Both operands pass
+   * the input guard, because the defect is a property of the result. An
+   * infinite stock survives in memory and is then refused by the save
+   * validator: the run continues and cannot be stored.
+   */
+  it("PRESSURE_DELTA overflow is refused and the world is untouched", () => {
+    const state = scenario();
+    state.worldPressure = Number.MAX_VALUE;
+    const snapshot = structuredClone(state);
+
+    expect(() =>
+      applyEventEffect(state, { type: "PRESSURE_DELTA", value: Number.MAX_VALUE }, [])
+    ).toThrow(/non-finite result/);
+    expect(state.worldPressure).toBe(snapshot.worldPressure);
+    expect(Number.isFinite(state.worldPressure)).toBe(true);
+  });
+
+  it("RESOURCE_DELTA overflow is refused", () => {
+    const state = scenario();
+    state.simulation!.settlements[0]!.resourceStock.water = Number.MAX_VALUE;
+
+    expect(() =>
+      applyEventEffect(state, { type: "RESOURCE_DELTA", key: "water", value: Number.MAX_VALUE }, [])
+    ).toThrow(/non-finite result/);
+  });
+
+  it("a successful application always leaves finite authoritative numbers", () => {
+    const applied = resolveChoice(
+      scenario(),
+      { id: "ok", label: "OK", effects: EVERY_EFFECT },
+      "test"
+    ).state;
+
+    expect(Number.isFinite(applied.worldPressure)).toBe(true);
+    for (const value of Object.values(applied.simulation!.settlements[0]!.resourceStock)) {
+      expect(Number.isFinite(value)).toBe(true);
+    }
+    for (const character of applied.party) {
+      expect(Number.isFinite(character.stress)).toBe(true);
+    }
+  });
+});
+
+describe("P2-3: delayed consequences apply in a locale-independent order", () => {
+  /**
+   * Two consequences due on the same turn are ordered by id. With
+   * `localeCompare` that order depended on the runtime's locale and ICU data,
+   * and effects on the same field do not commute — so two machines replaying
+   * one save could reach different worlds.
+   */
+  function pending(id: string, value: number | string): DelayedConsequenceState {
+    return {
+      id,
+      triggerTurn: 1,
+      visibility: "visible",
+      scope: "settlement",
+      // A FLAG_SET on one key: last writer wins, so order is observable.
+      effects: [{ type: "FLAG_SET", key: "order_probe", value }],
+      reversible: false,
+      status: "pending",
+      source: { kind: "system", id: "test" }
+    };
+  }
+
+  const ids = ["con_Zulu", "con_alpha", "con_Beta", "con_alpha2"];
+
+  it("the same set in any input order applies in the same order", () => {
+    const outcomes = new Set<string>();
+    const applications: string[][] = [];
+
+    for (const permutation of [
+      [0, 1, 2, 3],
+      [3, 2, 1, 0],
+      [2, 0, 3, 1],
+      [1, 3, 0, 2]
+    ]) {
+      let state = scenario();
+      // The value is tied to the id, not to the scheduling position, so the
+      // winner is decided purely by application order.
+      for (const index of permutation) {
+        state = scheduleDelayedConsequence(state, pending(ids[index]!, ids[index]!)).state;
+      }
+      const due = applyDueConsequences(state, 1);
+      outcomes.add(String(due.state.flags.order_probe));
+      applications.push([...due.appliedIds]);
+    }
+
+    // One winner, whatever order they were scheduled in.
+    expect(outcomes.size).toBe(1);
+    // And the application order itself is identical every time.
+    for (const applied of applications) expect(applied).toEqual(applications[0]);
+  });
+
+  it("the order is by code unit, so case is not folded away", () => {
+    let state = scenario();
+    for (const id of ids) state = scheduleDelayedConsequence(state, pending(id, id)).state;
+    const applied = applyDueConsequences(state, 1).appliedIds;
+
+    // Uppercase sorts before lowercase in code units. A locale-aware collator
+    // may instead group them case-insensitively, which is the divergence.
+    expect(applied).toEqual([...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    expect(applied[0]).toBe("con_Beta");
+  });
+
+  it("trigger turn still dominates the id tie-break", () => {
+    let state = scenario();
+    state = scheduleDelayedConsequence(state, { ...pending("con_zzz_early", "early"), triggerTurn: 1 }).state;
+    state = scheduleDelayedConsequence(state, { ...pending("con_aaa_late", "late"), triggerTurn: 2 }).state;
+    const applied = applyDueConsequences(state, 2).appliedIds;
+    expect(applied).toEqual(["con_zzz_early", "con_aaa_late"]);
+  });
+});
