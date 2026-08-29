@@ -58,14 +58,20 @@ function identifier(value: string | undefined, label: string): string {
 }
 
 /**
- * A numeric authoritative field after an effect, refused if the arithmetic
- * left the finite range.
+ * A numeric authoritative field after an effect, refused if the arithmetic left
+ * the finite range — and refused **before** the field is written.
  *
  * Both operands can be finite and the sum not: `Number.MAX_VALUE` twice is
  * `Infinity`. The value guard on the *input* cannot see this, because it is a
- * property of the result. An infinite stock is worse than a wrong one — it
+ * property of the result. An infinite value is worse than a wrong one — it
  * survives in memory and is then refused by the save validator, so the run
  * continues and cannot be stored.
+ *
+ * Placement matters as much as the test. Wrapping the computed value keeps the
+ * refusal ahead of the assignment, so a rejected effect performs no mutation at
+ * all rather than mutating and then throwing. `RESOURCE_DELTA` gets the same
+ * guarantee one level down, inside `applyAuthoritativeResourceDelta`, which is
+ * the boundary that actually knows the stock and its projection.
  *
  * Refusal rather than a clamp: clamping to some maximum would be a game rule,
  * and no normative document defines one. The applicator's job is to refuse
@@ -137,13 +143,9 @@ export function applyEventEffect(
     const key = identifier(effect.key, "RESOURCE_DELTA");
     // The authoritative path, not the flat projection: a change written to the
     // projection is erased by the next tick that recomputes it.
+    // Overflow is refused inside the authority, before it writes anything: a
+    // check here could only run after the stock had already been assigned.
     applyAuthoritativeResourceDelta(state, key, numericValue(effect), changes);
-    // The delta the authority just recorded carries the resulting stock. An
-    // overflow is only visible here, after the arithmetic.
-    const written = changes[changes.length - 1];
-    if (written !== undefined && typeof written.after === "number") {
-      finiteResult(written.after, "RESOURCE_DELTA");
-    }
     return;
   }
 

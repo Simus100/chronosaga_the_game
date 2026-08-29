@@ -552,13 +552,82 @@ describe("P2-2: a finite input may not leave a non-finite world", () => {
     expect(Number.isFinite(state.worldPressure)).toBe(true);
   });
 
-  it("RESOURCE_DELTA overflow is refused", () => {
+  /**
+   * The property is not "a rejected effect throws" — it is **a rejected effect
+   * performs zero authoritative mutation**. Those differ exactly when the guard
+   * sits after the write: the stock becomes `Infinity`, the exception follows,
+   * and only a caller that happened to be working on a clone is spared. The
+   * applicator is exported, so it must hold the invariant on its own.
+   */
+  it("settlement RESOURCE_DELTA overflow leaves stock, projection and delta untouched", () => {
     const state = scenario();
     state.simulation!.settlements[0]!.resourceStock.water = Number.MAX_VALUE;
+    state.resources.water = Number.MAX_VALUE;
+    const snapshot = structuredClone(state);
+    const changes: StateChange[] = [];
 
     expect(() =>
-      applyEventEffect(state, { type: "RESOURCE_DELTA", key: "water", value: Number.MAX_VALUE }, [])
+      applyEventEffect(
+        state,
+        { type: "RESOURCE_DELTA", key: "water", value: Number.MAX_VALUE },
+        changes
+      )
     ).toThrow(/non-finite result/);
+
+    expect(state).toEqual(snapshot);
+    expect(state.simulation!.settlements[0]!.resourceStock.water).toBe(Number.MAX_VALUE);
+    expect(state.resources.water).toBe(Number.MAX_VALUE);
+    expect(Number.isFinite(state.simulation!.settlements[0]!.resourceStock.water)).toBe(true);
+    expect(Number.isFinite(state.resources.water)).toBe(true);
+    expect(changes).toEqual([]);
+  });
+
+  /**
+   * The same property on the other authority. `credits` is a campaign resource:
+   * no settlement stocks it, so `WorldState.resources` owns it directly and
+   * projects nothing. Two write paths, one invariant.
+   */
+  it("campaign RESOURCE_DELTA overflow leaves the flat authority and delta untouched", () => {
+    const state = scenario();
+    expect("credits" in state.simulation!.settlements[0]!.resourceStock).toBe(false);
+    state.resources.credits = Number.MAX_VALUE;
+    const snapshot = structuredClone(state);
+    const changes: StateChange[] = [];
+
+    expect(() =>
+      applyEventEffect(
+        state,
+        { type: "RESOURCE_DELTA", key: "credits", value: Number.MAX_VALUE },
+        changes
+      )
+    ).toThrow(/non-finite result/);
+
+    expect(state).toEqual(snapshot);
+    expect(state.resources.credits).toBe(Number.MAX_VALUE);
+    expect(Number.isFinite(state.resources.credits)).toBe(true);
+    expect(changes).toEqual([]);
+  });
+
+  /** The guard must refuse overflow without refusing ordinary arithmetic. */
+  it("an ordinary RESOURCE_DELTA still writes authority, projection and delta", () => {
+    const state = scenario();
+    const settlement = state.simulation!.settlements[0]!;
+    const changes: StateChange[] = [];
+
+    applyEventEffect(state, { type: "RESOURCE_DELTA", key: "water", value: -3 }, changes);
+    expect(settlement.resourceStock.water).toBe(11);
+    expect(state.resources.water).toBe(11);
+    expect(changes).toEqual([
+      { type: "resource", key: `${settlement.id}.resourceStock.water`, before: 14, after: 11 },
+      { type: "resourceMirror", key: "resources.water", before: 14, after: 11 }
+    ]);
+
+    // The campaign authority writes one entry and mirrors nothing.
+    const flat: StateChange[] = [];
+    applyEventEffect(state, { type: "RESOURCE_DELTA", key: "credits", value: -5 }, flat);
+    expect(state.resources.credits).toBe(22);
+    expect(settlement.resourceStock.credits).toBeUndefined();
+    expect(flat).toEqual([{ type: "resource", key: "credits", before: 27, after: 22 }]);
   });
 
   it("a successful application always leaves finite authoritative numbers", () => {
