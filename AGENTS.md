@@ -8,25 +8,30 @@ Read, in this order:
 
 1. `docs/KNOWLEDGE_INDEX_v1.md`
 2. `docs/PRODUCT_VISION_LOCKED_v1.md`
-3. `docs/TECHNICAL_ROADMAP_v0.2.md`
-4. `docs/AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md` for local-AI role, normal profiles, fallback semantics and Full Offline model distribution
-5. the most specific document for the task being executed
-6. `docs/LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` for local/heavy assets
-7. `docs/VISUAL_ASSET_PIPELINE_v0.1.md` for portraits/sprites/visual content
+3. `docs/TECHNICAL_ROADMAP_v0.3.md`
+4. `docs/GAMEPLAY_QUALITY_PROOF_v0.1.md` when the task touches gameplay progression, GQP, M2 scope, event selection, pacing, proof state, character/faction proof behavior or related contracts
+5. `docs/AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md` for local-AI role, normal profiles, fallback semantics and Full Offline model distribution
+6. the most specific document for the task being executed
+7. `docs/LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` for local/heavy assets
+8. `docs/VISUAL_ASSET_PIPELINE_v0.1.md` for portraits/sprites/visual content
+
+`TECHNICAL_ROADMAP_v0.2.md` remains a historical/detailed milestone reference where v0.3 does not supersede it. For sequencing and current priorities, v0.3 wins.
 
 Do not reinterpret a LOCKED product or architecture decision unless the task explicitly asks for a design review.
 
 ## 2. Source of truth
 
 - GitHub is the source of truth for code, schemas, manifests, documentation and review history.
-- Work on `feature/*` branches and open a Pull Request to `develop`.
-- `main` represents validated state.
+- Work on `feature/*` or `docs/*` branches and open a Pull Request to `develop`.
+- `main` represents a deliberately promoted validated state; it may lag/diverge from `develop` until an explicit promotion is performed.
 - Do not commit directly to `main` for feature work.
-- Do not merge a PR unless the task explicitly authorizes it or validation has been explicitly recorded.
+- Do not force-sync `main` and `develop` as routine workflow.
+- Do not merge a PR unless the task explicitly authorizes it or validation/review has been explicitly recorded.
+- The project owner has explicitly disabled Codex for the Chronosaga implementation/review workflow. **Do not use Codex unless the owner explicitly reverses that instruction for a specific task.**
 
 ## 3. Non-negotiable architecture
 
-- Windows Full Offline is the current delivery priority.
+- Windows Full Offline is the current delivery target for release feasibility.
 - Web compatibility must remain buildable.
 - VPS/public hosting is later work.
 - `packages/game-core` is authoritative and deterministic.
@@ -40,9 +45,38 @@ Do not reinterpret a LOCKED product or architecture decision unless the task exp
 - Platform-specific behavior belongs behind adapters/boundaries.
 - Do not create a second independent Windows/Web game implementation.
 
-## 4. Heavy-file policy
+## 4. Current delivery gates
 
-The normal Git repository MUST NOT contain heavy runtime model weights or raw production libraries.
+Chronosaga currently has two orthogonal gates.
+
+### P0.5 / technical release gate
+
+Issue #17 determines model quality, performance, hardware/AUTO recommendations and release-candidate lock. Local benchmark evidence does not equal release approval.
+
+Never set or imply `releaseApproved=true` without the required P0.5 evidence and recorded decision.
+
+### Gameplay Quality Proof
+
+Issue #30 and `docs/GAMEPLAY_QUALITY_PROOF_v0.1.md` govern the gate between completed M1 and M2 expansion.
+
+Current proof sequence:
+
+```text
+GQP-0 DONE
+-> GQP-A contracts/scenario
+-> GQP-B meaningful-choice network
+-> GQP-C directed pacing
+-> GQP-D Windows playtest
+-> founder fun PASS
+-> independent small-sample PASS
+-> M2 expansion
+```
+
+Do not bypass this with tactical combat, 20–30 event expansion, broader economy, larger warfare systems or AI-generated content volume.
+
+## 5. Heavy-file policy
+
+The normal Git repository MUST NOT contain heavy runtime model weights or raw production/evidence libraries.
 
 Never commit:
 
@@ -68,7 +102,7 @@ The repository stores the definition of heavy assets, not necessarily the heavy 
 
 Heavy local files live in the external development workspace described by `docs/LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md`.
 
-## 5. Local workspace convention
+## 6. Local workspace convention
 
 Preferred Windows development root:
 
@@ -76,27 +110,24 @@ Preferred Windows development root:
 D:\Chronosaga\
 ```
 
-Recommended structure:
+Observed/current structure:
 
 ```text
 D:\Chronosaga\
 ├── repo\chronosaga_the_game\
 ├── runtime-assets\
-│   ├── models\
-│   ├── visual-source\
-│   ├── visual-ready\
-│   ├── audio\
-│   └── licenses\
 ├── builds\
 ├── benchmarks\
 └── temp\
 ```
 
-The path is a development convention, not a hard-coded product requirement. Prefer a configurable workspace root (planned convention: `CHRONOSAGA_WORKSPACE_ROOT`) or explicit configuration.
+The path is a development convention, not a hard-coded product requirement. Prefer a configurable workspace root (`CHRONOSAGA_WORKSPACE_ROOT`) or explicit configuration.
 
-## 6. Local model rules
+Do not assume the repository directory is the whole operational workspace. Conversely, do not invent or assume a second Chronosaga codebase/prototype: inspect the machine if a task depends on one. The 2026-08-29 inventory found one Chronosaga Git codebase; the current playable app is a build of that repository.
 
-Before an agent downloads or packages a model:
+## 7. Local model rules
+
+Before an agent downloads, benchmarks or packages a model:
 
 1. confirm the model/profile is part of the current task;
 2. verify the exact upstream/derivative license;
@@ -105,13 +136,14 @@ Before an agent downloads or packages a model:
 5. keep the model outside Git;
 6. never assume candidate model names in planning documents are final release locks;
 7. only one local LLM should normally be resident at a time;
-8. preserve `STANDARD → LITE → SAFE/PROCEDURAL` fallback behavior;
+8. preserve `STANDARD -> LITE -> SAFE/PROCEDURAL` fallback behavior;
 9. treat Safe/Procedural as degraded recovery, not a peer quality mode;
-10. for Windows Full Offline, plan for both P0-approved Lite and Standard payloads to be distributed locally without requiring a later Internet download.
+10. for Windows Full Offline, plan for both P0-approved Lite and Standard payloads to be distributed locally without requiring a later Internet download;
+11. keep raw benchmark evidence outside normal Git and record repository-facing verdicts separately.
 
 Do not add model weights merely to make a CI build appear complete.
 
-## 7. Visual asset rules
+## 8. Visual asset rules
 
 Chronosaga v1 does not require runtime image generation.
 
@@ -131,19 +163,22 @@ Large raw/master batches stay outside normal Git. Small approved game-ready asse
 
 Character visuals must preserve persistent identity through stable component IDs rather than regenerating a character every time.
 
-## 8. Safe implementation behavior
+## 9. Safe implementation behavior
 
 - Inspect existing contracts before creating new ones.
 - Prefer the smallest change that satisfies the task.
 - Do not silently rewrite architecture documents to match an implementation shortcut.
 - Do not delete user/project data to fix a migration problem.
 - Never disable Windows security, CI checks or validation as a workaround.
-- Never expose `llama-server` publicly; P0 desktop binding is loopback-only.
+- Never expose `llama-server` publicly; desktop binding is loopback-only.
 - Never log secrets or private tokens.
 - Do not add telemetry/network dependencies to the offline build without an explicit product decision.
 - Do not turn Safe/Procedural fallback into the main product experience to avoid solving local-AI quality/runtime problems.
+- Do not introduce gameplay rules that branch on human-readable prose; use validated enums/stable semantic IDs/predicates where the GQP requires them.
+- For authoritative numeric state, prefer `calculate -> validate -> mutate`; never knowingly create a state the save validator will reject.
+- Preserve Player Turn, World Tick and Gameplay Beat as distinct concepts.
 
-## 9. Validation before PR/merge
+## 10. Validation before PR/merge
 
 As applicable, run or preserve CI coverage for:
 
@@ -157,6 +192,14 @@ cargo check --locked (desktop changes)
 Windows Tauri packaging smoke (desktop changes)
 ```
 
+For deterministic/game-core work also validate as applicable:
+
+- authoritative state remains save-valid;
+- replay/order independence where claimed;
+- failed operations leave no partial authoritative mutation;
+- legacy M1 behavior is not changed unless the task explicitly changes it;
+- save/version behavior is explicit and fail-closed.
+
 For local-AI work also validate:
 
 - sidecar startup;
@@ -169,7 +212,7 @@ For local-AI work also validate:
 
 For visual assets validate metadata, dimensions/anchors, naming, provenance/license and reproducible asset IDs.
 
-## 10. Agent role
+## 11. Agent role
 
 The local agent is an engineering/operations executor, not the product director.
 
@@ -178,7 +221,7 @@ Expected flow:
 ```text
 Chat / project decision
         ↓
-Specification or task
+Specification or issue
         ↓
 Local agent implementation
         ↓
@@ -186,9 +229,11 @@ Tests / build / benchmark
         ↓
 Feature branch + Pull Request
         ↓
-Review
+Adversarial self-review
+        ↓
+External exact-head review where required
         ↓
 Validated merge
 ```
 
-When a requirement is ambiguous and cannot be resolved from project Knowledge, stop and surface the ambiguity instead of inventing a new product rule.
+When a requirement is ambiguous and cannot be resolved from project Knowledge, surface the ambiguity instead of inventing a new product rule. If the task can be completed safely by preserving the narrower existing scope, prefer that narrower scope.
