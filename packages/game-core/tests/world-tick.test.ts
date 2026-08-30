@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GameEvent, WorldState } from "@paa/game-types";
+import type { WorldTickResult } from "../src/state/run-world-tick.js";
 import {
   createSystemicScenario,
   isEventEligible,
@@ -213,11 +214,20 @@ describe("#34 the World Tick refuses to write a non-finite authoritative number"
   }
 
   /**
-   * `rounded` scales by `10 ** 4` before dividing, so a finite value above
-   * `Number.MAX_VALUE / 1e4` overflows inside the helper — no addition
-   * required. The stock here is ordinary; the output alone is extreme.
+   * This case used to be refused, and the refusal was wrong.
+   *
+   * `1e305` is a perfectly representable double, and the stock plus that output
+   * is too. The tick threw only because `rounded` scaled by `10 ** 4` before
+   * dividing and overflowed on a value it was supposed to leave alone. Rounding
+   * a number of that magnitude to four decimals is the identity — adjacent
+   * doubles up there are about `2.2e289` apart — so the correct behaviour is to
+   * compute the result, not to reject the world.
+   *
+   * Kept as a regression in the direction it now runs: a guard that fires on an
+   * artifact of its own helper is a false refusal, and false refusals are how a
+   * fail-closed rule loses the room's trust.
    */
-  it("refuses a production output that overflows while being rounded", () => {
+  it("computes a large representable production output instead of refusing it", () => {
     const state = createSystemicScenario(4201);
     const node = state.simulation!.productionNodes[0]!;
     node.inputs = {};
@@ -226,7 +236,15 @@ describe("#34 the World Tick refuses to write a non-finite authoritative number"
     node.efficiency = 1;
     node.condition = 1;
 
-    failsClosed(state, /non-finite value for settlement_helios\.resourceStock\.water: Infinity/);
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+
+    const result = runWorldTick(state);
+    const stock = result.state.simulation!.settlements[0]!.resourceStock.water;
+
+    expect(Number.isFinite(stock)).toBe(true);
+    expect(stock).toBeGreaterThan(1e304);
+    expect(result.trace.production[0]!.outputsProduced.water).toBe(1e305);
+    expect(validateSystemicWorldState(result.state).ok).toBe(true);
   });
 
   /**
@@ -426,5 +444,226 @@ describe("#34 the World Tick refuses to write a non-finite authoritative number"
 
     for (const value of authoritative) expect(Number.isFinite(value)).toBe(true);
     expect(validateSystemicWorldState(result.state).ok).toBe(true);
+  });
+});
+
+/**
+ * Every number a caller can reach in a `WorldTickResult`, with its path.
+ *
+ * `WorldTickTrace` and `StateDelta` are part of the public result exactly as
+ * `WorldState` is, and an earlier version of this suite only ever inspected the
+ * authoritative state. That is how a trace carrying `Infinity` passed a full
+ * green run: nothing was looking at it.
+ */
+function everyNumber(value: unknown, path = ""): [string, number][] {
+  if (typeof value === "number") return [[path, value]];
+  if (Array.isArray(value)) return value.flatMap((item, i) => everyNumber(item, `${path}[${i}]`));
+  if (value && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, item]) =>
+      everyNumber(item, path ? `${path}.${key}` : key)
+    );
+  }
+  return [];
+}
+
+function nonFiniteIn(result: WorldTickResult): string[] {
+  return [
+    ...everyNumber(result.state, "state"),
+    ...everyNumber(result.delta, "delta"),
+    ...everyNumber(result.trace, "trace")
+  ]
+    .filter(([, value]) => !Number.isFinite(value))
+    .map(([path, value]) => `${path}=${String(value)}`);
+}
+
+/**
+ * A successful tick returns no non-finite number anywhere — state, delta or
+ * trace.
+ *
+ * This block exists because the narrower claim was false. The PR that added the
+ * authoritative write guards asserted that a non-finite trace value could not
+ * escape, on the reasoning that the matching authoritative write would fail
+ * first. External review disproved it: `setNumber` finishes with
+ * `Math.max(0, value)`, so `before - Infinity` becomes a legal `0`, the write
+ * succeeds, and the trace keeps the infinity. The tick completed, the state
+ * validated, and `trace.consumption` held `Infinity`.
+ *
+ * The root cause was not the guards but `rounded`, which overflowed while
+ * scaling a value that was itself representable.
+ */
+describe("#34 a successful World Tick returns no non-finite number at all", () => {
+  /**
+   * The reproduction from the external review, kept in its original shape.
+   *
+   * The production node is disabled so nothing but population consumption can
+   * touch the stock. `demand` overflowed while being rounded; `consumed` was
+   * `rounded(Math.min(1e305, Infinity))`, and `Math.min` had already brought it
+   * back to a finite `1e305` before `rounded` destroyed it again. The
+   * authoritative write then saw `1e305 - Infinity`, clamped it to `0`, and
+   * passed.
+   */
+  it("keeps the consumption trace finite when demand exceeds the rounding range", () => {
+    const state = createSystemicScenario(4201);
+    for (const node of state.simulation!.productionNodes) node.enabled = false;
+    state.simulation!.settlements[0]!.population = 1e308;
+    state.simulation!.settlements[0]!.resourceStock.water = 1e305;
+    state.resources.water = 1e305;
+
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+    const untouched = structuredClone(state);
+
+    const result = runWorldTick(state);
+
+    expect(nonFiniteIn(result)).toEqual([]);
+    // The settlement really did drink its whole reserve, and the trace says so
+    // with the true number rather than an infinity.
+    expect(result.trace.consumption["settlement_helios:water"]).toBe(1e305);
+    expect(result.state.simulation!.settlements[0]!.resourceStock.water).toBe(0);
+    expect(validateSystemicWorldState(result.state).ok).toBe(true);
+    expect(state).toEqual(untouched);
+  });
+
+  /**
+   * The same shape on the production side: `inputsConsumed` recorded the
+   * overflowed `amount` while `setNumber` clamped `before - amount` to zero.
+   */
+  it("keeps the production input trace finite when the requirement exceeds the rounding range", () => {
+    const state = createSystemicScenario(4201);
+    for (const node of state.simulation!.productionNodes) node.enabled = false;
+    const node = state.simulation!.productionNodes[0]!;
+    node.enabled = true;
+    node.inputs = { food: 1e305 };
+    node.outputs = { water: 1e-6 };
+    node.capacity = 1e308;
+    node.efficiency = 1;
+    node.condition = 1;
+    state.simulation!.settlements[0]!.resourceStock.food = 1e308;
+
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+
+    const result = runWorldTick(state);
+
+    expect(nonFiniteIn(result)).toEqual([]);
+    expect(result.trace.production[0]!.inputsConsumed.food).toBe(1e305);
+    expect(validateSystemicWorldState(result.state).ok).toBe(true);
+  });
+
+  /**
+   * `rounded` must correct the arithmetic without changing what it does to
+   * anything an ordinary world contains — including the fraction cases the
+   * `Number.EPSILON` term exists for.
+   */
+  it("rounds ordinary values exactly as before and leaves huge ones alone", () => {
+    const state = createSystemicScenario(4201);
+    const result = runWorldTick(state);
+
+    // Four-decimal rounding, still doing its job.
+    expect(result.state.simulation!.settlements[0]!.resourceStock.water).toBe(10.6112);
+    expect(result.state.simulation!.populationCohorts[0]!.satisfaction).toBe(0.4717);
+    expect(result.state.simulation!.politicalGroups[0]!.approval).toBe(0.4654);
+  });
+
+  /** Named fields, checked one by one, so a future struct change cannot quietly skip one. */
+  it("returns finite numbers in every documented part of the trace", () => {
+    const result = runWorldTick(createSystemicScenario(4201));
+    const trace = result.trace;
+
+    expect(Number.isFinite(trace.tick)).toBe(true);
+    expect(Number.isFinite(trace.playerTurn)).toBe(true);
+    expect(Number.isFinite(result.delta.turn)).toBe(true);
+
+    expect(trace.production.length).toBeGreaterThan(0);
+    for (const production of trace.production) {
+      expect(Number.isFinite(production.operatingFactor)).toBe(true);
+      for (const value of Object.values(production.inputsConsumed)) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+      for (const value of Object.values(production.outputsProduced)) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+    }
+
+    expect(Object.keys(trace.consumption).length).toBeGreaterThan(0);
+    for (const value of Object.values(trace.consumption)) {
+      expect(Number.isFinite(value)).toBe(true);
+    }
+
+    expect(Object.keys(trace.shortageSeverity).length).toBeGreaterThan(0);
+    for (const value of Object.values(trace.shortageSeverity)) {
+      expect(Number.isFinite(value)).toBe(true);
+    }
+
+    expect(trace.cohortReactions.length).toBeGreaterThan(0);
+    for (const reaction of trace.cohortReactions) {
+      expect(Number.isFinite(reaction.shortageExposure)).toBe(true);
+      expect(Number.isFinite(reaction.satisfactionDelta)).toBe(true);
+      expect(Number.isFinite(reaction.loyaltyDelta)).toBe(true);
+    }
+
+    expect(trace.politicalReactions.length).toBeGreaterThan(0);
+    for (const reaction of trace.politicalReactions) {
+      expect(Number.isFinite(reaction.approvalDelta)).toBe(true);
+    }
+
+    // And the same statement made over the whole object, so a field added later
+    // is covered whether or not anyone remembers to list it above.
+    expect(nonFiniteIn(result)).toEqual([]);
+  });
+
+  /**
+   * The property held across every world this suite can reach, ordinary and
+   * extreme, over consecutive ticks rather than one.
+   */
+  it("holds over repeated ticks of several seeds and of stressed worlds", () => {
+    const worlds: WorldState[] = [
+      createSystemicScenario(4201),
+      createSystemicScenario(7419),
+      createSystemicScenario(1234)
+    ];
+
+    const drained = createSystemicScenario(4201);
+    for (const resource of ["water", "food", "energy", "medicine"]) {
+      drained.simulation!.settlements[0]!.resourceStock[resource] = 0;
+    }
+    worlds.push(drained);
+
+    const huge = createSystemicScenario(4201);
+    huge.simulation!.settlements[0]!.population = 1e308;
+    huge.simulation!.settlements[0]!.resourceStock.water = 1e305;
+    huge.resources.water = 1e305;
+    for (const node of huge.simulation!.productionNodes) node.enabled = false;
+    worlds.push(huge);
+
+    for (const world of worlds) {
+      let state = world;
+      for (let tick = 0; tick < 4; tick += 1) {
+        const result = runWorldTick(state);
+        expect(nonFiniteIn(result)).toEqual([]);
+        state = result.state;
+      }
+    }
+  });
+
+  /**
+   * The net itself, exercised on a genuinely unrepresentable world so it is
+   * clear it refuses rather than repairs. `Number.MAX_VALUE` plus `1e304` has
+   * no double to land on, and no rounding correction can invent one.
+   */
+  it("still fails closed when the arithmetic is genuinely unrepresentable", () => {
+    const state = createSystemicScenario(4201);
+    const node = state.simulation!.productionNodes[0]!;
+    node.inputs = {};
+    node.outputs = { water: 1e304 };
+    node.capacity = 1e308;
+    node.efficiency = 1;
+    node.condition = 1;
+    state.simulation!.settlements[0]!.resourceStock.water = Number.MAX_VALUE;
+
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+    expect(Number.MAX_VALUE + 1e304).toBe(Infinity);
+
+    const untouched = structuredClone(state);
+    expect(() => runWorldTick(state)).toThrow(/non-finite/);
+    expect(state).toEqual(untouched);
   });
 });
