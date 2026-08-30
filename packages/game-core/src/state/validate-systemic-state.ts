@@ -1,5 +1,11 @@
 import type { EventEffect, WorldState } from "@paa/game-types";
 import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
+import {
+  PROOF_SCHEMA_VERSION,
+  SUPPORTED_SCHEMA_VERSIONS,
+  isSupportedSchemaVersion
+} from "../proof/schema-version.js";
+import { refuseProofFieldsOnBaseline, validateProofState } from "../proof/validate-proof-state.js";
 
 export interface SystemicValidationResult {
   ok: boolean;
@@ -535,7 +541,32 @@ export function validateSystemicWorldState(input: unknown): SystemicValidationRe
   const simulation = state.simulation!;
   const errors: string[] = [];
 
-  if (simulation.schemaVersion !== 1) errors.push(`Unsupported simulation schema ${simulation.schemaVersion}`);
+  // Version first, and fail closed on anything this build cannot interpret.
+  //
+  // Returning here rather than collecting more errors is the point. An
+  // unsupported version means the fields below may not mean what this code
+  // thinks they mean, so continuing would produce confident errors about a
+  // contract we do not have — and, worse, would risk a caller reading past a
+  // version check that only warned. GQP spec 24.1 rule 5: old code must refuse
+  // a schema it cannot correctly understand, not open it and ignore the parts
+  // it does not recognise.
+  const declaredVersion: unknown = simulation.schemaVersion;
+  if (!isSupportedSchemaVersion(declaredVersion)) {
+    return {
+      ok: false,
+      errors: [
+        `Unsupported simulation schema ${JSON.stringify(declaredVersion)}; ` +
+          `this build supports ${SUPPORTED_SCHEMA_VERSIONS.join(", ")}`
+      ]
+    };
+  }
+
+  // The two versions are validated by different rules, and neither is the
+  // other's superset with optional extras: v2 requires the proof contracts and
+  // v1 refuses them. That symmetry is what makes "no silent reinterpretation"
+  // an enforced property rather than a promise about the loader.
+  if (declaredVersion === PROOF_SCHEMA_VERSION) validateProofState(state, errors);
+  else refuseProofFieldsOnBaseline(state, errors);
 
   duplicateIds(state.party, "party", errors);
   duplicateIds(simulation.settlements, "settlements", errors);
