@@ -303,9 +303,11 @@ GQP-A                            NOT STARTED
 GQP overall                      OPEN (#30)
 World Tick finite hygiene        OPEN (#34)
 
-current develop                  aaa8266b4f613f4f4e06148ab961f706a7eb50d0
+post-GQP0 baseline develop       aaa8266b4f613f4f4e06148ab961f706a7eb50d0
 main                             divergent / deliberate promotion required
 ```
+
+Per l'HEAD operativo corrente dopo eventuali PR documentali successive usare `REPOSITORY_BOOTSTRAP_STATUS.md` e il repository reale, non questo baseline SHA storico.
 
 ---
 
