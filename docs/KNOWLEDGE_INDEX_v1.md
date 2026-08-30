@@ -1,245 +1,313 @@
 # KNOWLEDGE INDEX v1
 ## Chronosaga: The Game
 
-**Data:** 2026-08-23
+**Data:** 2026-08-30  
+**Stato:** indice corrente delle fonti di Knowledge e delle regole di precedenza.
 
-I documenti seguenti costituiscono la Knowledge di progetto.
+Questo indice stabilisce **quali documenti governano quali decisioni**. Non è una specifica gameplay o tecnica autonoma.
 
-## 1. `PRODUCT_VISION_LOCKED_v1.md`
-Fonte principale per:
-- identità del prodotto;
-- priorità;
-- micro → macro;
+---
+
+# 1. `PRODUCT_VISION_LOCKED_v1.md`
+
+Fonte principale per identità e obiettivi di prodotto:
+
+- Chronosaga come systemic adventure/management simulator, non semplice RPG/chat/story generator;
+- world autonomy;
+- meaningful choice;
+- micro -> macro senza perdere la scala umana;
+- personaggi ad alta importanza;
+- conseguenze di lungo periodo;
 - sandbox;
-- personaggi;
 - difficoltà;
-- combattimento;
-- durata campagne;
-- anti-AI-slop.
+- anti-AI-slop;
+- depth before breadth.
 
-## 2. `PARAMETRIC_AI_ADVENTURE_PROJECT_KNOWLEDGE.md`
-Fonte generale per:
-- architettura concettuale;
-- AI-DM;
-- UI;
-- VPS;
-- workflow;
-- decisioni storiche/approvate.
+---
 
-## 3. `TECHNICAL_ROADMAP_v0.2.md`
-Fonte tecnica prevalente per priorità e sequenza di implementazione.
+# 2. `PARAMETRIC_AI_ADVENTURE_PROJECT_KNOWLEDGE.md`
 
-Decisione corrente:
+Fonte generale/storica per architettura concettuale, AI-DM, UI, VPS, workflow e decisioni approvate non sostituite da fonti più specifiche.
+
+---
+
+# 3. `TECHNICAL_ROADMAP_v0.3.md`
+
+**Fonte tecnica prevalente per priorità e sequencing correnti.**
+
+Strategia:
 
 ```text
-WINDOWS FIRST
-→ shared playable vertical slice
-→ Web compatibility hardening
-→ VPS private alpha
-→ optional browser-local AI
+WINDOWS-FIRST
+WEB-COMPATIBLE
+VPS-LATER
 ```
 
-Copre:
-- P0 Windows runtime;
-- SQLite;
-- dual local AI;
-- shared Simulation Core;
-- Lovable timing;
-- micro ↔ macro vertical slice;
-- Windows alpha;
-- Web hardening;
-- VPS alpha;
-- optional WebGPU;
-- CI/branch workflow;
-- gates contro feature sprawl.
+La v0.3 registra il nuovo modello a **due gate ortogonali**:
 
-`TECHNICAL_ROADMAP_v0.1.md` resta storico e viene superseded da v0.2 per sequencing/priorità.
+```text
+TECHNICAL RELEASE GATE     P0.5 / #17
+GAMEPLAY QUALITY GATE      GQP / #30
+```
 
-## 4. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md`
-Fonte per la fattibilità generale delle piattaforme:
+e la sequenza gameplay corrente:
+
+```text
+GQP-0 DONE
+-> #34 Core hygiene
+-> GQP-A
+-> GQP-B
+-> GQP-C
+-> GQP-D
+-> founder fun PASS
+-> independent sample PASS
+-> M2 expansion
+```
+
+`TECHNICAL_ROADMAP_v0.2.md` resta riferimento storico/dettagliato dei milestone dove non contraddice v0.3. `TECHNICAL_ROADMAP_v0.1.md` è storico.
+
+---
+
+# 4. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md`
+
+Fonte per fattibilità generale piattaforme/distribuzione:
+
 - Web + Windows;
 - Tauri;
 - SQLite vs PostgreSQL;
 - llama.cpp;
-- modello locale incluso;
-- HTML demo;
+- packaging;
 - VPS feasibility;
-- packaging e distribuzione.
+- browser-local AI feasibility.
 
-Quando il documento parla di ordine di delivery, prevale `TECHNICAL_ROADMAP_v0.2.md`.
+Sul sequencing prevale `TECHNICAL_ROADMAP_v0.3.md`.
 
-## 5. `GAME_SYSTEMS_SCHEMA_v0.1.md`
-Fonte prevalente per i sistemi di gameplay:
+---
+
+# 5. `GAME_SYSTEMS_SCHEMA_v0.1.md`
+
+Fonte prevalente per sistemi gameplay e simulazione:
+
 - Tactical Combat Engine;
-- sistema d100;
-- caratteristiche, skill, ferite e progressione;
 - Warfare Engine;
-- unità, comandanti, logistica e battle plans;
 - Management & Simulation Engine;
-- economia, produzione, popolazione e migrazione;
-- politica, reputazione, diplomazia e fazioni autonome;
+- d100;
+- caratteristiche/skill/ferite;
+- squadre/comandanti/logistica;
+- produzione/economia/popolazione;
+- politica/fazioni/diplomazia;
 - World Tick;
-- conseguenze e causal graph;
-- automazione/delega;
-- connessioni micro ↔ macro;
-- assunzioni LOCKED / PROVISIONAL / OPEN;
-- acceptance scenarios della prima vertical slice sistemica.
+- StateDelta;
+- causal graph;
+- micro <-> macro;
+- assunzioni LOCKED / PROVISIONAL / OPEN.
 
-## 6. `UI_VISUAL_SYSTEM_v0.1.md`
+Il target finale resta valido. Il Gameplay Quality Proof restringe temporaneamente lo scope prima dell'espansione M2.
+
+---
+
+# 6. `UI_VISUAL_SYSTEM_v0.1.md`
+
 Fonte prevalente per UI/UX e linguaggio visuale:
-- equilibrio game UI / diegetic OS;
-- layout e navigation;
-- palette, typography e geometry;
-- Tactical / Warfare / Management presentation;
-- party, personaggi, ferite e relazioni;
-- eventi e AI-DM presentation;
+
+- game UI / diegetic OS balance;
+- layout/navigation;
+- palette/typography/geometry;
+- Tactical/Warfare/Management presentation;
+- party/personaggi/ferite/relazioni;
+- event presentation;
 - Analysis Mode;
 - informational fog of war;
 - responsive desktop;
-- motion/audio UI;
-- anti-pattern e acceptance criteria;
-- decisioni LOCKED / PROVISIONAL / OPEN derivanti dal questionario UI.
+- motion/audio UI.
 
-## 7. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md`
-Brief operativo per Lovable:
-- primo Operations Vertical Slice;
-- confini fra UI e Simulation Core;
-- strategia mock-first / integration-ready;
-- componenti e interaction requirements;
-- preview Tactical/Warfare/Management;
-- screenshot review;
-- Definition of Done;
-- limiti di autonomia e dipendenze.
+---
 
-**Sequencing corrente:** il brief può essere revisionato/preparato subito, ma la produzione Lovable avanzata segue il P0 Windows/local-AI.
+# 7. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md`
 
-## 8. `LOCAL_AI_MODEL_PROFILES_v0.1.md`
-Fonte per i dettagli tecnici/provisori della strategia dual-model locale:
-- profilo Lite ~1.7B;
-- profilo Standard ~3B;
+Brief operativo per la UI vertical slice. Governa Lovable ma non può spostare authority dal Simulation Core a React e non può anticipare sistemi vietati dal GQP.
+
+---
+
+# 8. `LOCAL_AI_MODEL_PROFILES_v0.1.md`
+
+Fonte per dettagli tecnici/provisori dei profili locali:
+
+- Lite ~1.7B;
+- Standard ~3B;
 - hardware probe;
-- requisiti RAM/VRAM/storage PROVISIONAL;
-- fallback tecnico Standard → Lite → Procedural;
-- modello WebGPU on-demand nel browser;
-- benchmark Lite/Standard;
-- candidate families e gate di licenza.
+- context/memory assumptions;
+- candidate families;
+- AUTO/fallback assumptions;
+- WebGPU later.
 
-Per il **ruolo di prodotto** dei profili, la distinzione fra modalità normale e Safe/Procedural e il requisito che il Windows Full Offline includa entrambi i modelli, prevale `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`.
+Candidate names/quantizations restano PROVISIONAL finché P0.5 non produce il lock.
 
-## 9. `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md`
-Fonte operativa prevalente per il gate tecnico immediato:
-- Tauri Windows installable smoke build;
-- SQLite save/load;
-- llama.cpp sidecar lifecycle;
-- Lite ~1.7B e Standard ~3B;
-- hardware matrix;
-- 2k/4k/8k context matrix;
-- AI quality suite versionata (minimo P0 50 casi; suite corrente 65);
-- schema validation/retry/fallback;
-- model selector funzionale;
-- packaging experiment;
-- Web compatibility checks durante Windows-first;
-- exit criteria `GO / GO WITH LIMITS / NO-GO`.
+---
 
-**Stato review 2026-08-23:** P0.1, P0.2, P0.3-B, P0.3-C, P0.4 (Standard, AUTO/profile switching, Safe fallback, P0.4-D installed model resolution), M1-A, M1-B, P0.5-A e P0.5-B1 sono mergiati in `develop`. Il gate aperto è P0.5: l'infrastruttura di esecuzione esiste, ma la comparazione ufficiale Lite vs Standard **non è ancora stata eseguita** e la matrice P0.5-C performance/context/hardware non è iniziata. Nessun modello è release-approved. Per lo stato operativo aggiornato usare `REPOSITORY_BOOTSTRAP_STATUS.md` nella radice del repository, che è l'unica fotografia operativa canonica.
+# 9. `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md`
 
-## 10. `IMPLEMENTATION_BACKLOG_v0.1.md`
-Backlog operativo aggiornato internamente a v0.2.
+Fonte operativa prevalente per il gate P0/P0.5:
 
-Ordine corrente:
-- P0 Windows/local AI;
-- shared simulation foundation;
-- playable micro vertical slice;
-- UI/Lovable;
-- AI-DM production layer;
-- micro ↔ macro bridge;
-- Windows alpha;
-- Web hardening;
-- VPS alpha;
-- optional browser-local AI.
+- Windows runtime;
+- SQLite;
+- llama.cpp;
+- Lite/Standard benchmark;
+- suite qualità versionata;
+- performance/context/hardware evidence;
+- validator/retry/fallback;
+- candidate lock;
+- exit `GO / GO WITH LIMITS / NO-GO`.
 
-## 11. `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md`
-Fonte prevalente per la separazione fra repository e payload pesanti:
-- GitHub come source of truth di codice/manifest/documentazione;
-- workspace locale come store operativo per file multi-GB;
-- modelli GGUF fuori dal normale Git;
-- raw AI generations/master pesanti fuori dal normale Git;
-- struttura consigliata `D:\Chronosaga`;
-- convenzione configurabile `CHRONOSAGA_WORKSPACE_ROOT`;
+**Stato 2026-08-30:** harness ed execution lane sono mergiati; il workspace locale contiene benchmark evidence e l'inventario del 2026-08-29 identifica `official_1787510438` come run valida, ma issue #17 resta aperta e il repository non contiene ancora il verdict finale quality/performance/hardware/release-candidate. Nessun modello è release-approved.
+
+---
+
+# 10. `IMPLEMENTATION_BACKLOG_v0.1.md`
+
+Backlog operativo storicamente aggiornato internamente a v0.2. Va interpretato insieme alla Roadmap v0.3 e al GQP: eventuali item M2 non superano il fun gate.
+
+---
+
+# 11. `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md`
+
+Fonte prevalente per separazione repository/workspace:
+
+- GitHub source of truth per codice, manifest e documentazione;
+- `D:\Chronosaga` come workspace operativo configurabile;
+- GGUF e runtime pesanti fuori dal normale Git;
+- raw AI/evidence pesanti fuori dal normale Git;
 - manifest/checksum/licenze;
-- packaging source dei payload;
-- ruolo e limiti dell'agente locale;
+- packaging source;
 - backup source separato da heavy-asset backup.
 
-Questa decisione prevale su eventuali esempi storici che possano suggerire di versionare direttamente model weights o grandi librerie raw nella repository.
+L'inventario locale 2026-08-29 ha confermato una sola codebase Git Chronosaga sotto `D:\Chronosaga\repo\chronosaga_the_game`; il playable corrente è la build Tauri di questa repository, non un secondo prototipo/codebase separato.
 
-## 12. `VISUAL_ASSET_PIPELINE_v0.1.md`
-Fonte prevalente per la produzione grafica procedurale/AI-assisted:
-- AI image generation come authoring esterno, non requisito runtime v1;
-- portrait + Tactical sprite + strategic icon per lo stesso personaggio;
-- sprite modulari;
-- identità visuale persistente tramite component IDs;
-- pipeline raw → curated → master → game-ready;
-- ambiente tramite composizione modulare/procedurale;
-- asset metadata/hash/provenance;
-- grandi librerie e raw AI fuori dal normale Git;
-- 4 vs 8 directions e risoluzioni finali ancora OPEN.
+---
 
-## 13. `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`
-Fonte specifica e prevalente per:
-- AI locale come componente centrale dell'esperienza ma non autorevole sullo stato;
-- Simulation Core come fonte dei fatti e delle conseguenze;
-- uso dell'AI per dialoghi, reazioni, narrativa, sintesi e interpretazione grounded;
-- profili normali `AUTO / LITE / STANDARD`;
-- `SAFE MODE / PROCEDURAL` come fallback degradato e non esperienza equivalente;
-- fallback `STANDARD → LITE → SAFE/PROCEDURAL`;
-- requisito Windows Full Offline con **Lite + Standard entrambi inclusi**;
+# 12. `VISUAL_ASSET_PIPELINE_v0.1.md`
+
+Fonte prevalente per produzione grafica AI-assisted/procedurale:
+
+- image generation come authoring esterno;
+- no runtime image generation requirement v1;
+- persistent character identity;
+- portrait/sprite/icon pipeline;
+- raw -> curated -> master -> game-ready;
+- provenance/hash/metadata;
+- grandi batch fuori Git.
+
+---
+
+# 13. `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`
+
+Fonte specifica e prevalente per ruolo dell'AI:
+
+- AI centrale all'esperienza normale ma non autorevole;
+- Simulation Core fonte dei fatti/conseguenze;
+- AI per dialoghi, reazioni, narrativa, sintesi e interpretazione grounded;
+- normal profiles `AUTO / LITE / STANDARD`;
+- `SAFE / PROCEDURAL` degraded fallback;
+- fallback `STANDARD -> LITE -> SAFE/PROCEDURAL`;
+- Windows Full Offline include Lite + Standard;
 - un solo modello residente alla volta;
-- nessuna API cloud obbligatoria per Windows Full Offline;
-- single-model `llama-server --model ...` come direzione semplice iniziale;
-- forma fisica del packaging multi-GB PROVISIONAL, purché la distribuzione resti completamente offline dopo il download/installazione iniziale.
+- nessuna API cloud obbligatoria.
 
-Questo documento raffina le formulazioni precedenti sul ruolo dell'AI e sulla distribuzione dual-model e prevale in quei punti perché più specifico e più recente.
+---
+
+# 14. `GAMEPLAY_QUALITY_PROOF_v0.1.md`
+
+**Fonte prevalente per il gate gameplay tra M1 e M2.**
+
+M1 ha dimostrato che il loop funziona tecnicamente. Il GQP deve dimostrare che produce gioco interessante prima di espandere contenuto e sistemi.
+
+Definisce:
+
+- meaningful-choice principles;
+- two proof pressures;
+- character memory/relationship causal behavior;
+- faction agenda;
+- five event families;
+- pattern detectors;
+- resolved-event history;
+- schema v2 proof strategy;
+- deterministic selection;
+- `GameplayFocus = EVENT | QUIET`;
+- bounded quiet/liveness;
+- GQP-0/A/B/C/D implementation slices;
+- founder fun + independent sample gates.
+
+Sequenza non negoziabile:
+
+```text
+GQP technical completion
+-> founder fun PASS
+-> independent small-sample PASS
+-> M2 expansion
+```
+
+GQP-0 è completato con PR #33. Tracking generale: #30.
 
 ---
 
 # File operativi root/config/status
 
-Questi file fanno parte del sistema operativo/documentale del progetto ma NON introducono una nuova fonte di precedenza rispetto ai 13 documenti Knowledge sopra elencati.
+Questi file rendono operative le Knowledge sources ma non ridefiniscono autonomamente Product Vision.
 
 ## `/AGENTS.md`
-Regole obbligatorie per agenti di coding/operations:
-- ordine di lettura della Knowledge;
+
+Regole obbligatorie per agenti:
+
+- ordine di lettura Knowledge;
 - branch/PR workflow;
-- divieto di model weights/heavy raw assets nel Git;
-- limiti architetturali;
-- sicurezza;
-- controlli di licenza/hash;
+- architecture boundaries;
+- heavy-file policy;
 - validation gates;
-- ruolo dell'agente come esecutore, non product director.
+- agente come esecutore, non product director;
+- niente Codex nel workflow Chronosaga salvo autorizzazione esplicita del proprietario del progetto.
 
 ## `/CLAUDE.md`
-Bridge operativo per Claude Code. Importa `@AGENTS.md` e non ridefinisce autonomamente la Knowledge.
 
-## `config/runtime-assets.example.json`
-Esempio architetturale development-only del contratto External Asset Store. Non certifica che modelli o pack siano installati/approvati e non contiene model weights.
+Bridge operativo per Claude Code; importa `@AGENTS.md`.
+
+## `/REPOSITORY_BOOTSTRAP_STATUS.md`
+
+**Unica fotografia operativa canonica** di stato corrente, gate, branch ed evidence. Non è normativa; se diverge dal repository reale, prevale il repository.
 
 ## `LOCAL_WORKSPACE_SETUP_CHECKLIST_v0.1.md`
-Checklist operativa per inizializzare una macchina di sviluppo prima del P0.3. Deriva da `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md`; in caso di conflitto prevale quest'ultimo.
+
+Checklist operativa derivata dalla workspace architecture.
 
 ## `ARCHITECTURE_STATE_REVIEW_2026-08-18.md`
-Snapshot informativo della review tecnica svolta il 18 agosto 2026:
-- valutazione di fattibilità;
-- scelte architetturali confermate;
-- stato P0 osservato;
-- rischi aperti;
-- piccoli debiti tecnici suggeriti;
-- sequenza raccomandata.
 
-Non è una specifica normativa e non prevale sulla Knowledge. Le decisioni di prodotto emerse dalla review sono state separate nel documento normativo `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md`.
+Snapshot storico/informativo della review tecnica del 18 agosto 2026.
 
-## `REPOSITORY_BOOTSTRAP_STATUS.md` — radice del repository
-Snapshot informativo dello stato corrente del repository e dei gate completati/pending. Non è una specifica architetturale e non ha precedenza sulla Knowledge; in caso di conflitto fra questo file e il repository reale prevale il repository. È l'**unica** fotografia operativa canonica: `docs/REPOSITORY_BOOTSTRAP_STATUS.md` è solo un rinvio a essa.
+## `config/runtime-assets.example.json`
+
+Esempio development-only del contratto External Asset Store; non certifica payload installati/approvati.
+
+---
+
+# Stato operativo sintetico — 2026-08-30
+
+```text
+P0.1-P0.4                        MERGED / VERIFIED
+P0.5 harness/execution lane      MERGED / VERIFIED
+P0.5 local evidence              PRESENT
+P0.5 final verdict / lock        OPEN (#17)
+
+M1-A / M1-B / M1-C              COMPLETE / VERIFIED
+Gameplay Quality Proof spec      MERGED
+GQP-0                            COMPLETE / VERIFIED
+GQP-A                            NOT STARTED
+GQP overall                      OPEN (#30)
+World Tick finite hygiene        OPEN (#34)
+
+post-GQP0 baseline develop       aaa8266b4f613f4f4e06148ab961f706a7eb50d0
+main                             divergent / deliberate promotion required
+```
+
+Per l'HEAD operativo corrente dopo eventuali PR documentali successive usare `REPOSITORY_BOOTSTRAP_STATUS.md` e il repository reale, non questo baseline SHA storico.
 
 ---
 
@@ -247,28 +315,27 @@ Snapshot informativo dello stato corrente del repository e dei gate completati/p
 
 In caso di conflitto:
 
-1. documento più specifico;
-2. documento con versione/data più recente;
-3. `PRODUCT_VISION_LOCKED_v1.md` prevale sulle preferenze generali di prodotto, salvo decisioni successive più specifiche registrate nella Knowledge;
-4. `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md` prevale sul ruolo dell'AI nell'esperienza, sulla classificazione Safe/Procedural e sul requisito dual-model Windows Full Offline;
-5. `GAME_SYSTEMS_SCHEMA_v0.1.md` prevale sui dettagli di gameplay e simulazione;
-6. `UI_VISUAL_SYSTEM_v0.1.md` prevale su UI/UX e linguaggio visuale generale, salvo il product positioning dei profili AI definito al punto 4;
-7. `VISUAL_ASSET_PIPELINE_v0.1.md` prevale su pipeline portrait/sprite/visual asset e identità visuale persistente;
-8. `LOCAL_AI_MODEL_PROFILES_v0.1.md` prevale sui dettagli tecnici/provisori dei profili locali, candidate families, soglie e selezione modello non ridefiniti dal documento AI Product Role;
-9. `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md` prevale sull'esecuzione del gate P0;
-10. `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` prevale su workspace locale, heavy asset storage, model-weight Git policy e packaging source dei payload;
-11. `TECHNICAL_ROADMAP_v0.2.md` prevale sulla sequenza di delivery e sulle priorità tecniche;
-12. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md` governa l'esecuzione Lovable ma non può contraddire Product Vision, AI Product Role, Game Systems, UI Visual System, Visual Asset Pipeline, Local AI Model Profiles, P0 Plan, External Asset architecture o Roadmap v0.2;
-13. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md` prevale sugli aspetti generali di packaging/distribuzione non ridefiniti da documenti più specifici/recenti;
-14. `TECHNICAL_ROADMAP_v0.1.md` resta riferimento storico e non prevale su v0.2.
+1. prevale il documento più specifico per il dominio;
+2. a parità di specificità, prevale versione/data più recente;
+3. `PRODUCT_VISION_LOCKED_v1.md` governa identità e priorità generali di prodotto;
+4. `GAMEPLAY_QUALITY_PROOF_v0.1.md` governa lo scope/gate temporaneo tra M1 e M2 e restringe l'espansione finché il proof non passa;
+5. `AI_PRODUCT_ROLE_AND_OFFLINE_DISTRIBUTION_v1.md` governa ruolo AI, profili normali/fallback e Full Offline dual-model requirement;
+6. `GAME_SYSTEMS_SCHEMA_v0.1.md` governa dettagli dei sistemi gameplay target;
+7. `UI_VISUAL_SYSTEM_v0.1.md` governa UI/UX;
+8. `VISUAL_ASSET_PIPELINE_v0.1.md` governa visual asset authoring;
+9. `LOCAL_AI_MODEL_PROFILES_v0.1.md` governa dettagli tecnici/provisori dei profili non ridefiniti da fonti più specifiche;
+10. `P0_WINDOWS_LOCAL_AI_BENCHMARK_PLAN_v0.1.md` governa esecuzione e verdict P0/P0.5;
+11. `LOCAL_DEVELOPMENT_WORKSPACE_EXTERNAL_ASSETS_v0.1.md` governa workspace/heavy assets;
+12. `TECHNICAL_ROADMAP_v0.3.md` governa priorità/sequencing tecnici correnti;
+13. `TECHNICAL_ROADMAP_v0.2.md` resta dettaglio storico dove v0.3 non lo sostituisce;
+14. `LOVABLE_IMPLEMENTATION_BRIEF_v0.1.md` governa l'esecuzione Lovable entro i boundary sopra;
+15. `PLATFORM_DISTRIBUTION_LOCAL_AI_FEASIBILITY_v1.md` governa aspetti generali di piattaforma/distribuzione non ridefiniti da fonti più specifiche.
 
-`AGENTS.md`, `CLAUDE.md`, le checklist, review e file status rendono operative o descrivono queste regole ma non possono ridefinire autonomamente Product Vision o Knowledge specifica.
-
-Le formule, soglie hardware o scelte marcate `PROVISIONAL` possono essere sostituite dopo playtest, benchmark o prototype review senza modificare la Product Vision.
+`AGENTS.md`, `CLAUDE.md`, checklist e status non possono contraddire queste fonti.
 
 ---
 
-# Decisioni di delivery/asset correnti
+# Decisioni correnti
 
 ```text
 WINDOWS-FIRST                         LOCKED
@@ -279,31 +346,29 @@ NORMAL AI MODES AUTO/LITE/STANDARD    LOCKED
 SAFE/PROCEDURAL = DEGRADED FALLBACK   LOCKED
 FULL OFFLINE INCLUDES LITE+STANDARD   LOCKED PRODUCT REQUIREMENT
 ONE LOCAL MODEL RESIDENT AT A TIME    LOCKED
-DUAL LOCAL AI                         LOCKED ARCHITECTURE
 MODEL WEIGHTS OUTSIDE NORMAL GIT      LOCKED
-RAW AI VISUAL BATCHES OUTSIDE GIT     LOCKED
-AI VISUAL LIBRARY AUTHORING           APPROVED
-RUNTIME IMAGE GENERATOR V1            NOT REQUIRED / DEFERRED
+RAW BENCHMARK EVIDENCE OUTSIDE GIT    LOCKED
 PERSISTENT VISUAL IDENTITY            LOCKED PRINCIPLE
-LOCAL AGENT EXECUTION ARM             APPROVED
-1.7B / 3B MODEL NAMES                 PROVISIONAL
-EXACT GGUF / QUANTIZATION             PROVISIONAL UNTIL P0
-PHYSICAL MULTI-GB PACKAGE FORMAT      PROVISIONAL UNTIL P0
-HARDWARE REQUIREMENTS                 PROVISIONAL UNTIL P0
+RUNTIME IMAGE GENERATOR V1            NOT REQUIRED / DEFERRED
+GQP BEFORE M2 EXPANSION               LOCKED FOR CURRENT DELIVERY
+MODEL RELEASE APPROVAL                REQUIRES P0.5 VERDICT
+EXACT GGUF / QUANTIZATION             PROVISIONAL UNTIL P0.5 LOCK
+PHYSICAL MULTI-GB PACKAGE FORMAT      PROVISIONAL UNTIL RELEASE GATE
+HARDWARE REQUIREMENTS                 PROVISIONAL UNTIL P0.5
 WEBGPU LOCAL AI                       OPTIONAL / LATER
 ```
 
 ---
 
-# Documenti ancora da creare
+# Prossime fonti/documenti attesi
 
-Priorità consigliata dopo/parallelamente al P0:
+Dopo la chiusura del piccolo follow-up #34 e durante il GQP:
 
-1. `AI_DM_PROTOCOL_v0.1.md`
-2. `DATA_SCHEMA_v0.1.md`
-3. test fixtures per la AI quality suite versionata
-4. report risultati P0 desktop/local AI
-5. asset-pack manifest/schema definitivo dopo il primo visual prototype
-6. benchmark VPS in una fase successiva
+1. contratti/schema proof prodotti da GQP-A;
+2. eventuali fixtures/report di GQP-B/C;
+3. playtest evidence GQP-D;
+4. P0.5 verdict/report repository-facing per riconciliare l'evidenza locale;
+5. `AI_DM_PROTOCOL_v0.1.md` quando il production AI-DM layer diventa il prossimo boundary reale;
+6. asset-pack manifest definitivo dopo il relativo prototype/release need.
 
-Prima della produzione avanzata UI/content, il gate P0 Windows/local-AI deve produrre almeno un `GO` o `GO WITH LIMITS` documentato.
+Prima di espandere M2, prevale il Gameplay Quality Proof. Prima di approvare modelli/release Windows Full Offline, prevale P0.5.
