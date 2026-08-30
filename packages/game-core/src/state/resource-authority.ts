@@ -116,6 +116,23 @@ export function readAuthoritativeResource(state: WorldState, key: string): numbe
  * decision and which was the mirror.
  *
  * `next` is mutated in place; callers already work on their own clone.
+ *
+ * The order below is the contract, not a style: **resolve the target, read
+ * `before`, calculate `after`, refuse a non-finite `after`, and only then
+ * write.** Both operands can be finite and the sum not — `Number.MAX_VALUE`
+ * twice is `Infinity` — and a guard placed after the assignment turns a refused
+ * effect into a mutation plus an exception. Callers that clone (`resolveChoice`,
+ * `applyDueConsequences`) would discard the damage, but this function is
+ * exported and must hold the invariant on its own terms:
+ *
+ *     a refused effect performs zero authoritative mutation
+ *
+ * which is strictly stronger than "a refused effect throws". So on refusal the
+ * stock, the projection and `changes` are all left exactly as they were.
+ *
+ * Refusal rather than a clamp: a ceiling would be a game rule, and no normative
+ * document defines one. The authority's job is to refuse what it cannot
+ * represent, not to invent a bound.
  */
 export function applyAuthoritativeResourceDelta(
   next: WorldState,
@@ -126,18 +143,28 @@ export function applyAuthoritativeResourceDelta(
   const target = resolveSettlementTarget(next, key);
   if (target.kind === "ambiguous") throw ambiguous(target.reason, key);
 
-  if (target.kind === "legacy") {
-    const before = next.resources[key] ?? 0;
-    const after = before + value;
-    next.resources[key] = after;
+  // One store, chosen by authority: the settlement's stock where a settlement
+  // holds the resource, the flat map where none does. Reading and writing
+  // through the same reference is what lets the finiteness check sit between
+  // them instead of after the write.
+  const settlement = target.kind === "settlement" ? target.settlement : undefined;
+  const store = settlement ? settlement.resourceStock : next.resources;
+
+  const before = store[key] ?? 0;
+  const after = before + value;
+  if (!Number.isFinite(after)) {
+    throw new Error(
+      `RESOURCE_DELTA on '${key}' produced a non-finite result (${before} + ${value})`
+    );
+  }
+
+  store[key] = after;
+
+  if (!settlement) {
     changes.push({ type: "resource", key, before, after });
     return;
   }
 
-  const settlement = target.settlement;
-  const before = settlement.resourceStock[key] ?? 0;
-  const after = before + value;
-  settlement.resourceStock[key] = after;
   changes.push({
     type: "resource",
     key: `${settlement.id}.resourceStock.${key}`,

@@ -3,8 +3,10 @@ import type { WorldState } from "@paa/game-types";
 import { createSystemicScenario, runWorldTick } from "@paa/game-core";
 import { systemicEvents } from "@paa/game-data";
 import {
+  canSelectNewFocus,
   choiceAvailable,
   currentEvent,
+  focusedEvent,
   loadGame,
   newSystemicGame,
   playChoice,
@@ -60,10 +62,18 @@ function fakeStore(initial: Record<string, string> = {}): SystemicPersistence & 
   return store;
 }
 
+/** The event a session is offering; fails loudly if it is a quiet focus. */
+function requireEvent(session: GameplaySession) {
+  const event = focusedEvent(session);
+  if (!event) throw new Error("expected an event focus");
+  return event;
+}
+
 /** The first choice this session can actually take. */
 function firstAvailable(session: GameplaySession): string {
-  const choice = session.event.choices.find(candidate =>
-    choiceAvailable(session.state, session.event, candidate.id)
+  const offered = requireEvent(session);
+  const choice = offered.choices.find(candidate =>
+    choiceAvailable(session.state, offered, candidate.id)
   );
   if (!choice) throw new Error("no available choice");
   return choice.id;
@@ -77,7 +87,8 @@ describe("1: a new systemic game comes from the core", () => {
     expect(session.state.party.length).toBeGreaterThanOrEqual(5);
     expect(session.state.simulation!.factions).toHaveLength(2);
     expect(session.feed).toEqual([]);
-    expect(session.event).toBeDefined();
+    expect(session.focus.kind).toBe("event");
+    expect(requireEvent(session)).toBeDefined();
   });
 });
 
@@ -108,7 +119,7 @@ describe("2, 6: a choice goes through resolveChoice and its delta is visible", (
     starved.simulation!.settlements[0]!.resourceStock.water = 1;
     const poor: GameplaySession = { ...session, state: starved };
 
-    expect(choiceAvailable(poor.state, poor.event, "release_reserve")).toBe(false);
+    expect(choiceAvailable(poor.state, requireEvent(poor), "release_reserve")).toBe(false);
     expect(() => playChoice(poor, "release_reserve")).toThrow(/requirements/);
   });
 });
@@ -196,10 +207,10 @@ describe("5: eligibility is re-evaluated after every authoritative action", () =
   it("the event is derived from the state, never remembered", () => {
     const session = newSystemicGame();
     const afterChoice = playChoice(session, "hold_reserve");
-    expect(afterChoice.event).toEqual(currentEvent(afterChoice.state));
+    expect(requireEvent(afterChoice)).toEqual(currentEvent(afterChoice.state));
 
     const afterTick = playWorldTick(afterChoice);
-    expect(afterTick.event).toEqual(currentEvent(afterTick.state));
+    expect(requireEvent(afterTick)).toEqual(currentEvent(afterTick.state));
   });
 
   it("a flag set by a choice changes which events are eligible", () => {
@@ -870,5 +881,262 @@ describe("P2: event prose cannot promise mechanics the core does not have", () =
     const before = session.state.simulation!.settlements[0]!.resourceStock.water!;
     session = playChoice(session, "release_reserve");
     expect(session.state.simulation!.settlements[0]!.resourceStock.water).toBe(before - 4);
+  });
+});
+
+describe("GQP-0 E: gameplay focus is explicit, and quiet costs no Player Turn", () => {
+  it("the M1 flow still produces an event focus, exactly as before", () => {
+    const session = newSystemicGame();
+    expect(session.focus.kind).toBe("event");
+    expect(focusedEvent(session)).toEqual(currentEvent(session.state));
+
+    // And every action keeps producing one: GQP-0 adds no quiet policy.
+    expect(playChoice(session, "hold_reserve").focus.kind).toBe("event");
+    expect(playWorldTick(session).focus.kind).toBe("event");
+  });
+
+  it("a quiet focus is handled without crashing and yields no event", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+
+    expect(focusedEvent(quiet)).toBeUndefined();
+    // Consumers that need an event must be told there is none, not handed a
+    // partially initialised one.
+    expect(() => playChoice(quiet, "hold_reserve")).toThrow(/no event is being offered/);
+  });
+
+  it("presenting a quiet focus does not advance the Player Turn or the tick", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+
+    // Reading it as many times as the screen likes changes nothing.
+    for (let render = 0; render < 5; render += 1) {
+      expect(focusedEvent(quiet)).toBeUndefined();
+    }
+    expect(quiet.state.turn).toBe(session.state.turn);
+    expect(quiet.state.simulation!.tick).toBe(session.state.simulation!.tick);
+    expect(quiet.state).toEqual(session.state);
+  });
+
+  it("the focus is a discriminated union, so both cases must be handled", () => {
+    const cases: GameplaySession["focus"][] = [
+      { kind: "event", event: currentEvent(newSystemicGame().state) },
+      { kind: "quiet" }
+    ];
+    for (const focus of cases) {
+      // An exhaustive switch compiles; a missing case would not typecheck.
+      const described =
+        focus.kind === "event" ? focus.event.id : focus.kind === "quiet" ? "quiet" : never(focus);
+      expect(typeof described).toBe("string");
+    }
+  });
+
+  function never(value: never): never {
+    throw new Error(`unhandled focus ${JSON.stringify(value)}`);
+  }
+});
+
+describe("GQP-0 G: a quiet focus cannot re-select without the world moving", () => {
+  it("an unchanged world may not produce a new focus after quiet", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+
+    // This is the loop the boundary exists to prevent: selection on state X
+    // returns quiet, and selecting again on the same X would return quiet
+    // forever.
+    expect(canSelectNewFocus(quiet, quiet.state)).toBe(false);
+  });
+
+  it("an authoritative World Tick unblocks the next selection", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const advanced = playWorldTick(quiet).state;
+
+    expect(advanced.simulation!.tick).toBe(quiet.state.simulation!.tick + 1);
+    expect(canSelectNewFocus(quiet, advanced)).toBe(true);
+  });
+
+  it("an event focus is never blocked", () => {
+    const session = newSystemicGame();
+    expect(canSelectNewFocus(session, session.state)).toBe(true);
+  });
+
+  it("the guard reads the world, not a remembered flag", () => {
+    // Two sessions built independently from the same authoritative tick answer
+    // the same way. Nothing is carried between them.
+    const session = newSystemicGame();
+    const quietA: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const quietB: GameplaySession = {
+      state: structuredClone(session.state),
+      focus: { kind: "quiet" },
+      feed: []
+    };
+    expect(canSelectNewFocus(quietA, session.state)).toBe(canSelectNewFocus(quietB, session.state));
+
+    const ticked = playWorldTick(session).state;
+    expect(canSelectNewFocus(quietA, ticked)).toBe(canSelectNewFocus(quietB, ticked));
+  });
+});
+
+describe("GQP-0 P2: the transition boundary enforces the rule, it does not offer it", () => {
+  /**
+   * The earlier tests proved the predicate answers correctly. They did not
+   * prove a caller must consult it. These drive the operation that actually
+   * builds the next session, which is the only thing a future GQP-C caller
+   * will reach for.
+   */
+
+  it("A, D: a choice is a Core-owned mutation, and M1 semantics hold", () => {
+    const session = newSystemicGame();
+    const water = session.state.simulation!.settlements[0]!.resourceStock.water!;
+    const next = playChoice(session, "release_reserve");
+
+    expect(next.focus.kind).toBe("event");
+    // The Core produced this world: the stock moved by the effect's amount and
+    // the Player Turn advanced once.
+    expect(next.state.simulation!.settlements[0]!.resourceStock.water).toBe(water - 4);
+    expect(next.state.turn).toBe(session.state.turn + 1);
+    expect(next.state.simulation!.tick).toBe(session.state.simulation!.tick);
+  });
+
+  it("E: a World Tick is a Core-owned mutation", () => {
+    const session = newSystemicGame();
+    const next = playWorldTick(session);
+    expect(next.state).toEqual(runWorldTick(session.state).state);
+    expect(next.state.simulation!.tick).toBe(session.state.simulation!.tick + 1);
+    expect(next.state.turn).toBe(session.state.turn);
+  });
+
+  it("F: a quiet session refuses a choice before touching anything", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const before = structuredClone(quiet.state);
+
+    expect(() => playChoice(quiet, "release_reserve")).toThrow(/no event is being offered/);
+    expect(quiet.state).toEqual(before);
+    expect(quiet.focus.kind).toBe("quiet");
+  });
+
+  it("G: a quiet session may tick, and the tick yields the next focus", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const ticked = playWorldTick(quiet);
+    expect(ticked.state.simulation!.tick).toBe(quiet.state.simulation!.tick + 1);
+    expect(ticked.focus.kind).toBe("event");
+    expect(ticked.state.turn).toBe(session.state.turn);
+  });
+
+  it("E: bootstrap needs no progression and no artificial tick", () => {
+    const fresh = newSystemicGame();
+    expect(fresh.focus.kind).toBe("event");
+    expect(fresh.state.simulation!.tick).toBe(0);
+    expect(fresh.state.turn).toBe(1);
+
+    // Bootstrap is reachable only through the two operations that genuinely
+    // create or recover a lifecycle. There is no exported raw constructor.
+    expect(fresh.state).toEqual(createSystemicScenario(7419));
+    expect(fresh.feed).toEqual([]);
+  });
+
+  it("F: the M1 sequence is unchanged by the boundary", () => {
+    // Choice then tick, exactly as the earlier regressions describe it.
+    const session = newSystemicGame();
+    const afterChoice = playChoice(session, "release_reserve");
+    expect(afterChoice.state.turn).toBe(session.state.turn + 1);
+    expect(afterChoice.state.simulation!.tick).toBe(session.state.simulation!.tick);
+
+    const afterTick = playWorldTick(afterChoice);
+    expect(afterTick.state.turn).toBe(afterChoice.state.turn);
+    expect(afterTick.state.simulation!.tick).toBe(afterChoice.state.simulation!.tick + 1);
+    expect(afterTick.state).toEqual(runWorldTick(afterChoice.state).state);
+  });
+
+  it("the controller exports no unguarded way to derive a focus", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const source = readFileSync(
+      fileURLToPath(new URL("../src/gameplay/controller.ts", import.meta.url)),
+      "utf8"
+    );
+
+    // `currentFocus` takes only a world, so it cannot honour the lifecycle
+    // rule. It must stay internal; exporting it would reopen the bypass this
+    // whole boundary exists to close.
+    expect(source).toContain("function currentFocus(");
+    expect(source).not.toContain("export function currentFocus(");
+
+    // Bootstrap is internal too: it derives a focus while claiming there is no
+    // predecessor, and only `newSystemicGame` and `loadGame` can honestly make
+    // that claim. Exporting it would move the bypass up one level.
+    expect(source).toContain("function bootstrapSession(");
+    expect(source).not.toContain("export function bootstrapSession(");
+
+    // The one exported transition is the one that checks.
+    expect(source).toContain("function advanceSession(");
+    expect(source).not.toContain("export function advanceSession(");
+    expect(source).toContain("throw new QuietProgressionRequired()");
+
+    // Every session the controller returns comes from one of the two doors.
+    const literals = source.match(/focus:\s*currentFocus\(/g) ?? [];
+    expect(literals).toHaveLength(2);
+  });
+});
+
+describe("GQP-0 P2b: the exported surface offers no unguarded lifecycle entry", () => {
+  it("C, D: no raw bootstrap and no raw focus derivation are exported", async () => {
+    // An API property, asserted as one: what the module hands out.
+    const api = await import("../src/gameplay/controller");
+    const exported = Object.keys(api).sort();
+
+    expect(exported).not.toContain("bootstrapSession");
+    expect(exported).not.toContain("currentFocus");
+    expect(exported).not.toContain("deriveCurrentFocus");
+    // A raw transition trusts the caller's claim that `nextState` came from an
+    // authoritative action, and cannot check it.
+    expect(exported).not.toContain("advanceSession");
+
+    // And the shape of what remains is the shape we intend.
+    // H: no exported operation accepts an arbitrary WorldState and turns it
+    // into the next session. What remains is commands that perform a Core
+    // operation themselves, plus read-only queries.
+    expect(exported).toEqual([
+      "PLAYABLE_EVENTS",
+      "QuietProgressionRequired",
+      "canSelectNewFocus",
+      "choiceAvailable",
+      "currentEvent",
+      "focusedEvent",
+      "loadGame",
+      "newSystemicGame",
+      "playChoice",
+      "playWorldTick",
+      "saveGame"
+    ]);
+  });
+
+  it("E: a quiet session has no exported way to obtain a focus without progression", async () => {
+    const api = await import("../src/gameplay/controller");
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const before = structuredClone(quiet.state);
+
+    // The choice path refuses before touching anything.
+    expect(() => api.playChoice(quiet, "release_reserve")).toThrow(/no event is being offered/);
+
+    // The only remaining exported commands either create a lifecycle of their
+    // own (newSystemicGame) or perform the progression themselves
+    // (playWorldTick). Neither launders this session's quiet state.
+    expect(api.newSystemicGame().state.simulation!.tick).toBe(0);
+    expect(quiet.state).toEqual(before);
+  });
+
+  it("F: after a World Tick the lifecycle permits the next focus", () => {
+    const session = newSystemicGame();
+    const quiet: GameplaySession = { ...session, focus: { kind: "quiet" } };
+    const ticked = playWorldTick(quiet);
+    expect(ticked.focus.kind).toBe("event");
+    expect(ticked.state.simulation!.tick).toBe(quiet.state.simulation!.tick + 1);
+    // And the Player Turn was not spent by the quiet beat or by the tick.
+    expect(ticked.state.turn).toBe(session.state.turn);
   });
 });
