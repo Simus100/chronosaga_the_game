@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { GameEvent, WorldState } from "@paa/game-types";
-import { createSystemicScenario, isEventEligible, runWorldTick } from "../src";
+import {
+  createSystemicScenario,
+  isEventEligible,
+  runWorldTick,
+  validateSystemicWorldState
+} from "../src";
 
 function shortageEvent(): GameEvent {
   return {
@@ -185,5 +190,241 @@ describe("M1-B deterministic world tick", () => {
     const legacy = createSystemicScenario(2) as WorldState;
     delete legacy.simulation;
     expect(() => runWorldTick(legacy)).toThrow(/WorldState\.simulation/);
+  });
+});
+
+/**
+ * Every number the World Tick writes authoritatively must be finite.
+ *
+ * The inputs below are hostile but not malformed: each one is accepted by
+ * `validateSystemicWorldState`, because the point is precisely that per-field
+ * validation cannot see what an aggregation does. Each test therefore asserts
+ * the input was valid before asserting the tick refuses it — a test built on an
+ * already-invalid world would prove nothing about the Core.
+ */
+describe("#34 the World Tick refuses to write a non-finite authoritative number", () => {
+  /** The tick must reject the world, and leave the caller's own object alone. */
+  function failsClosed(state: WorldState, message: RegExp) {
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+    const untouched = structuredClone(state);
+
+    expect(() => runWorldTick(state)).toThrow(message);
+    expect(state).toEqual(untouched);
+  }
+
+  /**
+   * `rounded` scales by `10 ** 4` before dividing, so a finite value above
+   * `Number.MAX_VALUE / 1e4` overflows inside the helper — no addition
+   * required. The stock here is ordinary; the output alone is extreme.
+   */
+  it("refuses a production output that overflows while being rounded", () => {
+    const state = createSystemicScenario(4201);
+    const node = state.simulation!.productionNodes[0]!;
+    node.inputs = {};
+    node.outputs = { water: 1e305 };
+    node.capacity = 1e308;
+    node.efficiency = 1;
+    node.condition = 1;
+
+    failsClosed(state, /non-finite value for settlement_helios\.resourceStock\.water: Infinity/);
+  });
+
+  /**
+   * The other half of the same class: both operands are comfortably
+   * representable, and their sum is not.
+   */
+  it("refuses a production output whose sum with the existing stock overflows", () => {
+    const state = createSystemicScenario(4201);
+    const node = state.simulation!.productionNodes[0]!;
+    node.inputs = {};
+    node.outputs = { water: 1e304 };
+    node.capacity = 1e308;
+    node.efficiency = 1;
+    node.condition = 1;
+    state.simulation!.settlements[0]!.resourceStock.water = Number.MAX_VALUE;
+
+    // Proof that the two operands really are finite on their own.
+    expect(Number.isFinite(1e304)).toBe(true);
+    expect(Number.isFinite(Number.MAX_VALUE)).toBe(true);
+
+    failsClosed(state, /non-finite value for settlement_helios\.resourceStock\.water: Infinity/);
+  });
+
+
+  /**
+   * Not every non-finite result is an overflow. A production input requirement
+   * small enough that `nominalAmount * technicalFactor` underflows to zero, on a
+   * stock that is also zero, makes `available / requiredAtTechnicalRate` the
+   * indeterminate `0 / 0`. The resulting `NaN` survives `clamp`, survives
+   * `rounded`, and survives `if (amount <= 0) continue` — because `NaN <= 0` is
+   * false, so the guard clause that exists to skip empty work waves it through.
+   *
+   * This one reaches the production *input* write rather than the output write,
+   * and it was found by auditing the file rather than by predicting it.
+   */
+  it("refuses a production input whose operating factor becomes NaN by underflow", () => {
+    const state = createSystemicScenario(4201);
+    const node = state.simulation!.productionNodes[0]!;
+    node.inputs = { food: Number.MIN_VALUE };
+    node.outputs = { water: 2 };
+    node.efficiency = 0.5;
+    node.condition = 0.5;
+    node.capacity = 100;
+    state.simulation!.settlements[0]!.resourceStock.food = 0;
+
+    expect(Number.NaN <= 0).toBe(false);
+
+    failsClosed(state, /non-finite value for settlement_helios\.resourceStock\.food: NaN/);
+  });
+
+  /** The same shape with stock available is ordinary work, and must still run. */
+  it("still ticks the same production node when the stock is not empty", () => {
+    const state = createSystemicScenario(4201);
+    const node = state.simulation!.productionNodes[0]!;
+    node.inputs = { food: Number.MIN_VALUE };
+    node.outputs = { water: 2 };
+    node.efficiency = 0.5;
+    node.condition = 0.5;
+    node.capacity = 100;
+    state.simulation!.settlements[0]!.resourceStock.food = 3;
+
+    expect(validateSystemicWorldState(runWorldTick(state).state).ok).toBe(true);
+  });
+
+  /**
+   * Settlement satisfaction is a population-weighted mean, and the only
+   * authoritative social field the tick writes without a clamp. Enough large
+   * populations overflow numerator and denominator together, and
+   * `Infinity / Infinity` is `NaN`.
+   */
+  it("refuses a settlement satisfaction whose weighted mean overflows to NaN", () => {
+    const state = createSystemicScenario(4201);
+    const simulation = state.simulation!;
+    const proto = simulation.populationCohorts[0]!;
+    const crowd = Array.from({ length: 400 }, (_unused, index) => ({
+      ...structuredClone(proto),
+      id: `cohort_crowd_${index}`
+    }));
+    simulation.populationCohorts = [...simulation.populationCohorts, ...crowd];
+    for (const cohort of simulation.populationCohorts) cohort.population = 1e308;
+    simulation.settlements[0]!.cohortIds = simulation.populationCohorts.map(cohort => cohort.id);
+
+    // Each population is individually a finite non-negative integer.
+    for (const cohort of simulation.populationCohorts) {
+      expect(Number.isInteger(cohort.population)).toBe(true);
+      expect(Number.isFinite(cohort.population)).toBe(true);
+    }
+
+    failsClosed(state, /non-finite value for settlement_helios\.satisfaction: NaN/);
+  });
+
+  /**
+   * Political approval overflows on a different weighting — the cohorts
+   * affiliated to one group — so it is reachable while the settlement mean it
+   * sits next to stays finite. Starting every cohort at exactly the satisfaction
+   * that one tick of full exposure removes drives the settlement numerator to
+   * zero and leaves the approval numerator infinite.
+   */
+  it("refuses a political approval that overflows while settlement satisfaction stays finite", () => {
+    const state = createSystemicScenario(4201);
+    const simulation = state.simulation!;
+    const proto = simulation.populationCohorts[0]!;
+    const crowd = Array.from({ length: 400 }, (_unused, index) => ({
+      ...structuredClone(proto),
+      id: `cohort_crowd_${index}`
+    }));
+    simulation.populationCohorts = [...simulation.populationCohorts, ...crowd];
+    for (const cohort of simulation.populationCohorts) {
+      cohort.population = 1e308;
+      cohort.satisfaction = 0.08;
+      cohort.loyalty = 0.08;
+    }
+    simulation.settlements[0]!.cohortIds = simulation.populationCohorts.map(cohort => cohort.id);
+    for (const resource of ["water", "food", "energy", "medicine"]) {
+      simulation.settlements[0]!.resourceStock[resource] = 0;
+    }
+
+    failsClosed(state, /non-finite value for group_labor\.approval: NaN/);
+  });
+
+  /**
+   * Cohort satisfaction overflows through its need weights rather than through
+   * population: `needs` is validated finite per entry and has no upper bound, so
+   * two large weights make `weightedShortage / relevantNeed` an
+   * `Infinity / Infinity`. Worth stating plainly: `clamp` does not stop this.
+   * `Math.min(1, Math.max(0, NaN))` is `NaN`, so being bounded to 0..1 is not
+   * the same as being finite.
+   */
+  it("refuses a cohort satisfaction whose need-weighted exposure overflows to NaN", () => {
+    const state = createSystemicScenario(4201);
+    const simulation = state.simulation!;
+    for (const cohort of simulation.populationCohorts) {
+      cohort.needs = { water: 1e308, food: 1e308 };
+    }
+    simulation.settlements[0]!.resourceStock.water = 0;
+    simulation.settlements[0]!.resourceStock.food = 0;
+
+    expect(Math.min(1, Math.max(0, Number.NaN))).toBeNaN();
+
+    failsClosed(state, /non-finite value for cohort_industrial\.satisfaction: NaN/);
+  });
+
+  /**
+   * The guards must refuse overflow without refusing large-but-representable
+   * worlds. A settlement whose cohorts alone overflow the population sum still
+   * ticks, because its weighted numerator does not.
+   */
+  it("still ticks a world whose population sum overflows but whose mean does not", () => {
+    const state = createSystemicScenario(4201);
+    for (const cohort of state.simulation!.populationCohorts) cohort.population = 1e308;
+    state.simulation!.settlements[0]!.population = 1e308;
+
+    const result = runWorldTick(state);
+    expect(validateSystemicWorldState(result.state).ok).toBe(true);
+  });
+
+  /**
+   * `tick + 1` and `day + 1` cannot leave the finite range: adding one to a
+   * finite double either advances it or, past the integer precision limit,
+   * returns the same value. They are audited and deliberately unguarded — the
+   * liveness question they do raise is not a finiteness defect and is recorded
+   * as a follow-up rather than answered here.
+   */
+  it("advances tick and day without producing a non-finite clock", () => {
+    const state = createSystemicScenario(4201);
+    state.simulation!.tick = Number.MAX_VALUE;
+    state.day = Number.MAX_VALUE;
+
+    const result = runWorldTick(state);
+    expect(Number.isFinite(result.state.simulation!.tick)).toBe(true);
+    expect(Number.isFinite(result.state.day)).toBe(true);
+    expect(validateSystemicWorldState(result.state).ok).toBe(true);
+  });
+
+  /** The property, asserted over the ordinary scenario rather than argued. */
+  it("leaves every authoritative number of a normal tick finite", () => {
+    const result = runWorldTick(createSystemicScenario(4201));
+    const simulation = result.state.simulation!;
+
+    const authoritative = [
+      simulation.tick,
+      result.state.day,
+      ...Object.values(result.state.resources),
+      ...simulation.settlements.flatMap(settlement => [
+        settlement.population,
+        settlement.stability,
+        settlement.satisfaction,
+        ...Object.values(settlement.resourceStock)
+      ]),
+      ...simulation.populationCohorts.flatMap(cohort => [
+        cohort.population,
+        cohort.satisfaction,
+        cohort.loyalty
+      ]),
+      ...simulation.politicalGroups.map(group => group.approval)
+    ];
+
+    for (const value of authoritative) expect(Number.isFinite(value)).toBe(true);
+    expect(validateSystemicWorldState(result.state).ok).toBe(true);
   });
 });

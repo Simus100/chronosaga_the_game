@@ -66,9 +66,51 @@ function clamp(value: number, min = 0, max = 1): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/**
+ * Round to four decimals — and overflow above roughly `1.8e304`.
+ *
+ * `value * 10 ** 4` is computed before the division, so a finite input above
+ * `Number.MAX_VALUE / 1e4` becomes `Infinity` and stays there. The scaling is
+ * what the rounding is, so this cannot be fixed inside the helper without
+ * changing the rounding semantics for every call site; instead each *write*
+ * that consumes a rounded value refuses a non-finite result. Trace-only call
+ * sites are unaffected, because a tick that would have produced one never
+ * completes.
+ */
 function rounded(value: number, digits = 4): number {
   const factor = 10 ** digits;
   return Math.round((value + Number.EPSILON) * factor) / factor;
+}
+
+/**
+ * The value a World Tick is about to write to an authoritative numeric field,
+ * refused if the arithmetic left the finite range.
+ *
+ * Every input to the tick is validated finite, and that is not enough: an
+ * aggregation of finite values need not be finite. Three routes are reachable
+ * from state `validateSystemicWorldState` accepts —
+ *
+ * - a resource stock near `Number.MAX_VALUE` plus a production output, or a
+ *   stock large enough that `rounded` overflows on its own;
+ * - a weighted mean whose numerator and denominator both overflow, so
+ *   `Infinity / Infinity` yields `NaN`;
+ * - a need-weighted exposure that overflows the same way.
+ *
+ * `NaN` deserves particular suspicion because `clamp` does not stop it:
+ * `Math.min(1, Math.max(0, NaN))` is `NaN`, so a bounded field is no safer than
+ * an unbounded one. The systemic save validator refuses both, which means a
+ * tick that writes one produces a world that can be played and not stored.
+ *
+ * Refusal, not repair. Substituting a value would invent a game rule — a cap, a
+ * default, a floor — and no normative document defines one. The guard is placed
+ * before the assignment so a refused transition performs no mutation at all,
+ * matching the `RESOURCE_DELTA` rule established in GQP-0.
+ */
+function finiteWrite(value: number, field: string): number {
+  if (!Number.isFinite(value)) {
+    throw new Error(`World Tick produced a non-finite value for ${field}: ${String(value)}`);
+  }
+  return value;
 }
 
 function setNumber(
@@ -80,7 +122,10 @@ function setNumber(
   changeKey: string
 ): void {
   const before = target[key] ?? 0;
-  const after = rounded(Math.max(0, value));
+  // Calculate, validate, then mutate. The check sits ahead of the
+  // no-op shortcut as well: a non-finite result is a defect whether or not it
+  // happens to compare equal to what was already there.
+  const after = finiteWrite(rounded(Math.max(0, value)), changeKey);
   if (before === after) return;
   target[key] = after;
   changes.push({ type: changeType, key: changeKey, before, after });
@@ -243,7 +288,13 @@ function reactCohorts(
     const loyaltyDelta = rounded(satisfactionDelta * 0.35);
 
     const satisfactionBefore = cohort.satisfaction;
-    cohort.satisfaction = rounded(clamp(cohort.satisfaction + satisfactionDelta));
+    // `exposure` is a need-weighted mean and can be `NaN` when both its
+    // numerator and denominator overflow; `clamp` passes `NaN` through
+    // unchanged, so the bound is no protection here.
+    cohort.satisfaction = finiteWrite(
+      rounded(clamp(cohort.satisfaction + satisfactionDelta)),
+      `${cohort.id}.satisfaction`
+    );
     if (cohort.satisfaction !== satisfactionBefore) {
       changes.push({
         type: "cohortSatisfaction",
@@ -253,6 +304,11 @@ function reactCohorts(
       });
     }
 
+    // Loyalty needs no guard of its own, and the reason is an ordering: it is
+    // derived from `satisfactionDelta` through a bounded multiplication, so it
+    // is non-finite only when the satisfaction above already was — and that
+    // write is refused first. Move this block above the satisfaction write and
+    // the guarantee is gone.
     const loyaltyBefore = cohort.loyalty;
     cohort.loyalty = rounded(clamp(cohort.loyalty + loyaltyDelta));
     if (cohort.loyalty !== loyaltyBefore) {
@@ -277,7 +333,15 @@ function reactCohorts(
       cohort => cohort.settlementId === settlement.id
     );
     const beforeSatisfaction = settlement.satisfaction;
-    const afterSatisfaction = weightedSettlementSatisfaction(cohorts);
+    // A population-weighted mean, and the only authoritative social field the
+    // tick writes without a clamp. Every cohort satisfaction is in 0..1 and
+    // every population is a finite non-negative integer, and the mean of those
+    // is still not guaranteed finite: enough large populations overflow the
+    // denominator, and a numerator that overflows with it gives `NaN`.
+    const afterSatisfaction = finiteWrite(
+      weightedSettlementSatisfaction(cohorts),
+      `${settlement.id}.satisfaction`
+    );
     settlement.satisfaction = afterSatisfaction;
     if (beforeSatisfaction !== afterSatisfaction) {
       changes.push({
@@ -331,7 +395,13 @@ function reactPoliticalGroups(
         : 0;
     const approvalDelta = rounded(weightedDelta * 0.8);
     const before = group.approval;
-    group.approval = rounded(clamp(group.approval + approvalDelta));
+    // The same overflowed-mean shape as settlement satisfaction, on a different
+    // weighting, and reachable independently of it: the affiliated cohorts can
+    // overflow this sum while their settlement's own mean stays finite.
+    group.approval = finiteWrite(
+      rounded(clamp(group.approval + approvalDelta)),
+      `${group.id}.approval`
+    );
 
     if (before !== group.approval) {
       changes.push({
