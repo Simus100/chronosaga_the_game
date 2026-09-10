@@ -1,5 +1,4 @@
 import type { AgendaCondition, FactionAgendaItem, WorldState } from "@paa/game-types";
-import { readAuthoritativeResource } from "../state/resource-authority.js";
 
 /**
  * Whether an agenda item's satisfy/resolve condition currently holds.
@@ -33,9 +32,26 @@ export function agendaConditionHolds(condition: AgendaCondition, state: WorldSta
         item => item.id === condition.settlementId
       );
       if (!settlement) return false;
-      // Through the authority, not the projection: the flat map is a mirror,
-      // and reading it here would reintroduce the two-truths bug M1-C/1 fixed.
-      return readAuthoritativeResource(state, condition.resourceKey) >= condition.amount;
+
+      // The named settlement's own stock, and nothing else.
+      //
+      // This used to resolve the settlement and then read through
+      // `readAuthoritativeResource`, which resolves its *own* target from the
+      // key. So `settlementId` decided nothing: a key the settlement does not
+      // stock fell through to the campaign map, and a Council condition naming
+      // Helios and `credits` was satisfied by campaign credits that no
+      // settlement holds. With one settlement in the scenario the two readings
+      // agree for `water` by coincidence, which is exactly why it survived.
+      //
+      // Reading the stock directly is also still reading the authority: for a
+      // resource a settlement stocks, `resourceStock` *is* the authority and
+      // `WorldState.resources` is its projection. The rule this replaces
+      // protected against reading the mirror, and that protection is intact.
+      const stocked = settlement.resourceStock[condition.resourceKey];
+      // A resource this settlement does not stock is not zero of it. Refusing
+      // to guess keeps an unstocked key from silently reading as a shortage.
+      if (stocked === undefined) return false;
+      return stocked >= condition.amount;
     }
     case "political_approval_at_least": {
       const group = state.simulation?.politicalGroups.find(item => item.id === condition.groupId);

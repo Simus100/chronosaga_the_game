@@ -1460,6 +1460,88 @@ mod systemic_persistence_tests {
         assert_eq!(payload_of(&loaded), payload);
     }
 
+    /// The committed proof save, as bytes. Rust never parses it.
+    ///
+    /// `game-core` owns what a `WorldState` means and keeps this fixture equal
+    /// to what its persistence boundary produces; the assertion that it is
+    /// current lives there, in `gqp-a-contracts.test.ts`. Here it is an opaque
+    /// string, which is the whole point: the desktop side transports saves and
+    /// must never reshape or interpret one, so duplicating schema knowledge in
+    /// Rust would create a second authority on the same contract.
+    const GQP_V2_SAVE: &str = include_str!("../../../../fixtures/gqp-v2-save.json");
+
+    #[test]
+    fn a_real_proof_save_crosses_a_file_backed_database_byte_for_byte() {
+        // The in-memory tests above prove the SQL is keyed and replacing.
+        // GQP-A's exit criterion is a round trip on a real file, so this one
+        // uses the real open/migrate path, closes the connection, and reopens
+        // it: a payload that survives only while the handle is alive would
+        // pass every in-memory test and lose a campaign on restart.
+        let scratch = ScratchDb::new("gqp-v2-roundtrip");
+
+        {
+            let db = scratch.open().expect("create");
+            store_systemic(&db, "gqp_7419", GQP_V2_SAVE, 1).expect("store");
+        }
+
+        let db = scratch.open().expect("reopen");
+        let loaded = fetch_systemic(&db, "gqp_7419").expect("fetch");
+
+        assert_eq!(
+            payload_of(&loaded),
+            GQP_V2_SAVE,
+            "the proof payload came back reshaped; game-core would then validate a different world"
+        );
+
+        // Enough of a sanity check that the fixture is the thing it claims to
+        // be, without Rust taking any view on what it means.
+        assert!(GQP_V2_SAVE.contains("\"schemaVersion\":2"));
+        assert!(GQP_V2_SAVE.len() > 1000, "fixture looks truncated");
+    }
+
+    #[test]
+    fn a_proof_save_survives_being_written_over_and_reopened() {
+        // Saving repeatedly is the ordinary case, and the last write must be
+        // the one that comes back after the file is closed.
+        let scratch = ScratchDb::new("gqp-v2-resave");
+        let second = GQP_V2_SAVE.replace("\"turn\":1", "\"turn\":4");
+        assert_ne!(second, GQP_V2_SAVE, "the fixture should contain a turn");
+
+        {
+            let db = scratch.open().expect("create");
+            store_systemic(&db, "gqp_7419", GQP_V2_SAVE, 1).expect("first");
+            store_systemic(&db, "gqp_7419", &second, 4).expect("second");
+        }
+
+        let db = scratch.open().expect("reopen");
+        assert_eq!(payload_of(&fetch_systemic(&db, "gqp_7419").expect("fetch")), second);
+
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM campaign_systemic", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(rows, 1, "one campaign is one row, on disk as in memory");
+    }
+
+    #[test]
+    fn a_proof_save_and_a_baseline_save_do_not_collide_on_disk() {
+        // The proof scenario files itself under its own campaign id. Two runs
+        // of the same seed must not land in one row.
+        let scratch = ScratchDb::new("gqp-v2-isolation");
+
+        {
+            let db = scratch.open().expect("create");
+            store_systemic(&db, "gqp_7419", GQP_V2_SAVE, 1).expect("proof");
+            store_systemic(&db, "cmp_7419", r#"{"campaignId":"cmp_7419"}"#, 1).expect("baseline");
+        }
+
+        let db = scratch.open().expect("reopen");
+        assert_eq!(payload_of(&fetch_systemic(&db, "gqp_7419").expect("proof")), GQP_V2_SAVE);
+        assert_eq!(
+            payload_of(&fetch_systemic(&db, "cmp_7419").expect("baseline")),
+            r#"{"campaignId":"cmp_7419"}"#
+        );
+    }
+
     #[test]
     fn an_absent_campaign_is_not_found_rather_than_an_error() {
         // 26 and the "never a new game" rule: absence is an ordinary answer,

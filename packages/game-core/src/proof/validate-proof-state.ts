@@ -375,7 +375,28 @@ function agendaCondition(
       if (settlementId !== null && !idsOf("settlements").has(settlementId)) {
         errors.push(`${label}.settlementId '${settlementId}' matches no settlement`);
       }
-      identifier(value, "resourceKey", `${label}.resourceKey`, errors);
+      const resourceKey = identifier(value, "resourceKey", `${label}.resourceKey`, errors);
+      // The key must be one that settlement actually stocks.
+      //
+      // The evaluator reads `settlement.resourceStock[key]` and refuses an
+      // absent key rather than guessing zero, so a condition naming a resource
+      // the settlement does not hold can never be satisfied. That is a content
+      // defect frozen into a save: an agenda item nothing can ever resolve.
+      // Catching it here makes it a rejected save instead of a faction stuck
+      // forever for a reason nobody can see.
+      if (settlementId !== null && resourceKey !== null) {
+        const settlement = (Array.isArray(simulation.settlements)
+          ? simulation.settlements.filter(isRecord)
+          : []
+        ).find(entry => entry.id === settlementId);
+        const stock = settlement?.resourceStock;
+        if (isRecord(stock) && !(resourceKey in stock)) {
+          errors.push(
+            `${label}.resourceKey '${resourceKey}' is not stocked by settlement ` +
+              `'${settlementId}'; this condition could never be satisfied`
+          );
+        }
+      }
       const amount = value.amount;
       if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
         errors.push(`${label}.amount must be a finite non-negative number`);

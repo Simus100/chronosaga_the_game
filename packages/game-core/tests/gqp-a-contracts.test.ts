@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { SystemicSimulationStateV2, WorldState } from "@paa/game-types";
 import {
@@ -11,6 +13,8 @@ import {
   epidemicStage,
   isProofSimulation,
   isSupportedSchemaVersion,
+  loadSystemicWorldState,
+  serializeSystemicWorldState,
   pressureStage,
   resolveChoice,
   runWorldTick,
@@ -912,5 +916,295 @@ describe("audit regressions: contract boundaries the first pass missed", () => {
   it("leaves the shipped proof scenario valid under all three tightened rules", () => {
     expect(errorsOf(proof())).toEqual([]);
     expect(errorsOf(createGqpScenario(4201))).toEqual([]);
+  });
+});
+
+/**
+ * `resource_stock_at_least` means one settlement's own stock.
+ *
+ * It used to resolve the settlement and then read through
+ * `readAuthoritativeResource`, which resolves its own target from the key —
+ * so `settlementId` decided nothing. A key the settlement does not stock fell
+ * through to the campaign map. With one settlement in the scenario the two
+ * readings agree for `water` by coincidence, which is why it survived a green
+ * suite; the coincidence ends at the second settlement, or at any campaign
+ * resource.
+ */
+describe("R39-1: the named settlement governs the reading", () => {
+  const condition = (overrides: Record<string, unknown> = {}) =>
+    ({
+      predicate: "resource_stock_at_least",
+      settlementId: "settlement_helios",
+      resourceKey: "water",
+      amount: 20,
+      ...overrides
+    }) as any;
+
+  it("reads that settlement's water", () => {
+    const state = proof();
+    expect(agendaConditionHolds(condition(), state)).toBe(false);
+
+    state.simulation!.settlements[0]!.resourceStock.water = 25;
+    expect(agendaConditionHolds(condition(), state)).toBe(true);
+
+    state.simulation!.settlements[0]!.resourceStock.water = 19.9999;
+    expect(agendaConditionHolds(condition(), state)).toBe(false);
+  });
+
+  it("ignores the projection entirely", () => {
+    const state = proof();
+    // `WorldState.resources` mirrors the stock; it is not the authority and it
+    // must not be able to answer this question.
+    state.resources.water = 10_000;
+    expect(agendaConditionHolds(condition(), state)).toBe(false);
+
+    state.simulation!.settlements[0]!.resourceStock.water = 20;
+    state.resources.water = 0;
+    expect(agendaConditionHolds(condition(), state)).toBe(true);
+  });
+
+  it("cannot be satisfied by a campaign resource the settlement does not stock", () => {
+    const state = proof();
+    // `credits` is authoritative in the flat map — no settlement holds it.
+    expect("credits" in state.simulation!.settlements[0]!.resourceStock).toBe(false);
+    expect(state.resources.credits).toBeGreaterThan(20);
+
+    // This is the defect stated as a test: Helios plus `credits` used to be
+    // satisfied by campaign credits Helios does not have.
+    expect(
+      agendaConditionHolds(condition({ resourceKey: "credits", amount: 20 }), state)
+    ).toBe(false);
+  });
+
+  it("does not read an unstocked resource as zero of it", () => {
+    // The distinction only shows at `amount: 0`, which is a legal condition:
+    // "at least zero credits" is trivially true of a settlement that holds
+    // credits and meaningless for one that does not. Treating an absent key as
+    // `0` would satisfy a Council desire about a resource Helios has no
+    // relationship with at all.
+    //
+    // `agendaConditionHolds` is exported, so it has to hold this on its own —
+    // the validator refusing such a condition in a save is a second line, not
+    // the first one.
+    const state = proof();
+    expect("credits" in state.simulation!.settlements[0]!.resourceStock).toBe(false);
+
+    expect(agendaConditionHolds(condition({ resourceKey: "credits", amount: 0 }), state)).toBe(false);
+    // A resource it does stock, at zero, is genuinely satisfied.
+    state.simulation!.settlements[0]!.resourceStock.medicine = 0;
+    state.resources.medicine = 0;
+    expect(agendaConditionHolds(condition({ resourceKey: "medicine", amount: 0 }), state)).toBe(true);
+  });
+
+  it("refuses a settlement that does not exist", () => {
+    expect(
+      agendaConditionHolds(condition({ settlementId: "settlement_ghost", amount: 0 }), proof())
+    ).toBe(false);
+  });
+
+  it("distinguishes two settlements holding the same resource", () => {
+    // The clearest statement of what the argument is for. One settlement is
+    // full and the other is empty; the condition must follow the id.
+    const state = proof();
+    const helios = state.simulation!.settlements[0]!;
+    const second = structuredClone(helios);
+    second.id = "settlement_second";
+    second.resourceStock = { ...helios.resourceStock, water: 500 };
+    second.productionNodeIds = [];
+    second.cohortIds = [];
+    second.politicalGroupIds = [];
+    state.simulation!.settlements = [helios, second];
+
+    expect(agendaConditionHolds(condition({ amount: 100 }), state)).toBe(false);
+    expect(
+      agendaConditionHolds(condition({ settlementId: "settlement_second", amount: 100 }), state)
+    ).toBe(true);
+  });
+
+  it("refuses a save whose condition names a resource that settlement never stocks", () => {
+    // An agenda item nothing can ever resolve is a content defect frozen into a
+    // save. Better a rejected save than a faction stuck forever, silently.
+    const state = proof() as any;
+    state.simulation.factionAgenda[0].condition = condition({ resourceKey: "credits" });
+
+    const errors = errorsOf(state);
+    expect(errors.some(e => /is not stocked by settlement 'settlement_helios'/.test(e))).toBe(true);
+    expect(errors.some(e => /could never be satisfied/.test(e))).toBe(true);
+  });
+
+  it("accepts a condition on a resource that settlement does stock", () => {
+    const state = proof() as any;
+    state.simulation.factionAgenda[0].condition = condition({ resourceKey: "medicine" });
+    expect(errorsOf(state)).toEqual([]);
+  });
+});
+
+/**
+ * The proof crosses the real persistence boundary, not a JSON round trip.
+ *
+ * `JSON.parse(JSON.stringify(state))` proves the shape survives structured
+ * cloning. It does not prove the boundary accepts the world back: that path
+ * runs through `serializeSystemicWorldState`, which validates on the way out
+ * and refuses to write anything the loader would refuse, and
+ * `loadSystemicWorldState`, which validates on the way in and checks the
+ * campaign identity. GQP-A's stated exit is a deterministic round trip on a
+ * real file, so it has to be tested at that boundary.
+ */
+describe("R39-2: the proof exits and re-enters through the persistence boundary", () => {
+  function saved(state: WorldState) {
+    const outcome = serializeSystemicWorldState(state);
+    if (!outcome.ok) throw new Error(`serialize refused: ${outcome.errors.join("; ")}`);
+    return outcome;
+  }
+
+  function reloaded(payload: string, campaignId: string): WorldState {
+    const outcome = loadSystemicWorldState(payload, campaignId);
+    if (!outcome.ok) throw new Error(`load refused: ${outcome.reason} ${outcome.errors.join("; ")}`);
+    return outcome.state;
+  }
+
+  it("returns the same v2 world, contracts intact", () => {
+    const state = proof();
+    const stored = saved(state);
+    expect(stored.campaignId).toBe(state.campaignId);
+
+    const back = reloaded(stored.payload, stored.campaignId);
+    expect(back).toEqual(state);
+
+    const simulation = proofSimulation(back);
+    expect(simulation.schemaVersion).toBe(PROOF_SCHEMA_VERSION);
+    expect(simulation.factionAgenda).toEqual(proofSimulation(state).factionAgenda);
+    expect(simulation.characterRelationships).toEqual(proofSimulation(state).characterRelationships);
+    expect(simulation.epidemic).toEqual(proofSimulation(state).epidemic);
+    expect(simulation.resolvedHistory).toEqual([]);
+    expect(back.party.map(c => [c.coreValue, c.currentGoal])).toEqual(
+      state.party.map(c => [c.coreValue, c.currentGoal])
+    );
+  });
+
+  it("plays on identically after the round trip", () => {
+    // The exit criterion: a world that came off disk decides and ticks exactly
+    // as the one that never left.
+    const play = (start: WorldState): WorldState => {
+      let current = start;
+      for (let i = 0; i < 3; i += 1) {
+        current = resolveChoice(
+          current,
+          { id: `c${i}`, label: "C", effects: [{ type: "PRESSURE_DELTA", value: 1 }] },
+          "round-trip"
+        ).state;
+        current = runWorldTick(current).state;
+      }
+      return current;
+    };
+
+    const direct = play(proof());
+    const stored = saved(proof());
+    const afterDisk = play(reloaded(stored.payload, stored.campaignId));
+
+    expect(JSON.stringify(afterDisk)).toBe(JSON.stringify(direct));
+
+    // And the world that has been played is itself still storable.
+    const again = saved(afterDisk);
+    expect(reloaded(again.payload, again.campaignId)).toEqual(afterDisk);
+  });
+
+  it("keeps a v1 baseline world v1 across the same boundary", () => {
+    const baseline = createSystemicScenario(7419);
+    const stored = saved(baseline);
+    const back = reloaded(stored.payload, stored.campaignId);
+
+    expect(back).toEqual(baseline);
+    expect(back.simulation!.schemaVersion).toBe(BASELINE_SCHEMA_VERSION);
+    expect(isProofSimulation(back.simulation!)).toBe(false);
+  });
+
+  it("refuses a schema the build cannot read, at the load boundary", () => {
+    const stored = saved(proof());
+    const tampered = stored.payload.replace('"schemaVersion":2', '"schemaVersion":3');
+    expect(tampered).not.toBe(stored.payload);
+
+    const outcome = loadSystemicWorldState(tampered, stored.campaignId);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.reason).toBe("invalid_world_state");
+    expect(outcome.errors.some(e => /Unsupported simulation schema 3/.test(e))).toBe(true);
+  });
+
+  it("refuses a v1 payload carrying proof fields, at the load boundary", () => {
+    const baseline = createSystemicScenario(7419) as any;
+    const stored = saved(baseline);
+    // Injected into the stored bytes, which is where a tampered save lives.
+    const tampered = stored.payload.replace(
+      '"schemaVersion":1',
+      '"schemaVersion":1,"epidemic":{"value":0.5,"contributors":[]}'
+    );
+
+    const outcome = loadSystemicWorldState(tampered, stored.campaignId);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("unreachable");
+    expect(
+      outcome.errors.some(e => /schema v2 state and must not appear at schema v1/.test(e))
+    ).toBe(true);
+  });
+
+  it("refuses a v2 payload with a corrupted causal source, at the load boundary", () => {
+    const stored = saved(proof());
+    const tampered = stored.payload.replace(
+      '"id":"gqp_scenario_bootstrap"',
+      '"id":"gqp_scenario_bootstrap","actorId":123'
+    );
+    expect(tampered).not.toBe(stored.payload);
+
+    const outcome = loadSystemicWorldState(tampered, stored.campaignId);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.errors.some(e => /actorId must be a string, got number/.test(e))).toBe(true);
+  });
+
+  it("refuses to write a proof world it would later refuse to read", () => {
+    // Save and load enforce the same contract, so a world that cannot come
+    // back never reaches the disk. Failing at save costs one refused click;
+    // failing at load costs the campaign.
+    const broken = proof() as any;
+    broken.simulation.characterRelationships[0].targetCharacterId = "ghost_999";
+
+    const outcome = serializeSystemicWorldState(broken);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.errors.some(e => /matches no party character/.test(e))).toBe(true);
+  });
+
+  it("refuses a payload filed under another campaign's key", () => {
+    const stored = saved(proof());
+    const outcome = loadSystemicWorldState(stored.payload, "cmp_7419");
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.reason).toBe("campaign_identity_mismatch");
+  });
+
+  /**
+   * The bytes the Rust transport test carries.
+   *
+   * The desktop side stores and returns an opaque string; it must never parse
+   * or reshape a world. To prove that on a real file without teaching Rust what
+   * a `WorldState` is, both sides share one committed fixture: this test keeps
+   * the fixture equal to what the boundary produces today, and the Rust test
+   * proves file-backed SQLite hands those exact bytes back.
+   *
+   * If the proof scenario changes, this fails and the fixture is regenerated —
+   * which is the point. A stale fixture would let the transport test pass on a
+   * payload nothing produces any more.
+   */
+  it("matches the committed fixture the desktop transport test carries", () => {
+    const fixture = readFileSync(
+      fileURLToPath(new URL("../../../fixtures/gqp-v2-save.json", import.meta.url)),
+      "utf8"
+    );
+    expect(saved(proof()).payload).toBe(fixture);
+
+    // And the fixture is a world this build accepts, not just a matching string.
+    const back = loadSystemicWorldState(fixture, `gqp_${7419}`);
+    expect(back.ok).toBe(true);
   });
 });

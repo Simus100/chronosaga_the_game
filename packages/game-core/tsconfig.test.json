@@ -2,7 +2,11 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "rootDir": "."
+    "rootDir": ".",
+    // Tests only. `tsconfig.json` drives the build and stays free of Node, so
+    // the shipped Core keeps no platform coupling; a test that reads a
+    // committed fixture off disk needs these and nothing in `src` may.
+    "types": ["node"]
   },
   "include": ["src", "tests"]
 }
