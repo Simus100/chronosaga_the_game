@@ -12,6 +12,7 @@ import {
   MEMORY_VALENCES,
   RELATIONSHIP_STRENGTHS
 } from "@paa/game-types";
+import { validateCausalSource } from "../state/causal-source.js";
 
 /**
  * Validation for the schema v2 contracts, on hostile input.
@@ -117,21 +118,6 @@ function boundedInteger(
     return null;
   }
   return value;
-}
-
-function causalSource(value: unknown, label: string, errors: string[]): void {
-  if (!isRecord(value)) {
-    errors.push(`${label} must be an object`);
-    return;
-  }
-  enumValue(
-    value,
-    "kind",
-    `${label}.kind`,
-    ["choice", "event", "world_tick", "tactical", "warfare", "system"],
-    errors
-  );
-  identifier(value, "id", `${label}.id`, errors);
 }
 
 /** A world at schema v2 carries every proof contract, and each one holds. */
@@ -315,19 +301,34 @@ function agenda(simulation: JsonRecord, factionIds: ReadonlySet<string>, errors:
     enumValue(item, "kind", `${at}.kind`, FACTION_AGENDA_KINDS, errors);
     enumValue(item, "subject", `${at}.subject`, FACTION_AGENDA_SUBJECTS, errors);
     unitInterval(item, "intensity", `${at}.intensity`, errors);
-    causalSource(item.source, `${at}.source`, errors);
+    validateCausalSource(item.source, `${at}.source`, errors);
     agendaCondition(item.condition, `${at}.condition`, simulation, errors);
   });
 }
 
+/** The arguments each predicate variant accepts, and no others. */
+const PREDICATE_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
+  production_condition_at_least: ["nodeId", "value"],
+  resource_stock_at_least: ["settlementId", "resourceKey", "amount"],
+  political_approval_at_least: ["groupId", "value"],
+  flag_equals: ["key", "value"]
+};
+
 /**
  * A typed predicate with validated arguments, and nothing more.
  *
- * Each branch checks exactly the arguments its predicate takes, so an item
- * cannot smuggle a `nodeId` into a flag comparison and have it ignored.
  * Deliberately not an expression language: spec 13.1 asks for the smallest
  * sufficient contract, and an interpreter would be a new evaluator to defend
  * against hostile input for no gameplay gained.
+ *
+ * The argument set is **closed**, and that is a deliberate exception to how
+ * the rest of this boundary behaves. The M1 validator tolerates keys it does
+ * not know — spec 24.1 says so in as many words, and gives that tolerance as
+ * the reason the proof needed a version bump instead of optional fields. So
+ * strictness here is not a general policy change; it is scoped to the one
+ * contract 13.1 requires to be a typed predicate. An extra `nodeId` riding on
+ * a `flag_equals` is not a harmless unread field: it is an argument that looks
+ * like it was validated for a predicate that never reads it.
  */
 function agendaCondition(
   value: unknown,
@@ -340,6 +341,18 @@ function agendaCondition(
     return;
   }
   enumValue(value, "predicate", `${label}.predicate`, AGENDA_PREDICATES, errors);
+
+  const accepted =
+    typeof value.predicate === "string" ? PREDICATE_ARGUMENTS[value.predicate] : undefined;
+  if (accepted !== undefined) {
+    for (const key of Object.keys(value)) {
+      if (key === "predicate" || accepted.includes(key)) continue;
+      errors.push(
+        `${label}.${key} is not an argument of ${value.predicate as string}; ` +
+          `accepted: ${accepted.join(", ")}`
+      );
+    }
+  }
 
   const idsOf = (key: string): Set<string> =>
     new Set(
@@ -420,7 +433,7 @@ function epidemic(simulation: JsonRecord, errors: string[]): void {
     }
     enumValue(item, "cause", `${at}.cause`, EPIDEMIC_CAUSES, errors);
     unitInterval(item, "magnitude", `${at}.magnitude`, errors);
-    causalSource(item.source, `${at}.source`, errors);
+    validateCausalSource(item.source, `${at}.source`, errors);
   });
 }
 
@@ -456,13 +469,27 @@ function history(state: JsonRecord, simulation: JsonRecord, errors: string[]): v
     identifier(item, "eventId", `${at}.eventId`, errors);
     identifier(item, "choiceId", `${at}.choiceId`, errors);
 
+    // Strictly below the current turn, not at it.
+    //
+    // Spec 12.3 rule 3 fixes `playerTurn` as the turn a decision came *from*,
+    // pre-increment and consistent with `StateDelta.turn`; resolving a choice
+    // then carries the world to `turn + 1`. So a world sitting at turn T has
+    // no resolved decision at T -- if one had been resolved there, T would
+    // already have moved.
+    //
+    // The consequence is not cosmetic. Spec 14.3 derives repetition from
+    // `elapsed = WorldState.turn - lastResolved.playerTurn` and states that
+    // `elapsed = 1` is the minimum possible value, immediately after resolving.
+    // Admitting equality admits `elapsed = 0`: a distance the model declares
+    // unreachable, feeding the maximum repetition penalty from a world that
+    // has not actually decided anything yet.
     const playerTurn = boundedInteger(
       item,
       "playerTurn",
       `${at}.playerTurn`,
       1,
-      currentTurn,
-      "WorldState.turn",
+      currentTurn - 1,
+      "the last resolved Player Turn (WorldState.turn - 1)",
       errors
     );
     const worldTick = boundedInteger(

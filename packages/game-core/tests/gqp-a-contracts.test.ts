@@ -691,3 +691,226 @@ describe("GQP-A: determinism and round trip", () => {
     expect(serialised).not.toMatch(/beat/i);
   });
 });
+
+/**
+ * Regressions for the three boundary defects found by external audit on
+ * `ccf2e45`, each reproduced before it was fixed.
+ *
+ * The reason all three survived a green suite with mutation coverage is worth
+ * recording, because it is a lesson about how these tests were written rather
+ * than about the code. Every assertion in the original slice was aimed at what
+ * the implementation did: the proof validator checked `kind` and `id`, so the
+ * tests checked `kind` and `id`. A test written from the code cannot find a
+ * contract the code never implemented. These are written from the contract.
+ */
+describe("audit regressions: contract boundaries the first pass missed", () => {
+  const hostileSource = {
+    kind: "system",
+    id: "gqp_scenario_bootstrap",
+    tick: -1,
+    actorId: 123,
+    rule: { invalid: true }
+  };
+
+  /**
+   * A01. The proof validator carried its own `CausalSource` check and it was
+   * weaker than the one M1 already had: the same payload was refused on a
+   * delayed consequence and accepted on a faction agenda item. Two
+   * implementations of one contract, diverging — the exact defect class GQP-0
+   * exists to remove, reintroduced three slices later.
+   *
+   * The fix is not "check the optionals here too". It is that
+   * `validateCausalSource` is now the only implementation, so a future
+   * collection cannot acquire a third opinion.
+   */
+  it("applies one CausalSource contract to every collection that carries one", () => {
+    const withSource = (place: (state: any) => void): string[] => {
+      const state = proof() as any;
+      place(state);
+      return errorsOf(state);
+    };
+
+    const agenda = withSource(s => Object.assign(s.simulation.factionAgenda[0].source, hostileSource));
+    const epidemic = withSource(s =>
+      Object.assign(s.simulation.epidemic.contributors[0].source, hostileSource)
+    );
+    const memory = withSource(s => {
+      s.party[0].memories = [
+        { id: "m", summary: "s", tags: [], turn: 1, source: { ...hostileSource } }
+      ];
+    });
+
+    for (const errors of [agenda, epidemic, memory]) {
+      expect(errors.some(e => /actorId must be a string, got number/.test(e))).toBe(true);
+      expect(errors.some(e => /rule must be a string, got object/.test(e))).toBe(true);
+      expect(errors.some(e => /tick must be at least 0/.test(e))).toBe(true);
+    }
+  });
+
+  it("rejects each malformed causal field on a proof collection", () => {
+    const agendaSource = (source: Record<string, unknown>): string[] => {
+      const state = proof() as any;
+      state.simulation.factionAgenda[0].source = source;
+      return errorsOf(state);
+    };
+    const base = { kind: "system", id: "x" };
+
+    expect(agendaSource({ ...base, tick: 1.5 }).some(e => /tick must be an integer/.test(e))).toBe(true);
+    expect(agendaSource({ ...base, actorId: "  " }).some(e => /actorId must not be empty/.test(e))).toBe(true);
+    expect(agendaSource({ ...base, rule: "" }).some(e => /rule must not be empty/.test(e))).toBe(true);
+    expect(agendaSource({ kind: "oracle", id: "x" }).some(e => /kind must be one of/.test(e))).toBe(true);
+    expect(agendaSource({ kind: "system", id: " " }).some(e => /id must not be empty/.test(e))).toBe(true);
+    expect(agendaSource({ ...base }).filter(e => /source/.test(e))).toEqual([]);
+  });
+
+  /**
+   * A02. History accepted an entry claiming the turn the world is currently
+   * sitting on.
+   *
+   * Spec 12.3 rule 3 makes `playerTurn` the turn a decision came *from*, and
+   * resolving carries the world to `turn + 1` — so a world at turn T cannot
+   * hold a decision resolved at T. Spec 14.3 then derives repetition as
+   * `elapsed = turn - lastResolved.playerTurn` and states that `1` is the
+   * minimum possible value. Equality admitted `elapsed = 0`: a distance the
+   * model calls unreachable, producing the maximum repetition penalty from a
+   * world that has decided nothing.
+   */
+  it("refuses a history entry claiming the turn still open", () => {
+    const fresh = proof() as any;
+    expect(fresh.turn).toBe(1);
+    fresh.simulation.resolvedHistory = [
+      {
+        familyId: "scarcity_triage",
+        eventId: "evt",
+        choiceId: "c",
+        playerTurn: fresh.turn,
+        worldTick: fresh.simulation.tick
+      }
+    ];
+
+    // A brand new world has resolved nothing, so no entry can be legal in it.
+    expect(errorsOf(fresh).some(e => /the last resolved Player Turn/.test(e))).toBe(true);
+  });
+
+  it("accepts the turn before, and keeps elapsed at its documented minimum", () => {
+    const state = proof() as any;
+    state.turn = 4;
+    state.simulation.tick = 2;
+    state.simulation.resolvedHistory = [
+      {
+        familyId: "scarcity_triage",
+        eventId: "evt",
+        choiceId: "c",
+        playerTurn: state.turn - 1,
+        worldTick: 2
+      }
+    ];
+
+    expect(errorsOf(state)).toEqual([]);
+    // Spec 14.3: the value immediately after resolving, and the smallest one.
+    const elapsed = state.turn - state.simulation.resolvedHistory[0].playerTurn;
+    expect(elapsed).toBe(1);
+  });
+
+  it("keeps a real resolved decision valid end to end", () => {
+    // The rule has to admit the history the Core itself will write. A choice
+    // resolved at turn 1 leaves the world at turn 2, and that entry validates.
+    const resolved = resolveChoice(
+      proof(),
+      { id: "ration", label: "RATION", effects: [{ type: "PRESSURE_DELTA", value: 1 }] },
+      "test"
+    );
+    const state = resolved.state as any;
+    expect(state.turn).toBe(2);
+    expect(resolved.delta.turn).toBe(1);
+
+    state.simulation.resolvedHistory = [
+      {
+        familyId: "scarcity_triage",
+        eventId: "evt",
+        choiceId: "ration",
+        // Exactly what spec 12.3 rule 3 says to write: the delta's turn.
+        playerTurn: resolved.delta.turn,
+        worldTick: state.simulation.tick
+      }
+    ];
+    expect(errorsOf(state)).toEqual([]);
+  });
+
+  /**
+   * A07. `flag_equals` accepted a `nodeId`, which belongs to a different
+   * predicate, and the comment above the validator claimed it could not.
+   *
+   * The argument set is closed only here. The rest of this boundary tolerates
+   * unknown keys, and spec 24.1 names that tolerance as the reason the proof
+   * needed a version bump rather than optional fields — so this is a scoped
+   * exception for the one contract 13.1 requires to be a typed predicate, not
+   * a new policy for the whole validator.
+   */
+  it("refuses an argument belonging to a different predicate", () => {
+    const withCondition = (condition: Record<string, unknown>): string[] => {
+      const state = proof() as any;
+      state.simulation.factionAgenda[0].condition = condition;
+      return errorsOf(state);
+    };
+
+    const errors = withCondition({
+      predicate: "flag_equals",
+      key: "conduit_registered",
+      value: true,
+      nodeId: 123
+    });
+    expect(errors.some(e => /nodeId is not an argument of flag_equals/.test(e))).toBe(true);
+    expect(errors.some(e => /accepted: key, value/.test(e))).toBe(true);
+
+    // Each variant rejects the others' arguments, not just this one pair.
+    expect(
+      withCondition({
+        predicate: "production_condition_at_least",
+        nodeId: "prod_recycler_01",
+        value: 0.5,
+        key: "smuggled"
+      }).some(e => /key is not an argument of production_condition_at_least/.test(e))
+    ).toBe(true);
+
+    expect(
+      withCondition({
+        predicate: "political_approval_at_least",
+        groupId: "group_labor",
+        value: 0.5,
+        amount: 3
+      }).some(e => /amount is not an argument of political_approval_at_least/.test(e))
+    ).toBe(true);
+  });
+
+  it("still accepts every well-formed predicate variant", () => {
+    const variants = [
+      { predicate: "production_condition_at_least", nodeId: "prod_recycler_01", value: 0.8 },
+      {
+        predicate: "resource_stock_at_least",
+        settlementId: "settlement_helios",
+        resourceKey: "water",
+        amount: 10
+      },
+      { predicate: "political_approval_at_least", groupId: "group_labor", value: 0.6 },
+      { predicate: "flag_equals", key: "conduit_registered", value: true }
+    ];
+
+    for (const condition of variants) {
+      const state = proof() as any;
+      state.simulation.factionAgenda[0].condition = condition;
+      expect(errorsOf(state)).toEqual([]);
+      // And the evaluator still reads it without throwing.
+      expect(typeof agendaConditionHolds(condition as any, state)).toBe("boolean");
+    }
+  });
+
+  /**
+   * The scenario the proof ships must satisfy every rule tightened above. A
+   * boundary that refuses its own content is a boundary nobody will keep.
+   */
+  it("leaves the shipped proof scenario valid under all three tightened rules", () => {
+    expect(errorsOf(proof())).toEqual([]);
+    expect(errorsOf(createGqpScenario(4201))).toEqual([]);
+  });
+});

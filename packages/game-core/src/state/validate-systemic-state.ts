@@ -1,5 +1,6 @@
 import type { EventEffect, WorldState } from "@paa/game-types";
 import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
+import { validateCausalSource } from "./causal-source.js";
 import {
   PROOF_SCHEMA_VERSION,
   SUPPORTED_SCHEMA_VERSIONS,
@@ -125,26 +126,6 @@ function requireEnum(
   }
 }
 
-const CAUSAL_KINDS = ["choice", "event", "world_tick", "tactical", "warfare", "system"] as const;
-
-/**
- * A causal source, fully.
- *
- * This is how the game explains itself: why a memory exists, why a consequence
- * fired. A half-checked source produces evidence that looks authoritative and
- * cannot be traced, which is worse than no evidence at all.
- */
-function requireCausalSource(value: unknown, label: string, errors: string[]): void {
-  if (!isRecord(value)) {
-    errors.push(`${label} must be an object`);
-    return;
-  }
-  requireEnum(value, "kind", `${label}.kind`, CAUSAL_KINDS, errors);
-  requireString(value, "id", `${label}.id`, errors);
-  requireOptionalString(value, "actorId", `${label}.actorId`, errors);
-  requireOptionalString(value, "rule", `${label}.rule`, errors);
-  if (value.tick !== undefined) requireInteger(value, "tick", `${label}.tick`, errors, 0);
-}
 
 /**
  * `WorldState.flags` carries strings, booleans and numbers, and nothing else.
@@ -322,7 +303,7 @@ function validateShape(input: unknown): string[] {
           requireString(memory, "summary", `${at}.summary`, errors, false);
           requireStringArray(memory, "tags", `${at}.tags`, errors);
           requireInteger(memory, "turn", `${at}.turn`, errors, 1);
-          requireCausalSource(memory.source, `${at}.source`, errors);
+          validateCausalSource(memory.source, `${at}.source`, errors);
         });
       }
     }
@@ -416,7 +397,7 @@ function validateShape(input: unknown): string[] {
     );
     requireEnum(consequence, "status", `${label}.status`, ["pending", "applied"], errors);
     requireBoolean(consequence, "reversible", `${label}.reversible`, errors);
-    requireCausalSource(consequence.source, `${label}.source`, errors);
+    validateCausalSource(consequence.source, `${label}.source`, errors);
     if (!Array.isArray(consequence.effects)) {
       errors.push(`${label}.effects must be an array`);
     }
