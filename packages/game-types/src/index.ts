@@ -19,6 +19,14 @@ export interface CharacterMemory {
 export interface CharacterState {
   id: string;
   name: string;
+  /**
+   * Shown to the player, and shown only.
+   *
+   * No rule reads this. Which job a character holds is derived from their id
+   * by `game-core`'s cast table rather than stored here, so that translating a
+   * label cannot change the simulation and so that no build can read a
+   * different world out of the same save than another build would.
+   */
   role: string;
   health: number;
   stress: number;
