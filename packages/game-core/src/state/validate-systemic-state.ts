@@ -1,5 +1,12 @@
 import type { EventEffect, WorldState } from "@paa/game-types";
 import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
+import { validateCausalSource } from "./causal-source.js";
+import {
+  PROOF_SCHEMA_VERSION,
+  SUPPORTED_SCHEMA_VERSIONS,
+  isSupportedSchemaVersion
+} from "../proof/schema-version.js";
+import { refuseProofFieldsOnBaseline, validateProofState } from "../proof/validate-proof-state.js";
 
 export interface SystemicValidationResult {
   ok: boolean;
@@ -119,26 +126,6 @@ function requireEnum(
   }
 }
 
-const CAUSAL_KINDS = ["choice", "event", "world_tick", "tactical", "warfare", "system"] as const;
-
-/**
- * A causal source, fully.
- *
- * This is how the game explains itself: why a memory exists, why a consequence
- * fired. A half-checked source produces evidence that looks authoritative and
- * cannot be traced, which is worse than no evidence at all.
- */
-function requireCausalSource(value: unknown, label: string, errors: string[]): void {
-  if (!isRecord(value)) {
-    errors.push(`${label} must be an object`);
-    return;
-  }
-  requireEnum(value, "kind", `${label}.kind`, CAUSAL_KINDS, errors);
-  requireString(value, "id", `${label}.id`, errors);
-  requireOptionalString(value, "actorId", `${label}.actorId`, errors);
-  requireOptionalString(value, "rule", `${label}.rule`, errors);
-  if (value.tick !== undefined) requireInteger(value, "tick", `${label}.tick`, errors, 0);
-}
 
 /**
  * `WorldState.flags` carries strings, booleans and numbers, and nothing else.
@@ -316,7 +303,7 @@ function validateShape(input: unknown): string[] {
           requireString(memory, "summary", `${at}.summary`, errors, false);
           requireStringArray(memory, "tags", `${at}.tags`, errors);
           requireInteger(memory, "turn", `${at}.turn`, errors, 1);
-          requireCausalSource(memory.source, `${at}.source`, errors);
+          validateCausalSource(memory.source, `${at}.source`, errors);
         });
       }
     }
@@ -410,7 +397,7 @@ function validateShape(input: unknown): string[] {
     );
     requireEnum(consequence, "status", `${label}.status`, ["pending", "applied"], errors);
     requireBoolean(consequence, "reversible", `${label}.reversible`, errors);
-    requireCausalSource(consequence.source, `${label}.source`, errors);
+    validateCausalSource(consequence.source, `${label}.source`, errors);
     if (!Array.isArray(consequence.effects)) {
       errors.push(`${label}.effects must be an array`);
     }
@@ -523,11 +510,62 @@ function validateEffect(
 }
 
 /**
+ * Read only what is needed to learn which contract a payload claims.
+ *
+ * The smallest structural step that makes a version gate possible: is this an
+ * object, does it carry a `simulation` object, and what does that object say
+ * its schema is. Nothing is interpreted, nothing is required, and no field of
+ * v1 or v2 is consulted -- deliberately, because a payload from a future
+ * schema is allowed to differ everywhere except in how it declares itself.
+ *
+ * This is not a second parser. It reads two properties and stops; the real
+ * validation still happens once, in `validateShape` and the version-specific
+ * passes below it.
+ */
+function declaredSchemaVersion(
+  input: unknown
+): { readonly readable: true; readonly version: unknown } | { readonly readable: false } {
+  if (!isRecord(input)) return { readable: false };
+  const simulation = input.simulation;
+  if (!isRecord(simulation)) return { readable: false };
+  return { readable: true, version: simulation.schemaVersion };
+}
+
+/**
  * Runtime validation for the M1 shared-state JSON boundary. `unknown` is
  * intentional: saves and persistence adapters must be validated before they are
  * trusted as a WorldState.
  */
 export function validateSystemicWorldState(input: unknown): SystemicValidationResult {
+  // Version before shape, and this ordering is the contract.
+  //
+  // A previous version of this function said "version first" and did not do
+  // it: `validateShape` ran before the gate, so a payload declaring a schema
+  // this build cannot read was first measured against the v1/v2 contract. A
+  // future schema is entitled to drop or reshape a field that is required
+  // today, so the answer came back as three confident complaints about fields
+  // — and never mentioned the version at all. That is the opposite of what
+  // GQP spec 24.1 rule 5 asks for: it is interpreting a world under a contract
+  // that does not apply to it.
+  //
+  // The invariant is that an unsupported schema receives **no** interpretation
+  // under a known contract, and exactly one rejection naming the version.
+  const declared = declaredSchemaVersion(input);
+  if (declared.readable && !isSupportedSchemaVersion(declared.version)) {
+    return {
+      ok: false,
+      errors: [
+        `Unsupported simulation schema ${JSON.stringify(declared.version)}; ` +
+          `this build supports ${SUPPORTED_SCHEMA_VERSIONS.join(", ")}`
+      ]
+    };
+  }
+
+  // Unreadable declaration falls through on purpose. With no root object or no
+  // `simulation` object there is no version to name, and claiming an
+  // unsupported one would be inventing a diagnosis: the honest answer is the
+  // structural error `validateShape` already reports, alongside anything else
+  // it can see. That also keeps a malformed v1 reporting its real problems.
   const shapeErrors = validateShape(input);
   if (shapeErrors.length > 0) return { ok: false, errors: shapeErrors };
 
@@ -535,7 +573,16 @@ export function validateSystemicWorldState(input: unknown): SystemicValidationRe
   const simulation = state.simulation!;
   const errors: string[] = [];
 
-  if (simulation.schemaVersion !== 1) errors.push(`Unsupported simulation schema ${simulation.schemaVersion}`);
+  // Reaching here means the declaration was readable and supported: the gate
+  // above returns on an unsupported one, and `validateShape` returns when
+  // `simulation` is not an object.
+  //
+  // The two versions are validated by different rules, and neither is the
+  // other's superset with optional extras: v2 requires the proof contracts and
+  // v1 refuses them. That symmetry is what makes "no silent reinterpretation"
+  // an enforced property rather than a promise about the loader.
+  if (simulation.schemaVersion === PROOF_SCHEMA_VERSION) validateProofState(state, errors);
+  else refuseProofFieldsOnBaseline(state, errors);
 
   duplicateIds(state.party, "party", errors);
   duplicateIds(simulation.settlements, "settlements", errors);
