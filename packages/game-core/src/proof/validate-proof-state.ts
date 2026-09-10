@@ -390,7 +390,13 @@ function agendaCondition(
           : []
         ).find(entry => entry.id === settlementId);
         const stock = settlement?.resourceStock;
-        if (isRecord(stock) && !(resourceKey in stock)) {
+        // `Object.hasOwn`, not `in`. `in` walks the prototype chain, so
+        // `"toString" in stock` and `"__proto__" in stock` are both true of a
+        // settlement that stocks neither — and the numeric-map validator uses
+        // `Object.entries`, so an inherited name is never checked as a number
+        // either. The pair let a condition name something that is not a
+        // resource at all and still pass the save boundary.
+        if (isRecord(stock) && !Object.hasOwn(stock, resourceKey)) {
           errors.push(
             `${label}.resourceKey '${resourceKey}' is not stocked by settlement ` +
               `'${settlementId}'; this condition could never be satisfied`

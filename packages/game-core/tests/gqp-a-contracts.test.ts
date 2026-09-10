@@ -996,6 +996,91 @@ describe("R39-1: the named settlement governs the reading", () => {
     expect(agendaConditionHolds(condition({ resourceKey: "medicine", amount: 0 }), state)).toBe(true);
   });
 
+  /**
+   * An inherited name is not a resource.
+   *
+   * The validator asked `resourceKey in stock`, and `in` walks the prototype
+   * chain: `"toString" in stock` and `"__proto__" in stock` are both true of a
+   * settlement that stocks neither. The numeric-map validator iterates with
+   * `Object.entries`, so an inherited name is never checked as a number
+   * either — between them, a condition could name something that is not a
+   * resource at all and still pass the save boundary.
+   *
+   * `amount: 0` is the sharp case. It is the value where "absent" and "zero"
+   * give opposite answers, and the one a forged save would reach for.
+   */
+  it.each(["toString", "__proto__", "constructor", "valueOf", "hasOwnProperty"])(
+    "treats the inherited name %s as absent, in both the validator and the evaluator",
+    inherited => {
+      const state = proof();
+      const stock = state.simulation!.settlements[0]!.resourceStock;
+
+      // The hazard, stated: present by `in`, absent as an own property.
+      expect(inherited in stock).toBe(true);
+      expect(Object.hasOwn(stock, inherited)).toBe(false);
+
+      // The evaluator answers false on its own terms, not by coercion luck.
+      expect(agendaConditionHolds(condition({ resourceKey: inherited, amount: 0 }), state)).toBe(false);
+      expect(agendaConditionHolds(condition({ resourceKey: inherited, amount: 1 }), state)).toBe(false);
+
+      // And the save boundary refuses to store the condition at all.
+      const world = proof() as any;
+      world.simulation.factionAgenda[0].condition = condition({
+        resourceKey: inherited,
+        amount: 0
+      });
+      const errors = errorsOf(world);
+      expect(errors.some(e => /is not stocked by settlement 'settlement_helios'/.test(e))).toBe(true);
+      expect(serializeSystemicWorldState(world).ok).toBe(false);
+    }
+  );
+
+  /**
+   * The case that makes the evaluator's own-property rule load-bearing.
+   *
+   * The inherited names above all resolve to a function or an object, and
+   * every comparison against those is false because they coerce to `NaN`. So
+   * the evaluator gave the right answer for a reason it had not written down.
+   * A prototype carrying a *number* removes the coincidence.
+   *
+   * And such a world validates. `requireFiniteNumberMap` iterates with
+   * `Object.entries`, which sees own properties only, so an inherited `water`
+   * is never checked as a number — it is not validated, and it must not be
+   * read either.
+   */
+  it("does not read a resource off the stock's prototype", () => {
+    const state = proof();
+    const settlement = state.simulation!.settlements[0]!;
+    const { water, ...own } = settlement.resourceStock;
+    void water;
+
+    // Own entries keep the real resources; `water` exists only up the chain.
+    settlement.resourceStock = Object.assign(Object.create({ water: 500 }), own);
+    delete state.resources.water;
+
+    expect("water" in settlement.resourceStock).toBe(true);
+    expect(Object.hasOwn(settlement.resourceStock, "water")).toBe(false);
+    expect(settlement.resourceStock.water).toBe(500);
+
+    // The boundary accepts this world, which is the point: nothing else is
+    // looking, so the evaluator has to hold the line itself.
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+
+    expect(agendaConditionHolds(condition({ amount: 20 }), state)).toBe(false);
+    expect(agendaConditionHolds(condition({ amount: 0 }), state)).toBe(false);
+  });
+
+  it("still accepts a real resource that happens to be stocked at zero", () => {
+    // The rule must separate "absent" from "zero", not conflate them.
+    const state = proof() as any;
+    state.simulation.settlements[0].resourceStock.medicine = 0;
+    state.resources.medicine = 0;
+    state.simulation.factionAgenda[0].condition = condition({ resourceKey: "medicine", amount: 0 });
+
+    expect(errorsOf(state)).toEqual([]);
+    expect(agendaConditionHolds(condition({ resourceKey: "medicine", amount: 0 }), state)).toBe(true);
+  });
+
   it("refuses a settlement that does not exist", () => {
     expect(
       agendaConditionHolds(condition({ settlementId: "settlement_ghost", amount: 0 }), proof())

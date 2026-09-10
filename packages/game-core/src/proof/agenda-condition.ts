@@ -47,6 +47,17 @@ export function agendaConditionHolds(condition: AgendaCondition, state: WorldSta
       // resource a settlement stocks, `resourceStock` *is* the authority and
       // `WorldState.resources` is its projection. The rule this replaces
       // protected against reading the mirror, and that protection is intact.
+      // Own property, decided before reading.
+      //
+      // Plain indexing answers from the prototype chain: `resourceStock`
+      // is an ordinary object, so `"toString"` and `"__proto__"` both return
+      // something rather than `undefined`. Today those happen to compare
+      // false — a function or an object coerces to `NaN` and every comparison
+      // against it is false — but that is the coercion rules being helpful,
+      // not this function having a rule. Relying on it would mean the answer
+      // is correct for a reason nobody wrote down.
+      if (!Object.hasOwn(settlement.resourceStock, condition.resourceKey)) return false;
+
       const stocked = settlement.resourceStock[condition.resourceKey];
       // A resource this settlement does not stock is not zero of it. Refusing
       // to guess keeps an unstocked key from silently reading as a shortage.
