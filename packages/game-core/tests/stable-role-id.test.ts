@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { WorldState } from "@paa/game-types";
-import { createSystemicScenario, runWorldTick, validateSystemicWorldState } from "../src";
+import {
+  castRoleOf,
+  createSystemicScenario,
+  findCastMember,
+  runWorldTick,
+  serializeSystemicWorldState,
+  validateSystemicWorldState
+} from "../src";
 
 /**
  * No rule may branch on a label written for a human to read.
@@ -10,6 +17,9 @@ import { createSystemicScenario, runWorldTick, validateSystemicWorldState } from
  * translating the cast, or fixing a typo in it, changed which memories a run
  * produced from the same seed. Found by external audit, and present in the
  * accepted M1 baseline rather than introduced by any proof slice.
+ *
+ * The job is derived from the character's id rather than persisted beside the
+ * label. That is the whole design, and the second block below is why.
  */
 
 function scenario(): WorldState {
@@ -37,20 +47,17 @@ function play(state: WorldState) {
   };
 }
 
-describe("A06: the rule reads a stable id, not the label", () => {
+describe("A06: the rule reads a derived job, not the label", () => {
   /** The test the audit asked for: behaviour invariant under a label change. */
   it("produces the same world when the role label is translated", () => {
     const original = scenario();
 
     const translated = scenario();
-    const quartermaster = translated.party.find(c => c.roleId === "quartermaster")!;
+    const quartermaster = findCastMember(translated, "settlement_helios", "quartermaster")!;
     expect(quartermaster.role).toBe("Quartermaster");
     quartermaster.role = "Quartiermastro";
 
-    // The translated world is still a legal world.
     expect(validateSystemicWorldState(translated).ok).toBe(true);
-
-    // And it plays out identically, memories included.
     expect(play(translated)).toEqual(play(original));
   });
 
@@ -64,112 +71,155 @@ describe("A06: the rule reads a stable id, not the label", () => {
       mediator: "Mediatrice"
     };
     for (const character of translated.party) {
-      character.role = italian[character.roleId!] ?? character.role;
+      const job = castRoleOf(character.id);
+      if (job) character.role = italian[job]!;
     }
+    // Every label really did change.
+    expect(translated.party.map(c => c.role)).not.toEqual(scenario().party.map(c => c.role));
 
     expect(validateSystemicWorldState(translated).ok).toBe(true);
     expect(play(translated)).toEqual(play(scenario()));
   });
 
-  it("still writes the shortage memory it always wrote", () => {
-    // Invariance would be trivially satisfied if the rule never fired at all.
-    const played = play(scenario());
-    expect(played.memories.some(id => /water_shortage/.test(id))).toBe(true);
-    expect(played.memoryTags).toContain("water_shortage_experienced");
+  it("produces the same world when the labels are swapped between characters", () => {
+    // The sharpest form. If any rule still read the label, the memory would
+    // follow the wrong person; because the job follows the id, nothing moves.
+    const swapped = scenario();
+    const mara = swapped.party.find(c => c.id === "mara_001")!;
+    const tarek = swapped.party.find(c => c.id === "tarek_001")!;
+    [mara.role, tarek.role] = [tarek.role, mara.role];
+
+    expect(play(swapped)).toEqual(play(scenario()));
   });
 
-  it("follows the id when the id moves to another character", () => {
-    // The strongest form: the label stays put and the id moves. If any rule
-    // still read the label, the memory would follow the wrong person.
-    const state = scenario();
-    const mara = state.party.find(c => c.roleId === "quartermaster")!;
-    const tarek = state.party.find(c => c.roleId === "field_technician")!;
-    mara.roleId = "field_technician";
-    tarek.roleId = "quartermaster";
-
-    const played = play(state);
-    const owner = state.party.find(c => (c.memories ?? []).some(m => /water_shortage/.test(m.id)));
-    void owner;
-    expect(played.memories.some(id => /water_shortage/.test(id))).toBe(true);
-
-    let current: WorldState = state;
+  it("still writes the shortage memory it always wrote, to the same character", () => {
+    // Invariance would be trivially satisfied if the rule never fired at all.
+    let current: WorldState = scenario();
     for (let i = 0; i < 3; i += 1) current = runWorldTick(current).state;
-    const remembered = current.party.find(c =>
+
+    const remembered = current.party.filter(c =>
       (c.memories ?? []).some(m => /water_shortage/.test(m.id))
     );
-    expect(remembered?.id).toBe(tarek.id);
+    expect(remembered.map(c => c.id)).toEqual(["mara_001"]);
+    expect(remembered[0]!.memoryTags).toContain("water_shortage_experienced");
+  });
+
+  it("does not accept a stranger who merely wears the label", () => {
+    // The case a fallback would get wrong, and the reason there is no
+    // fallback. Take the quartermaster out of the settlement and put in a
+    // character the cast table has never heard of, wearing the label.
+    //
+    // Resolving by job: nobody holds it here, so no memory is written.
+    // Resolving by label as a backstop: the stranger is handed a memory the
+    // game has no basis to give them, and the prose branch is alive again.
+    const state = scenario();
+    // Unassigned rather than deleted: she leads a political group, and
+    // removing her would make the world invalid for an unrelated reason.
+    // `locationId` is optional, and it must name a settlement that exists.
+    delete state.party.find(c => c.id === "mara_001")!.locationId;
+    state.party.push({
+      ...structuredClone(state.party[0]!),
+      id: "stranger_001",
+      name: "Someone Else",
+      role: "Quartermaster",
+      memories: [],
+      memoryTags: []
+    });
+
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+    expect(castRoleOf("stranger_001")).toBeUndefined();
+    expect(findCastMember(state, "settlement_helios", "quartermaster")).toBeUndefined();
+
+    const played = play(state);
+    expect(played.memories.some(id => /water_shortage/.test(id))).toBe(false);
+    expect(played.memoryTags).not.toContain("water_shortage_experienced");
+  });
+
+  it("resolves a job from an id and refuses to invent one", () => {
+    expect(castRoleOf("mara_001")).toBe("quartermaster");
+    expect(castRoleOf("tarek_001")).toBe("field_technician");
+    expect(castRoleOf("nobody_999")).toBeUndefined();
+
+    // Location is still state: a character elsewhere holds the job but is not
+    // at this settlement.
+    const away = scenario();
+    delete away.party.find(c => c.id === "mara_001")!.locationId;
+    expect(validateSystemicWorldState(away).ok).toBe(true);
+    expect(findCastMember(away, "settlement_helios", "quartermaster")).toBeUndefined();
   });
 });
 
-describe("A06: roleId is validated, and its absence is bounded", () => {
-  it("refuses a roleId outside the closed set", () => {
-    const state = scenario() as any;
-    state.party[0].roleId = "quartiermastro";
-    const result = validateSystemicWorldState(state);
-    expect(result.ok).toBe(false);
-    expect(result.errors.some(e => /roleId must be one of/.test(e))).toBe(true);
-  });
-
-  it("refuses a roleId that is not a string", () => {
-    const state = scenario() as any;
-    state.party[0].roleId = 3;
-    expect(validateSystemicWorldState(state).errors.some(e => /roleId must be one of/.test(e))).toBe(true);
-  });
-
+describe("A06: schema v1 is genuinely untouched", () => {
   /**
-   * A save written before `roleId` existed still loads and still plays. The one
-   * consequence is measured here rather than asserted: no character matches the
-   * supply role, so the flavour memory is not written. Everything the player
-   * can act on is identical.
+   * The first attempt at this fix persisted a `roleId` beside the label, and
+   * the follow-up review rejected it for a reason worth writing down.
    *
-   * The alternative — falling back to the label when the id is missing — was
-   * rejected. It would have left the prose branch alive and reachable, which is
-   * the entire defect.
+   * A persisted field makes the answer depend on which build wrote the file. A
+   * new build reading an old save sees no field; an **older** build reading a
+   * new save ignores a field it does not know. Both reach a different world
+   * than the writer did, and the second is precisely the failure GQP section
+   * 24.1 bumps the schema version to prevent — introduced inside v1, where no
+   * version number changes to warn anybody. A P3 hygiene fix does not get to do
+   * that, and it does not get a schema v3 either.
+   *
+   * Deriving from the cast's ids sidesteps the question entirely: ids are
+   * already stable, already validated, and already present in every save ever
+   * written.
    */
-  it("keeps a legacy party loading and ticking, differing only in that memory", () => {
-    const legacy = scenario();
-    for (const character of legacy.party) delete character.roleId;
+  it("adds nothing to a serialized world", () => {
+    const stored = serializeSystemicWorldState(scenario());
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) throw new Error("unreachable");
 
-    expect(validateSystemicWorldState(legacy).ok).toBe(true);
-
-    const before = play(scenario());
-    const after = play(legacy);
-
-    // Everything authoritative is untouched.
-    expect(after.resources).toEqual(before.resources);
-    expect(after.projection).toEqual(before.projection);
-    expect(after.satisfaction).toBe(before.satisfaction);
-    expect(after.stability).toBe(before.stability);
-    expect(after.approvals).toEqual(before.approvals);
-    expect(after.cohorts).toEqual(before.cohorts);
-    expect(after.flags).toEqual(before.flags);
-    expect(after.tick).toBe(before.tick);
-    expect(after.turn).toBe(before.turn);
-    expect(after.day).toBe(before.day);
-
-    // And the difference is exactly the one documented.
-    expect(before.memories.some(id => /water_shortage/.test(id))).toBe(true);
-    expect(after.memories.some(id => /water_shortage/.test(id))).toBe(false);
-    expect(after.memoryTags).not.toContain("water_shortage_experienced");
+    expect(stored.payload).not.toContain("roleId");
+    expect(stored.payload).not.toContain("functionalRole");
+    expect(stored.payload).not.toContain("castRole");
+    // The label is still stored, because it is still shown.
+    expect(stored.payload).toContain('"role":"Quartermaster"');
   });
 
-  it("carries a stable id for every character the scenario ships", () => {
-    for (const character of scenario().party) {
-      expect(character.roleId).toBeDefined();
-      // The label is still there, and still only a label.
-      expect(character.role.length).toBeGreaterThan(0);
-    }
-    const ids = scenario().party.map(c => c.roleId);
-    expect(new Set(ids).size).toBe(ids.length);
+  it("leaves the character shape exactly as it was", () => {
+    // The strongest statement available: this changes no bytes on disk, so a
+    // build without the fix and a build with it write the same file.
+    const characterFields = new Set(
+      scenario().party.flatMap(character => Object.keys(character))
+    );
+    expect([...characterFields].sort()).toEqual([
+      "factionId",
+      "health",
+      "id",
+      "locationId",
+      "memories",
+      "memoryTags",
+      "morale",
+      "name",
+      "role",
+      "stress",
+      "traits"
+    ]);
   });
 
-  /**
-   * There is deliberately no test here scanning the Core's own source for
-   * another `role ===`. It would need Node's types inside `game-core`, which is
-   * kept free of them on purpose, and the mutation run showed it would add no
-   * coverage: reintroducing the label comparison, or even adding it back as a
-   * fallback beside the id, already fails the behavioural tests above.
-   *
-   * The rule itself is written down in `AGENTS.md` section 9.
-   */
+  it("reads an identical world out of a save that predates the fix", () => {
+    // Any save ever written carries the ids this resolution needs, so a world
+    // from an older build ticks to exactly the same place. There is no legacy
+    // case to accept and no memory quietly lost.
+    const stored = serializeSystemicWorldState(scenario());
+    if (!stored.ok) throw new Error("unreachable");
+
+    const fromDisk = JSON.parse(stored.payload) as WorldState;
+    expect(validateSystemicWorldState(fromDisk).ok).toBe(true);
+    expect(play(fromDisk)).toEqual(play(scenario()));
+  });
+
+  it("keeps the job out of the validator, because it is not state", () => {
+    // A save cannot claim a job, so there is nothing for a validator to check
+    // and nothing a tampered file can assert. Unknown keys are tolerated at
+    // this boundary by design, and neither of these reaches a rule.
+    const tampered = scenario() as any;
+    tampered.party[0].roleId = "quartermaster";
+    tampered.party[1].castRole = "anything";
+
+    expect(validateSystemicWorldState(tampered).ok).toBe(true);
+    expect(play(tampered)).toEqual(play(scenario()));
+  });
 });
