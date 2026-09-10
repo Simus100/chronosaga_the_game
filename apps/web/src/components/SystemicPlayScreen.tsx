@@ -147,6 +147,22 @@ export function SystemicPlayScreen({
   /** Any other action means the player did not mean to discard after all. */
   const disarmDiscard = useCallback(() => setDiscardArmed(false), []);
 
+  /**
+   * Leaving for diagnostics disarms it too.
+   *
+   * The screen survives the trip now, and the armed confirmation survived with
+   * it: a player who was warned, went to look at something, came back and
+   * pressed NUOVA would have lost the run on that press, with the warning
+   * scrolled away behind a surface switch. A confirmation is only a
+   * confirmation while the question is still on screen.
+   */
+  const leave = useCallback(() => {
+    if (!onExit) return;
+    disarmDiscard();
+    setStatus({ kind: "idle" });
+    onExit();
+  }, [onExit, disarmDiscard]);
+
   const choose = useCallback(
     (choiceId: string) => {
       if (!session) return;
@@ -225,7 +241,7 @@ export function SystemicPlayScreen({
           {onExit ? (
             <button
               className="play__button play__button--ghost"
-              onClick={onExit}
+              onClick={leave}
               disabled={ioBusy}
             >
               DIAGNOSTICA P0
@@ -239,7 +255,7 @@ export function SystemicPlayScreen({
 
   return (
     <main className="play">
-      <TopBar session={session} onExit={onExit} exitLocked={ioBusy} />
+      <TopBar session={session} onExit={leave} exitLocked={ioBusy} />
 
       <div className="play__grid">
         <SettlementPanel state={session.state} />
