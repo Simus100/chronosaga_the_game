@@ -271,6 +271,44 @@ describe("A05: replacing a run is a decision, not a click", () => {
     expect(body().match(/WORLD TICK\s*(\d+)/)?.[1]).toBe(tick);
   });
 
+  /**
+   * The confirmation is disarmed by leaving for diagnostics.
+   *
+   * The screen surviving the trip is what created this: the armed state
+   * survived with it, so a player who was warned, went to look at the runtime
+   * and came back would have lost the run on the next press of NUOVA — with
+   * the warning long gone from the screen. A confirmation only counts while
+   * the question is still visible.
+   */
+  it("requires the warning again after a trip to diagnostics", () => {
+    render(createElement(App));
+
+    click(NEW_RUN);
+    click("WORLD TICK");
+    const tick = body().match(/WORLD TICK\s*(\d+)/)?.[1];
+    expect(tick).not.toBe("0");
+
+    // Armed.
+    click(NEW_RUN);
+    expect(body()).toContain("verrà abbandonata");
+
+    click("DIAGNOSTICA");
+    expect(body()).toContain("TORNA AL GIOCO");
+    click("TORNA AL GIOCO");
+
+    // The run is still here — and so is the need to confirm.
+    expect(body().match(/WORLD TICK\s*(\d+)/)?.[1]).toBe(tick);
+    expect(body()).not.toContain("verrà abbandonata");
+
+    click(NEW_RUN);
+    expect(body()).toContain("verrà abbandonata");
+    expect(body().match(/WORLD TICK\s*(\d+)/)?.[1]).toBe(tick);
+
+    // And the second press still works normally.
+    click(NEW_RUN);
+    expect(body().match(/WORLD TICK\s*(\d+)/)?.[1]).toBe("0");
+  });
+
   it("starts immediately when there is no run to lose", () => {
     render(createElement(SystemicPlayScreen, { persistence: stubPersistence(), narration: quietNarration }));
 
