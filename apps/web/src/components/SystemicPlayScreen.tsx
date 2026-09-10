@@ -54,7 +54,24 @@ export function SystemicPlayScreen({
   const [ioBusy, setIoBusy] = useState(false);
   const mounted = useRef(true);
 
-  useEffect(() => () => { mounted.current = false; }, []);
+  // Setup and cleanup, symmetric.
+  //
+  // The cleanup alone was a bug with a narrow but real window. `useRef` is per
+  // instance, so an ordinary unmount and remount produces a fresh ref set to
+  // `true` — but a *re-run* of this effect on the same instance does not, and
+  // React StrictMode deliberately runs setup, cleanup, setup on every mount in
+  // development. After that sequence the flag stayed `false` for the life of
+  // the screen, and every guard below it silently stopped working: load and
+  // save results discarded, narration never rendered, the busy indicator stuck.
+  //
+  // Nothing was visibly broken, which is what made it worth fixing. It only
+  // meant that what a developer plays is not what a player plays.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // One lock for the lifetime of the screen. `ioBusy` is only the rendered
   // shadow of it: the lock itself answers immediately, before any re-render,
@@ -88,18 +105,52 @@ export function SystemicPlayScreen({
     [narrateNewest]
   );
 
+  /**
+   * Start a new run, saying out loud what that costs.
+   *
+   * There is one save slot in this slice, and its key is the campaign id, which
+   * is derived from the seed — every new run is `cmp_7419`, so saving one
+   * overwrites whatever was in the slot before. That is a declared M1
+   * simplification, not a regression, but the screen used to replace a run in
+   * progress on a single click and say only "Nuova campagna sistemica."
+   *
+   * What is fixed here is the silence, not the slot. A second, deliberate click
+   * is required, and it states plainly that the run on screen is being
+   * abandoned and that saving will overwrite the stored one.
+   *
+   * How many campaigns Chronosaga should keep is a product decision, and
+   * inventing one here would mean inventing a run identity separate from the
+   * seed. That is surfaced for the owner rather than decided in a UI fix.
+   */
+  const [discardArmed, setDiscardArmed] = useState(false);
+
   const startNew = useCallback(() => {
+    if (session && !discardArmed) {
+      setDiscardArmed(true);
+      setStatus({
+        kind: "error",
+        message:
+          `La run in corso (${session.state.campaignId}, turno ${session.state.turn}) ` +
+          "verrà abbandonata e il salvataggio la sostituirà. Premi di nuovo per confermare."
+      });
+      return;
+    }
     io.protect(() => {
       const next = newSystemicGame();
       setSession(next);
       setLines({});
+      setDiscardArmed(false);
       setStatus({ kind: "ok", message: "Nuova campagna sistemica." });
     });
-  }, [io]);
+  }, [io, session, discardArmed]);
+
+  /** Any other action means the player did not mean to discard after all. */
+  const disarmDiscard = useCallback(() => setDiscardArmed(false), []);
 
   const choose = useCallback(
     (choiceId: string) => {
       if (!session) return;
+      disarmDiscard();
       io.protect(() => {
         try {
           commit(playChoice(session, choiceId), "Scelta risolta.");
@@ -108,19 +159,21 @@ export function SystemicPlayScreen({
         }
       });
     },
-    [session, commit, io]
+    [session, commit, io, disarmDiscard]
   );
 
   const tick = useCallback(() => {
     if (!session) return;
+    disarmDiscard();
     io.protect(() => commit(playWorldTick(session), "World Tick eseguito."));
-  }, [session, commit, io]);
+  }, [session, commit, io, disarmDiscard]);
 
   const save = useCallback(async () => {
     if (!session) return;
     // The world handed to the save is still the current world when the receipt
     // arrives, because nothing was allowed to change it in between. That is
     // what makes "Salvato" an honest thing to display.
+    disarmDiscard();
     await io.exclusive(async () => {
       setStatus({ kind: "busy", message: "Salvataggio…" });
       const outcome = await saveGame(session.state, persistence);
@@ -131,7 +184,7 @@ export function SystemicPlayScreen({
           : { kind: "error", message: outcome.message }
       );
     });
-  }, [session, persistence, io]);
+  }, [session, persistence, io, disarmDiscard]);
 
   const load = useCallback(async () => {
     // One default slot for this slice. The id is the scenario's own campaign
@@ -139,6 +192,7 @@ export function SystemicPlayScreen({
     const campaignId = (session?.state.campaignId ?? newSystemicGame().state.campaignId);
     // Replacing the session is safe only because no turn could have been taken
     // since this load began; there is no later action for it to discard.
+    disarmDiscard();
     await io.exclusive(async () => {
       setStatus({ kind: "busy", message: "Caricamento…" });
       const outcome = await loadGame(campaignId, persistence);
@@ -154,7 +208,7 @@ export function SystemicPlayScreen({
       setLines({});
       setStatus({ kind: "ok", message: `Campagna ${campaignId} caricata.` });
     });
-  }, [session, persistence, io]);
+  }, [session, persistence, io, disarmDiscard]);
 
   if (!session) {
     return (
@@ -169,7 +223,11 @@ export function SystemicPlayScreen({
             CARICA
           </button>
           {onExit ? (
-            <button className="play__button play__button--ghost" onClick={onExit}>
+            <button
+              className="play__button play__button--ghost"
+              onClick={onExit}
+              disabled={ioBusy}
+            >
               DIAGNOSTICA P0
             </button>
           ) : null}
@@ -181,7 +239,7 @@ export function SystemicPlayScreen({
 
   return (
     <main className="play">
-      <TopBar session={session} onExit={onExit} />
+      <TopBar session={session} onExit={onExit} exitLocked={ioBusy} />
 
       <div className="play__grid">
         <SettlementPanel state={session.state} />
@@ -215,7 +273,18 @@ function StatusLine({ status }: { status: Status }) {
   return <span className={`play__status play__status--${status.kind}`}>{status.message}</span>;
 }
 
-function TopBar({ session, onExit }: { session: GameplaySession; onExit?: () => void }) {
+function TopBar({
+  session,
+  onExit,
+  exitLocked
+}: {
+  session: GameplaySession;
+  onExit?: () => void;
+  // The screen survives a surface switch now, so leaving is no longer
+  // destructive. It is still refused while a write is in flight: the same rule
+  // that stops a second click during a save should stop a change of scenery.
+  exitLocked: boolean;
+}) {
   const { state } = session;
   return (
     <header className="play__top">
@@ -230,7 +299,11 @@ function TopBar({ session, onExit }: { session: GameplaySession; onExit?: () => 
         <div><dt>PRESSIONE</dt><dd>{state.worldPressure}</dd></div>
       </dl>
       {onExit ? (
-        <button className="play__button play__button--ghost" onClick={onExit}>
+        <button
+          className="play__button play__button--ghost"
+          onClick={onExit}
+          disabled={exitLocked}
+        >
           DIAGNOSTICA
         </button>
       ) : null}
