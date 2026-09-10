@@ -449,8 +449,20 @@ function addShortageMemory(
   changes: StateChange[]
 ): void {
   const settlement = state.simulation?.settlements.find(item => item.id === settlementId);
+  // By stable id, not by the label on screen.
+  //
+  // This compared `role === "Quartermaster"`, so the simulation depended on a
+  // string written for a human to read: translating the cast or fixing a typo
+  // in it changed which memories a run produced, from the same seed.
+  //
+  // A world whose party predates `roleId` has no character to match here and
+  // writes no shortage memory. That is a real and bounded consequence, kept
+  // deliberately rather than papered over with a fallback to the label: a
+  // fallback would leave the prose branch alive and reachable, which is the
+  // whole defect. Nothing else about such a world changes -- it loads, it
+  // ticks, and its resources, pressures and approvals are identical.
   const character = state.party.find(
-    item => item.locationId === settlementId && item.role === "Quartermaster"
+    item => item.locationId === settlementId && item.roleId === "quartermaster"
   );
   if (!character) return;
 

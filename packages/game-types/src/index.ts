@@ -16,10 +16,41 @@ export interface CharacterMemory {
   source: CausalSource;
 }
 
+/**
+ * The machine-readable counterpart of `CharacterState.role`.
+ *
+ * `role` is a display label and stays one. This is the value a rule may read.
+ *
+ * The distinction is not tidiness. `run-world-tick` decided who experiences a
+ * water shortage by comparing `role === "Quartermaster"`, so translating that
+ * label -- or correcting a typo in it -- silently changed the simulation:
+ * the same seed produced a different world because a word on screen changed.
+ * `AGENTS.md` forbids branching on human-readable prose for exactly this.
+ *
+ * Not to be confused with the functional roles of GQP section 6.2. Those
+ * describe a character's position toward the focal resources and are expressed
+ * by `coreValue` and `currentGoal`; this is simply the stable name of the job
+ * the M1 cast already holds.
+ */
+export const CHARACTER_ROLE_IDS = [
+  "cartographer",
+  "security_lead",
+  "quartermaster",
+  "field_technician",
+  "mediator"
+] as const;
+export type CharacterRoleId = (typeof CHARACTER_ROLE_IDS)[number];
+
 export interface CharacterState {
   id: string;
   name: string;
+  /** Shown to the player. No rule reads this. */
   role: string;
+  /**
+   * Read by rules. Optional because saves written before it exists do not
+   * carry it; validated as a closed enum whenever it is present.
+   */
+  roleId?: CharacterRoleId;
   health: number;
   stress: number;
   morale: number;
