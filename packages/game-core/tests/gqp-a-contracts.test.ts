@@ -236,6 +236,92 @@ describe("GQP-A: schema version boundaries", () => {
     }
   );
 
+  /**
+   * An unsupported schema receives no interpretation under a known contract.
+   *
+   * The gate used to run *after* `validateShape`, so a payload declaring a
+   * schema this build cannot read was first measured against the v1/v2
+   * contract. A future schema is entitled to drop or reshape a field that is
+   * required today, so the answer came back as confident complaints about
+   * those fields and never mentioned the version at all — the validator
+   * interpreting a world under a contract that does not apply to it.
+   *
+   * The reshaped payload below is the point: every one of these changes is
+   * legal for a schema 3 that does not exist yet, and none of them may be
+   * reported.
+   */
+  function futureSchemaPayload(): { payload: string; campaignId: string } {
+    const stored = serializeSystemicWorldState(proof());
+    if (!stored.ok) throw new Error(stored.errors.join("; "));
+
+    const future = JSON.parse(stored.payload) as any;
+    future.simulation.schemaVersion = 3;
+    // A future schema may drop a collection v1 and v2 both require...
+    delete future.simulation.warfareSquads;
+    // ...drop a top-level field...
+    delete future.worldPressure;
+    // ...and reshape another into something v1 would call malformed.
+    future.day = { era: "second", index: 4 };
+    return { payload: JSON.stringify(future), campaignId: future.campaignId };
+  }
+
+  it("refuses an unsupported schema with one error and no field complaints", () => {
+    const { payload } = futureSchemaPayload();
+    const result = validateSystemicWorldState(JSON.parse(payload));
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(["Unsupported simulation schema 3; this build supports 1, 2"]);
+    // Stated separately, because "exactly one error" would still pass if that
+    // one error were about a field.
+    for (const field of ["day", "worldPressure", "warfareSquads"]) {
+      expect(result.errors.some(e => e.includes(field))).toBe(false);
+    }
+  });
+
+  it("refuses it the same way at the load boundary, which is the real one", () => {
+    const { payload, campaignId } = futureSchemaPayload();
+    const outcome = loadSystemicWorldState(payload, campaignId);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.reason).toBe("invalid_world_state");
+    expect(outcome.errors).toEqual(["Unsupported simulation schema 3; this build supports 1, 2"]);
+  });
+
+  it("still reports real shape problems when the schema is one it understands", () => {
+    // The gate must not become a way to skip validation. A supported version
+    // with the same damage reports the damage.
+    const stored = serializeSystemicWorldState(proof());
+    if (!stored.ok) throw new Error("unreachable");
+    const damaged = JSON.parse(stored.payload) as any;
+    delete damaged.simulation.warfareSquads;
+    delete damaged.worldPressure;
+    damaged.day = { era: "second", index: 4 };
+
+    const errors = errorsOf(damaged);
+    expect(errors.some(e => /day must be an integer/.test(e))).toBe(true);
+    expect(errors.some(e => /worldPressure must be a finite number/.test(e))).toBe(true);
+    expect(errors.some(e => /warfareSquads must be an array/.test(e))).toBe(true);
+  });
+
+  it("reports structure, not a version, when no schema can be read at all", () => {
+    // With no `simulation` object there is no declaration to inspect, and
+    // claiming an unsupported version would be inventing a diagnosis. The
+    // honest answer is the structural one, and a malformed v1 keeps reporting
+    // its real problems rather than being swallowed by the gate.
+    const headless = JSON.parse(
+      JSON.stringify(createSystemicScenario(7419))
+    ) as Record<string, unknown>;
+    delete headless.simulation;
+
+    const result = validateSystemicWorldState(headless);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some(e => /simulation is required/.test(e))).toBe(true);
+    expect(result.errors.some(e => /Unsupported simulation schema/.test(e))).toBe(false);
+
+    expect(validateSystemicWorldState(42).errors).toEqual(["WorldState must be an object"]);
+  });
+
   it("refuses a v1 world carrying proof simulation state", () => {
     const baseline = createSystemicScenario(7419) as unknown as {
       simulation: Record<string, unknown>;

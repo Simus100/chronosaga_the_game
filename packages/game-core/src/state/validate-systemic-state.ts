@@ -510,11 +510,62 @@ function validateEffect(
 }
 
 /**
+ * Read only what is needed to learn which contract a payload claims.
+ *
+ * The smallest structural step that makes a version gate possible: is this an
+ * object, does it carry a `simulation` object, and what does that object say
+ * its schema is. Nothing is interpreted, nothing is required, and no field of
+ * v1 or v2 is consulted -- deliberately, because a payload from a future
+ * schema is allowed to differ everywhere except in how it declares itself.
+ *
+ * This is not a second parser. It reads two properties and stops; the real
+ * validation still happens once, in `validateShape` and the version-specific
+ * passes below it.
+ */
+function declaredSchemaVersion(
+  input: unknown
+): { readonly readable: true; readonly version: unknown } | { readonly readable: false } {
+  if (!isRecord(input)) return { readable: false };
+  const simulation = input.simulation;
+  if (!isRecord(simulation)) return { readable: false };
+  return { readable: true, version: simulation.schemaVersion };
+}
+
+/**
  * Runtime validation for the M1 shared-state JSON boundary. `unknown` is
  * intentional: saves and persistence adapters must be validated before they are
  * trusted as a WorldState.
  */
 export function validateSystemicWorldState(input: unknown): SystemicValidationResult {
+  // Version before shape, and this ordering is the contract.
+  //
+  // A previous version of this function said "version first" and did not do
+  // it: `validateShape` ran before the gate, so a payload declaring a schema
+  // this build cannot read was first measured against the v1/v2 contract. A
+  // future schema is entitled to drop or reshape a field that is required
+  // today, so the answer came back as three confident complaints about fields
+  // — and never mentioned the version at all. That is the opposite of what
+  // GQP spec 24.1 rule 5 asks for: it is interpreting a world under a contract
+  // that does not apply to it.
+  //
+  // The invariant is that an unsupported schema receives **no** interpretation
+  // under a known contract, and exactly one rejection naming the version.
+  const declared = declaredSchemaVersion(input);
+  if (declared.readable && !isSupportedSchemaVersion(declared.version)) {
+    return {
+      ok: false,
+      errors: [
+        `Unsupported simulation schema ${JSON.stringify(declared.version)}; ` +
+          `this build supports ${SUPPORTED_SCHEMA_VERSIONS.join(", ")}`
+      ]
+    };
+  }
+
+  // Unreadable declaration falls through on purpose. With no root object or no
+  // `simulation` object there is no version to name, and claiming an
+  // unsupported one would be inventing a diagnosis: the honest answer is the
+  // structural error `validateShape` already reports, alongside anything else
+  // it can see. That also keeps a malformed v1 reporting its real problems.
   const shapeErrors = validateShape(input);
   if (shapeErrors.length > 0) return { ok: false, errors: shapeErrors };
 
@@ -522,31 +573,15 @@ export function validateSystemicWorldState(input: unknown): SystemicValidationRe
   const simulation = state.simulation!;
   const errors: string[] = [];
 
-  // Version first, and fail closed on anything this build cannot interpret.
+  // Reaching here means the declaration was readable and supported: the gate
+  // above returns on an unsupported one, and `validateShape` returns when
+  // `simulation` is not an object.
   //
-  // Returning here rather than collecting more errors is the point. An
-  // unsupported version means the fields below may not mean what this code
-  // thinks they mean, so continuing would produce confident errors about a
-  // contract we do not have — and, worse, would risk a caller reading past a
-  // version check that only warned. GQP spec 24.1 rule 5: old code must refuse
-  // a schema it cannot correctly understand, not open it and ignore the parts
-  // it does not recognise.
-  const declaredVersion: unknown = simulation.schemaVersion;
-  if (!isSupportedSchemaVersion(declaredVersion)) {
-    return {
-      ok: false,
-      errors: [
-        `Unsupported simulation schema ${JSON.stringify(declaredVersion)}; ` +
-          `this build supports ${SUPPORTED_SCHEMA_VERSIONS.join(", ")}`
-      ]
-    };
-  }
-
   // The two versions are validated by different rules, and neither is the
   // other's superset with optional extras: v2 requires the proof contracts and
   // v1 refuses them. That symmetry is what makes "no silent reinterpretation"
   // an enforced property rather than a promise about the loader.
-  if (declaredVersion === PROOF_SCHEMA_VERSION) validateProofState(state, errors);
+  if (simulation.schemaVersion === PROOF_SCHEMA_VERSION) validateProofState(state, errors);
   else refuseProofFieldsOnBaseline(state, errors);
 
   duplicateIds(state.party, "party", errors);
