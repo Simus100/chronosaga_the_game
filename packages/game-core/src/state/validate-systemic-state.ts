@@ -1,5 +1,4 @@
 import type { EventEffect, WorldState } from "@paa/game-types";
-import { CHARACTER_ROLE_IDS } from "@paa/game-types";
 import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
 import { validateCausalSource } from "./causal-source.js";
 import {
@@ -282,11 +281,6 @@ function validateShape(input: unknown): string[] {
     const who = `character ${String(character.id)}`;
     requireString(character, "name", `${who}.name`, errors);
     requireString(character, "role", `${who}.role`, errors);
-    // Optional, because saves predating it are still valid; a closed enum when
-    // present, because a rule reads it and a save may claim anything.
-    if (character.roleId !== undefined) {
-      requireEnum(character, "roleId", `${who}.roleId`, CHARACTER_ROLE_IDS, errors);
-    }
     requireFiniteNumber(character, "health", `${who}.health`, errors);
     requireFiniteNumber(character, "stress", `${who}.stress`, errors);
     requireFiniteNumber(character, "morale", `${who}.morale`, errors);

@@ -7,6 +7,7 @@ import type {
   WorldState
 } from "@paa/game-types";
 import { projectResource, resolveSettlementTarget } from "./resource-authority.js";
+import { findCastMember } from "./cast-roles.js";
 
 const CONSUMPTION_PER_1000: Readonly<ResourceMap> = {
   water: 4,
@@ -449,21 +450,16 @@ function addShortageMemory(
   changes: StateChange[]
 ): void {
   const settlement = state.simulation?.settlements.find(item => item.id === settlementId);
-  // By stable id, not by the label on screen.
+  // By job, resolved from the character's stable id -- never from the label.
   //
   // This compared `role === "Quartermaster"`, so the simulation depended on a
   // string written for a human to read: translating the cast or fixing a typo
   // in it changed which memories a run produced, from the same seed.
   //
-  // A world whose party predates `roleId` has no character to match here and
-  // writes no shortage memory. That is a real and bounded consequence, kept
-  // deliberately rather than papered over with a fallback to the label: a
-  // fallback would leave the prose branch alive and reachable, which is the
-  // whole defect. Nothing else about such a world changes -- it loads, it
-  // ticks, and its resources, pressures and approvals are identical.
-  const character = state.party.find(
-    item => item.locationId === settlementId && item.roleId === "quartermaster"
-  );
+  // The job is derived rather than persisted, so every save ever written
+  // resolves it the same way and no build reads a different world out of the
+  // same bytes than another build would. See `cast-roles.ts`.
+  const character = findCastMember(state, settlementId, "quartermaster");
   if (!character) return;
 
   // Keyed by tick, not by Player Turn: three ticks in one turn are three
