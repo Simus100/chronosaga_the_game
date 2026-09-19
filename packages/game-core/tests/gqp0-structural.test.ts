@@ -146,11 +146,14 @@ describe("C: what a validator accepts, the applicator can apply", () => {
   });
 
   it("shapes the validators reject also fail closed in the applicator", () => {
-    const rejected: EventEffect[] = [
+    // Deliberately malformed: each lacks the field its type requires. Since
+    // GQP-B the union makes these unrepresentable as typed values, which is the
+    // point of the union — so they are cast, as hostile input always is.
+    const rejected = [
       { type: "RESOURCE_DELTA", value: -1 },
       { type: "FLAG_SET", value: true },
       { type: "CHARACTER_STRESS", value: 1 }
-    ];
+    ] as unknown as EventEffect[];
     for (const effect of rejected) {
       const event: GameEvent = {
         id: "evt_bad",

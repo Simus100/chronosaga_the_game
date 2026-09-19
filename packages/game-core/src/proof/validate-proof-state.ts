@@ -8,11 +8,13 @@ import {
   FACTION_AGENDA_KINDS,
   FACTION_AGENDA_SUBJECTS,
   MEMORY_BEHAVIOR_HOOKS,
+  MEMORY_EXPOSURES,
   MEMORY_ORIGINS,
   MEMORY_VALENCES,
   RELATIONSHIP_STRENGTHS
 } from "@paa/game-types";
 import { validateCausalSource } from "../state/causal-source.js";
+import { rounded } from "../state/numeric.js";
 
 /**
  * Validation for the schema v2 contracts, on hostile input.
@@ -58,7 +60,8 @@ export const PROOF_MEMORY_FIELDS = [
   "subjectId",
   "origin",
   "behaviorHook",
-  "callbackEligible"
+  "callbackEligible",
+  "exposure"
 ] as const;
 
 function enumValue(
@@ -202,8 +205,25 @@ function proofCharacters(
     enumValue(character, "currentGoal", `${who}.currentGoal`, CHARACTER_GOALS, errors);
 
     const memories = Array.isArray(character.memories) ? character.memories.filter(isRecord) : [];
+
+    // One fact, one memory per character. GQP-B writes memories keyed by the
+    // fact they record and propagates them by that id, so a duplicate would be
+    // a character remembering one thing twice -- and `memory_known`, which
+    // asks whether a character knows a fact, would stop meaning anything.
+    // Checked at v2 only: M1 never wrote proof memories, and tightening what a
+    // v1 save may contain is not this slice's to do.
+    const seenIds = new Set<string>();
+    for (const memory of memories) {
+      if (typeof memory.id !== "string") continue;
+      if (seenIds.has(memory.id)) errors.push(`${who} holds memory '${memory.id}' more than once`);
+      seenIds.add(memory.id);
+    }
+
     memories.forEach((memory, index) => {
       const at = `${who} memory[${index}]`;
+      if (memory.exposure !== undefined) {
+        enumValue(memory, "exposure", `${at}.exposure`, MEMORY_EXPOSURES, errors);
+      }
       // Present-or-absent, validated when present. The M1 World Tick writes
       // memories without proof semantics and the accepted baseline is not
       // being rewritten to author them; what must never happen is a proof
@@ -462,6 +482,41 @@ function epidemic(simulation: JsonRecord, errors: string[]): void {
     unitInterval(item, "magnitude", `${at}.magnitude`, errors);
     validateCausalSource(item.source, `${at}.source`, errors);
   });
+
+  // One contributor per cause, and a value that is the sum of its causes.
+  //
+  // GQP-A stored both and nothing kept them agreeing; the bootstrap scenario
+  // agreed only because it was written that way. Since GQP-B moves the
+  // epidemic through choices and the World Tick, a save whose value drifted
+  // from its listed causes would show a stage the causes cannot explain -- and
+  // the whole point of the contributors is to explain it.
+  const causes = new Set<string>();
+  let sum = 0;
+  let summable = true;
+  for (const item of contributors) {
+    if (!isRecord(item)) {
+      summable = false;
+      continue;
+    }
+    if (typeof item.cause === "string") {
+      if (causes.has(item.cause)) {
+        errors.push(`simulation.epidemic.contributors lists cause '${item.cause}' more than once`);
+      }
+      causes.add(item.cause);
+    }
+    if (typeof item.magnitude === "number" && Number.isFinite(item.magnitude)) sum += item.magnitude;
+    else summable = false;
+  }
+  if (summable && typeof value.value === "number" && Number.isFinite(value.value)) {
+    const expected = rounded(sum);
+    // Tolerance covers only float addition order; both sides are rounded to
+    // four decimals, so a real disagreement is at least 1e-4.
+    if (Math.abs(value.value - expected) > 1e-9) {
+      errors.push(
+        `simulation.epidemic.value is ${value.value} but its contributors add up to ${expected}`
+      );
+    }
+  }
 }
 
 /**
