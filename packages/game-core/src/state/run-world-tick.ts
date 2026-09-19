@@ -7,6 +7,7 @@ import type {
   WorldState
 } from "@paa/game-types";
 import { projectResource, resolveSettlementTarget } from "./resource-authority.js";
+import { findCastMember } from "./cast-roles.js";
 
 const CONSUMPTION_PER_1000: Readonly<ResourceMap> = {
   water: 4,
@@ -449,9 +450,16 @@ function addShortageMemory(
   changes: StateChange[]
 ): void {
   const settlement = state.simulation?.settlements.find(item => item.id === settlementId);
-  const character = state.party.find(
-    item => item.locationId === settlementId && item.role === "Quartermaster"
-  );
+  // By job, resolved from the character's stable id -- never from the label.
+  //
+  // This compared `role === "Quartermaster"`, so the simulation depended on a
+  // string written for a human to read: translating the cast or fixing a typo
+  // in it changed which memories a run produced, from the same seed.
+  //
+  // The job is derived rather than persisted, so every save ever written
+  // resolves it the same way and no build reads a different world out of the
+  // same bytes than another build would. See `cast-roles.ts`.
+  const character = findCastMember(state, settlementId, "quartermaster");
   if (!character) return;
 
   // Keyed by tick, not by Player Turn: three ticks in one turn are three
