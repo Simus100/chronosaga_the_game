@@ -24,3 +24,4 @@ export * from "./proof/propagation";
 export * from "./proof/proof-events";
 export * from "./proof/resolve-proof-choice";
 export * from "./proof/validate-proof-catalogue";
+export * from "./proof/inspect-proof-step";
