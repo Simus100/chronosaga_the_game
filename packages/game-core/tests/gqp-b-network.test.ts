@@ -348,11 +348,13 @@ describe("GQP-B network properties (GQP spec 11.3, issue #42)", () => {
 
   it("lets apparently helpful choices complicate things later", () => {
     const b = run("B");
-    // The quiet tap: ten energy now, and nothing visible against it...
+    // The quiet tap: ten energy now, against a small strain the player is shown
+    // (recycler -0.05, KNOWN)...
     const tap = b.steps[0]!;
     expect(tap.inspection.decisions[0]!.choiceId).toBe("tap_quietly");
     expect(readAuthoritativeResource(tap.after, "energy")).toBeGreaterThan(readAuthoritativeResource(b.start, "energy"));
-    // ...then the strain arrives, and the League calls the debt in.
+    // ...then the larger strain, disclosed only as a RISK, lands later, and the
+    // League is in a position to call its debt in.
     expect(b.steps.some(step => step.inspection.consequencesApplied.includes("con.evt_f3_conduit_offer.tap_quietly.strain"))).toBe(true);
     expect(eligibleIds(tap.after)).toContain("evt_f3_debt_called");
 
