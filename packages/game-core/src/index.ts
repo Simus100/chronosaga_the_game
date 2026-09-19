@@ -12,3 +12,8 @@ export * from "./events/select-event-stable";
 export * from "./events/resolve-choice";
 export * from "./events/validate-event";
 export * from "./rng/seeded-rng";
+export * from "./proof/schema-version";
+export * from "./proof/validate-proof-state";
+export * from "./proof/agenda-condition";
+export * from "./proof/pressure";
+export * from "./proof/create-gqp-scenario";
