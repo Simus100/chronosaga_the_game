@@ -120,6 +120,18 @@ describe("GQP-B predicates read typed state", () => {
     ).toBe(false);
   });
 
+  it("refuses a predicate it does not know, instead of reading it as false", () => {
+    const hostile = { predicate: "reputation_at_least", value: 3 } as unknown as ProofPredicate;
+    expect(() => holds(hostile)).toThrow(/Unknown proof predicate "reputation_at_least"/);
+    const event = { ...CATALOGUE[0]!, eligibility: [hostile] };
+    expect(() => eligibleProofEvents(proof(), [event])).toThrow(/Unknown proof predicate/);
+  });
+
+  it("refuses to describe an effect it does not know", () => {
+    const hostile = { ...CATALOGUE[0]!.choices[0]!, effects: [{ type: "REPUTATION_SET", value: 1 }] } as unknown as ProofChoice;
+    expect(() => describeProofChoice(hostile)).toThrow(/Cannot describe effect type "REPUTATION_SET"/);
+  });
+
   it("refuses to evaluate against a baseline world", () => {
     expect(() => evaluateProofPredicate({ predicate: "flag_equals", key: "x", value: true }, createSystemicScenario(7419))).toThrow(/schema-v2/);
     expect(() => eligibleProofEvents(createSystemicScenario(7419), CATALOGUE)).toThrow(/schema-v2/);

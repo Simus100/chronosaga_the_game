@@ -104,7 +104,7 @@ export function validateProofCatalogue(
   // Facts the catalogue can make true. A predicate reading a fact nothing can
   // produce is dead content: an event that can never appear, or an option that
   // can never close, both of which look like design and are neither.
-  const recordedMemories = new Map<string, string>(); // `${character}:${memory}` -> event
+  const recordedMemories = new Map<string, string>(); // memory id -> event
   const recordedFacts = new Set<string>(); // memory ids anywhere
   const hooksByCharacter = new Set<string>(); // `${character}:${hook}`
   const settableFlags = new Set<string>(Object.keys(world.flags));
@@ -126,14 +126,18 @@ export function validateProofCatalogue(
       const scheduledEffects = (Array.isArray(choice.schedules) ? choice.schedules.filter(isRecord) : [])
         .flatMap(schedule => (Array.isArray(schedule.effects) ? schedule.effects.filter(isRecord) : []));
 
-      // Memory ids across alternative choices of one event may repeat: only
-      // one of them resolves. Across different events they may not, or two
-      // resolutions would record one fact twice on the same character.
+      // A memory id names one fact, not one character's copy of it: the
+      // channels copy it under the same id, and publication and `memory_known`
+      // find it by id alone. So an id may repeat across alternative choices of
+      // one event -- only one of them resolves -- but never across events, and
+      // never twice in one choice, whoever it is recorded on. Otherwise the
+      // second record meets a copy of the first and is refused at runtime: a
+      // dead option the gate should have caught.
       const withinChoice = new Set<string>();
       for (const effect of [...effects, ...scheduledEffects]) {
         if (effect.type === "FLAG_SET" && nonEmpty(effect.key)) settableFlags.add(effect.key);
         if (effect.type === "MEMORY_RECORD" && nonEmpty(effect.characterId) && nonEmpty(effect.memoryId)) {
-          const key = `${effect.characterId}:${effect.memoryId}`;
+          const key = effect.memoryId;
           if (withinChoice.has(key)) {
             errors.push(`event ${id} choice ${String(choice.id)} records '${key}' twice`);
           }
@@ -324,7 +328,7 @@ export function validateProofCatalogue(
         if (!nonEmpty(schedule.key)) errors.push(`${at} has a schedule with no key`);
         else if (scheduleKeys.has(schedule.key)) errors.push(`${at} repeats schedule key '${schedule.key}'`);
         else scheduleKeys.add(schedule.key);
-        if (typeof schedule.delay !== "number" || !Number.isInteger(schedule.delay) || schedule.delay < 1) {
+        if (typeof schedule.delay !== "number" || !Number.isSafeInteger(schedule.delay) || schedule.delay < 1) {
           errors.push(`${sat}.delay must be a positive whole number of decisions`);
         }
         if (!["visible", "hidden"].includes(schedule.visibility as string)) errors.push(`${sat}.visibility is invalid`);

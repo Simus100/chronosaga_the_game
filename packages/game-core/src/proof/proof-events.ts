@@ -108,6 +108,14 @@ export function evaluateProofPredicate(predicate: ProofPredicate, state: WorldSt
       if (predicate.status === "absent") return consequence === undefined;
       return consequence?.status === predicate.status;
     }
+
+    default: {
+      // Content that skipped the catalogue gate. Refused like an unknown
+      // effect type, rather than read as `undefined` and quietly treated as
+      // false: an event that silently never appears is a bug nobody sees.
+      const unknown: never = predicate;
+      throw new Error(`Unknown proof predicate ${JSON.stringify((unknown as { predicate: unknown }).predicate)}`);
+    }
   }
 }
 
@@ -240,6 +248,10 @@ function knownOf(effect: EventEffect): KnownItem {
       };
     case "MEMORY_PUBLISH":
       return { kind: "publish", memoryId: effect.memoryId };
+    default: {
+      const unknown: never = effect;
+      throw new Error(`Cannot describe effect type ${JSON.stringify((unknown as { type: unknown }).type)}`);
+    }
   }
 }
 

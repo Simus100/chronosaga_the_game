@@ -219,6 +219,7 @@ describe("GQP-B resolution is atomic, the last step included", () => {
   it.each([
     ["a zero delay", { delay: 0 }, /positive whole delay/],
     ["a fractional delay", { delay: 1.5 }, /positive whole delay/],
+    ["a delay past the safe integers", { delay: 2 ** 53 }, /positive whole delay/],
     [
       "a malformed delayed effect",
       { effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: Number.NaN }] },

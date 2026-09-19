@@ -63,6 +63,7 @@ describe("GQP-B catalogue gate", () => {
 
     it.each([
       ["a zero delay", { delay: 0 }, /delay must be a positive whole number/],
+      ["an unsafe delay", { delay: 2 ** 53 }, /delay must be a positive whole number/],
       ["an unknown visibility", { visibility: "secret" }, /visibility is invalid/],
       ["an unknown scope", { scope: "global" }, /scope is invalid/],
       ["no effects", { effects: [] }, /must be a non-empty array/]
@@ -218,7 +219,21 @@ describe("GQP-B catalogue gate", () => {
     it("refuses one choice recording the same fact twice", () => {
       const c = clone();
       c[0].choices[1].effects.push({ ...c[0].choices[1].effects[0] });
-      refuses(c, /records 'tarek_001:fact_t_warning' twice/);
+      refuses(c, /records 'fact_t_warning' twice/);
+    });
+
+    it("refuses one fact id recorded on different characters by different events", () => {
+      // The second record would meet a propagated copy of the first and be
+      // refused at runtime, so the gate refuses it now.
+      const c = clone();
+      c[1].choices[0].effects.push({ ...c[0].choices[1].effects[0], characterId: "mara_001" });
+      refuses(c, /memory 'fact_t_warning' is recorded by both 'evt_t_maint' and 'evt_t_signal'/);
+    });
+
+    it("refuses one choice recording the same fact id on two characters", () => {
+      const c = clone();
+      c[0].choices[1].effects.push({ ...c[0].choices[1].effects[0], characterId: "mara_001" });
+      refuses(c, /records 'fact_t_warning' twice/);
     });
   });
 

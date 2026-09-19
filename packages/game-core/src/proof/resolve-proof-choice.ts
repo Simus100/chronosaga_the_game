@@ -72,7 +72,10 @@ export function resolveProofChoice(
   const changes: StateChange[] = [...decided.changes];
 
   for (const planned of choice.schedules ?? []) {
-    if (!Number.isInteger(planned.delay) || planned.delay < 1) {
+    // A safe integer, not merely an integer: 2^53 is an integer, and a trigger
+    // turn past it cannot be represented exactly -- a consequence that could
+    // never be matched to the turn it names.
+    if (!Number.isSafeInteger(planned.delay) || planned.delay < 1 || !Number.isSafeInteger(state.turn + 1 + planned.delay)) {
       throw new Error(`Scheduled consequence '${planned.key}' needs a positive whole delay`);
     }
     // Validated before it is stored, not when it fires. A consequence that
