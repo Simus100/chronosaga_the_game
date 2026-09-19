@@ -18,3 +18,6 @@ export * from "./proof/validate-proof-state";
 export * from "./proof/agenda-condition";
 export * from "./proof/pressure";
 export * from "./proof/create-gqp-scenario";
+export * from "./proof/proof-effect-contract";
+export * from "./proof/epidemic-contributors";
+export * from "./proof/propagation";

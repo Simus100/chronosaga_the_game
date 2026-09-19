@@ -2,6 +2,11 @@ import type { EventEffect, WorldState } from "@paa/game-types";
 import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
 import { validateCausalSource } from "./causal-source.js";
 import {
+  isProofEffectType,
+  validateProofEffectReferences,
+  validateProofEffectShape
+} from "../proof/proof-effect-contract.js";
+import {
   PROOF_SCHEMA_VERSION,
   SUPPORTED_SCHEMA_VERSIONS,
   isSupportedSchemaVersion
@@ -594,6 +599,11 @@ export function validateSystemicWorldState(input: unknown): SystemicValidationRe
   duplicateIds(simulation.delayedConsequences, "delayedConsequences", errors);
 
   const characterIds = new Set(state.party.map(character => character.id));
+  const proofReferences = {
+    characterIds,
+    factionIds: new Set(simulation.factions.map(faction => faction.id)),
+    nodeIds: new Set(simulation.productionNodes.map(node => node.id))
+  };
   const settlementIds = new Set(simulation.settlements.map(settlement => settlement.id));
   const factionIds = new Set(simulation.factions.map(faction => faction.id));
   const productionIds = new Set(simulation.productionNodes.map(node => node.id));
@@ -701,9 +711,26 @@ export function validateSystemicWorldState(input: unknown): SystemicValidationRe
     }
     if (!consequence.source.id.trim()) errors.push(`consequence ${consequence.id} has empty causal source`);
     if (consequence.effects.length === 0) errors.push(`consequence ${consequence.id} must contain at least one effect`);
-    consequence.effects.forEach((effect, index) =>
-      validateEffect(effect, characterIds, `consequence ${consequence.id} effect[${index}]`, errors)
-    );
+    consequence.effects.forEach((effect, index) => {
+      const label = `consequence ${consequence.id} effect[${index}]`;
+      const type = isRecord(effect) ? effect.type : undefined;
+      if (!isProofEffectType(type)) {
+        validateEffect(effect, characterIds, label, errors);
+        return;
+      }
+      // A proof effect is schema-v2 vocabulary. In a baseline world it is
+      // refused by name, not reported as an "unsupported type": the message
+      // has to say which contract it broke, or the next person reads it as a
+      // typo in the effect list.
+      if (simulation.schemaVersion !== PROOF_SCHEMA_VERSION) {
+        errors.push(`${label} is the proof effect ${String(type)} and cannot appear at schema v1`);
+        return;
+      }
+      // One definition of well formed, shared with the applicator and the
+      // proof catalogue.
+      validateProofEffectShape(effect, label, errors);
+      validateProofEffectReferences(effect, label, errors, proofReferences);
+    });
   }
 
   return { ok: errors.length === 0, errors };

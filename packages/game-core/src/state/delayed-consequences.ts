@@ -81,7 +81,12 @@ export function applyDueConsequences(
     .sort((a, b) => a.triggerTurn - b.triggerTurn || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   for (const consequence of due) {
-    for (const effect of consequence.effects) applyEventEffect(next, effect, changes);
+    // A consequence carries its own cause. That is the context a proof effect
+    // records -- the memory it writes, the epidemic contributor it moves -- so
+    // "why did this happen" points at the consequence, and through its source
+    // at the decision that scheduled it. Legacy effects ignore the context.
+    const context = { source: consequence.source, turn: next.turn };
+    for (const effect of consequence.effects) applyEventEffect(next, effect, changes, context);
     const before = consequence.status;
     consequence.status = "applied";
     appliedIds.push(consequence.id);

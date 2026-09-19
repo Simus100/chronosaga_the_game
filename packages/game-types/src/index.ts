@@ -40,6 +40,11 @@ export interface CharacterMemory {
   behaviorHook?: MemoryBehaviorHook;
   /** Whether this may be surfaced as a causal callback. */
   callbackEligible?: boolean;
+  /**
+   * How widely the fact is known. Schema v2 only, like the fields above; see
+   * `MemoryExposure`. Required on every memory a proof effect writes.
+   */
+  exposure?: MemoryExposure;
 }
 
 export interface CharacterState {
@@ -160,12 +165,124 @@ export interface WarfareSquadState {
   commanderId?: string;
 }
 
-export interface EventEffect {
-  type: "RESOURCE_DELTA" | "FLAG_SET" | "PRESSURE_DELTA" | "CHARACTER_STRESS";
-  key?: string;
-  value: number | string | boolean;
-  targetId?: string;
+/**
+ * The four effects M1 shipped with, each in the exact shape it always had.
+ *
+ * These used to share one loose interface, `{ type, key?, value, targetId? }`,
+ * which made shapes like a `PRESSURE_DELTA` carrying a `key` representable and
+ * meaningless. That looseness was tolerable while every effect was a number on a
+ * key. GQP-B adds effects whose payload is a structure — a salient memory has a
+ * character, a subject, a valence, a hook — and fitting that into `value` would
+ * have meant letting `value` hold an object for every legacy effect too.
+ *
+ * So the loose interface is split into its members. The JSON on disk is the
+ * same: every delayed consequence ever saved is still exactly one of these.
+ */
+export type LegacyEventEffect =
+  | { type: "RESOURCE_DELTA"; key: string; value: number }
+  | { type: "FLAG_SET"; key: string; value: string | number | boolean }
+  | { type: "PRESSURE_DELTA"; value: number }
+  | { type: "CHARACTER_STRESS"; targetId: string; value: number };
+
+/**
+ * Epidemic causes an author may move. `water_shortage` is absent on purpose.
+ *
+ * The World Tick derives that contributor from the settlement's actual water
+ * shortfall every tick (GQP spec 9.1 names water shortage as a cause). An
+ * authored shift on it would be overwritten one tick later, which is a way for
+ * content to promise an effect the Core does not keep.
+ */
+export const AUTHORABLE_EPIDEMIC_CAUSES = [
+  "cohort_dissatisfaction",
+  "deferred_triage",
+  "crowding"
+] as const;
+export type AuthorableEpidemicCause = (typeof AUTHORABLE_EPIDEMIC_CAUSES)[number];
+
+/**
+ * Move one named cause of the epidemic, and the epidemic with it.
+ *
+ * The cause is part of the payload so the pressure can always answer *why* it
+ * moved: value and contributors change together and cannot contradict each
+ * other. There is no bare "epidemic minus 0.2".
+ */
+export interface EpidemicShiftEffect {
+  type: "EPIDEMIC_SHIFT";
+  cause: AuthorableEpidemicCause;
+  delta: number;
 }
+
+/**
+ * Maintenance, deferral, strain and repair of one production node.
+ *
+ * GQP spec 9.2 is binding: INFRASTRUCTURE is derived from node condition, and
+ * the proof must give the player Core-owned agency over that condition rather
+ * than a parallel infrastructure counter.
+ */
+export interface NodeConditionShiftEffect {
+  type: "NODE_CONDITION_SHIFT";
+  nodeId: string;
+  delta: number;
+}
+
+/**
+ * How widely the fact behind a memory is known.
+ *
+ * Not the same thing as `origin`, which says how *this copy* reached *this
+ * character*. Exposure is a property of the fact, and it decides which of the
+ * three propagation channels of spec 7.1 may carry it:
+ *
+ *   secret   direct holder only; no reflection, no public knowledge
+ *   private  direct holder, plus reflection along a strong relationship
+ *   public   the above, plus the settlement's community and its faction
+ *
+ * A secret stays local until an explicit decision publishes it. Deciding *when*
+ * a secret is discovered is GQP-C's `SECRET_ACTION_DISCOVERED`, not this.
+ */
+export const MEMORY_EXPOSURES = ["secret", "private", "public"] as const;
+export type MemoryExposure = (typeof MEMORY_EXPOSURES)[number];
+
+/**
+ * Record a salient memory on one character, and propagate it by its exposure.
+ *
+ * The memory's `origin` is not part of the payload: the recorded copy is always
+ * `direct`, and reflected or public copies are produced by the propagation rule.
+ * An author who could write `origin: "reflected"` could invent second-hand
+ * knowledge the social rules never granted.
+ */
+export interface MemoryRecordEffect {
+  type: "MEMORY_RECORD";
+  characterId: string;
+  memoryId: string;
+  subjectId?: string;
+  valence: MemoryValence;
+  salience: number;
+  exposure: MemoryExposure;
+  behaviorHook?: MemoryBehaviorHook;
+  callbackEligible: boolean;
+  summary: string;
+  tags: string[];
+}
+
+/**
+ * Make a fact that was secret or private public, by an explicit decision.
+ *
+ * The publication mechanism GQP-C's discovery detector will later call. Here it
+ * only ever runs because a player chose transparency.
+ */
+export interface MemoryPublishEffect {
+  type: "MEMORY_PUBLISH";
+  memoryId: string;
+}
+
+/** Effects only a schema-v2 proof world can apply. */
+export type ProofEventEffect =
+  | EpidemicShiftEffect
+  | NodeConditionShiftEffect
+  | MemoryRecordEffect
+  | MemoryPublishEffect;
+
+export type EventEffect = LegacyEventEffect | ProofEventEffect;
 
 export interface DelayedConsequenceState {
   id: string;
@@ -568,4 +685,133 @@ export interface ResolvedDecision {
   choiceId: string;
   playerTurn: number;
   worldTick: number;
+}
+
+/* ------------------------------------------------------------------ *
+ * GQP-B proof events
+ *
+ * A separate type rather than an extension of `GameEvent`. The M1 event gates
+ * on flags, turn and pressure and carries prose; a proof event needs a family,
+ * a taxonomy, eligibility over memory, agenda and pressure, and disclosure
+ * data for KNOWN / RISK / UNKNOWN. Folding all of that into `GameEvent` would
+ * give every M1 event a set of fields it can never use, and give the M1
+ * validator a contract it was never written for.
+ * ------------------------------------------------------------------ */
+
+/** The six functional categories of GQP spec 10. */
+export const PROOF_EVENT_TAXONOMY = [
+  "SIGNAL",
+  "OPPORTUNITY_REQUEST",
+  "DILEMMA",
+  "COMPLICATION",
+  "CRISIS_PAYOFF",
+  "AFTERMATH"
+] as const;
+export type ProofEventTaxonomy = (typeof PROOF_EVENT_TAXONOMY)[number];
+
+/**
+ * A named condition over authoritative state. Eligibility is a conjunction of
+ * these; there is no OR, no nesting and no expression language (spec 13.1).
+ *
+ * `value: false` is how a predicate is negated, so "Ira has not refused" is one
+ * predicate rather than a NOT combinator.
+ */
+export type ProofPredicate =
+  | { predicate: "epidemic_stage_in"; stages: PressureStage[] }
+  | { predicate: "infrastructure_stage_in"; settlementId: string; stages: PressureStage[] }
+  | { predicate: "node_condition_below"; nodeId: string; value: number }
+  | { predicate: "flag_equals"; key: string; value: boolean }
+  | {
+      predicate: "memory_hook_present";
+      characterId: string;
+      hook: MemoryBehaviorHook;
+      subjectId?: string;
+      value: boolean;
+    }
+  | { predicate: "memory_known"; characterId: string; memoryId: string; value: boolean }
+  | { predicate: "agenda_satisfied"; agendaId: string; value: boolean }
+  | {
+      predicate: "consequence_status";
+      consequenceId: string;
+      status: "pending" | "applied" | "absent";
+    };
+
+export const PROOF_PREDICATES = [
+  "epidemic_stage_in",
+  "infrastructure_stage_in",
+  "node_condition_below",
+  "flag_equals",
+  "memory_hook_present",
+  "memory_known",
+  "agenda_satisfied",
+  "consequence_status"
+] as const;
+
+/**
+ * Risk categories a choice may disclose. Presentation, not authority: the Core
+ * decides whether infrastructure actually worsens. The catalogue validator only
+ * checks that no delayed harm arrives in a category the choice never named.
+ */
+export const PROOF_RISK_CATEGORIES = [
+  "epidemic",
+  "infrastructure",
+  "supply",
+  "political",
+  "social"
+] as const;
+export type ProofRiskCategory = (typeof PROOF_RISK_CATEGORIES)[number];
+
+/**
+ * What the player may know before choosing (GQP-3).
+ *
+ * KNOWN is mostly *derived* from the choice's immediate effects by the Core, so
+ * the costs it shows cannot drift from the costs it charges. `knownNotes` adds
+ * authored context. RISK names categories without outcomes; UNKNOWN names what
+ * genuinely cannot be known yet.
+ */
+export interface ProofChoiceDisclosure {
+  knownNotes?: string[];
+  risks: ProofRiskCategory[];
+  unknowns: string[];
+}
+
+/**
+ * A consequence a choice schedules through the real delayed-consequence engine.
+ *
+ * `delay` counts subsequent decisions: 1 means "after the next decision". The
+ * consequence id is derived from event, choice and `key`, so it is stable and
+ * unique without being authored.
+ *
+ * `breadcrumb` names a memory the same choice records. A delayed outcome with no
+ * earlier signal is refused by the catalogue validator (GQP-4).
+ */
+export interface ProofScheduledConsequence {
+  key: string;
+  delay: number;
+  visibility: "visible" | "hidden";
+  scope: DelayedConsequenceState["scope"];
+  effects: EventEffect[];
+  breadcrumb: { memoryId: string };
+}
+
+export interface ProofChoice {
+  id: string;
+  /** Presentation. No rule reads it. */
+  label: string;
+  /** Option availability, beyond affordability, which is derived. */
+  availability?: ProofPredicate[];
+  effects: EventEffect[];
+  schedules?: ProofScheduledConsequence[];
+  disclosure: ProofChoiceDisclosure;
+}
+
+export interface ProofEvent {
+  /** Stable gameplay id. Never shown, never compared to anything readable. */
+  id: string;
+  familyId: EventFamilyId;
+  taxonomy: ProofEventTaxonomy;
+  eligibility: ProofPredicate[];
+  /** Presentation only. Titles and bodies are never read by a rule. */
+  presentation: { title: string; body: string };
+  choices: ProofChoice[];
 }

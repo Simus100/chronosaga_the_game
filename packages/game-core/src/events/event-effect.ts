@@ -1,8 +1,19 @@
-import type { EventEffect, StateChange, WorldState } from "@paa/game-types";
+import type { EventEffect, LegacyEventEffect, StateChange, WorldState } from "@paa/game-types";
 import { applyAuthoritativeResourceDelta } from "../state/resource-authority.js";
+import { applyProofEffect, type EffectContext } from "../proof/proof-effects.js";
+import { isProofEffectType } from "../proof/proof-effect-contract.js";
+
+export type { EffectContext } from "../proof/proof-effects.js";
 
 /**
- * The effect types this build can apply, declared once.
+ * The M1 effect vocabulary: the types valid at every schema version.
+ *
+ * GQP-B adds four proof-only types, declared in `proof-effect-contract.ts` as
+ * `PROOF_EVENT_EFFECT_TYPES`. They are kept in a separate list on purpose: this
+ * one is what an M1 event and a v1 save may contain, and a proof effect in
+ * either is refused rather than tolerated.
+ *
+ * The effect types this build can apply at schema v1, declared once.
  *
  * Both validators used to carry their own copy of this list. Three lists that
  * must agree are three chances for a payload to be accepted by one authority
@@ -15,7 +26,7 @@ export const EVENT_EFFECT_TYPES = [
   "FLAG_SET",
   "PRESSURE_DELTA",
   "CHARACTER_STRESS"
-] as const satisfies readonly EventEffect["type"][];
+] as const satisfies readonly LegacyEventEffect["type"][];
 
 /**
  * The numeric payload of an effect. Required to *be* a finite number, not to
@@ -33,7 +44,7 @@ export const EVENT_EFFECT_TYPES = [
  * the payload may have come from a save file or an authored catalogue, and
  * `EventEffect["value"]` is `number | string | boolean` by declaration.
  */
-function numericValue(effect: EventEffect): number {
+function numericValue(effect: { type: string; value: unknown }): number {
   const value = effect.value;
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`${effect.type} requires a finite numeric value`);
@@ -94,7 +105,7 @@ function finiteResult(value: number, label: string): number {
  * stored. The applicator must never knowingly place a value in `WorldState`
  * that the authoritative save validator will reject.
  */
-function flagValue(effect: EventEffect): string | number | boolean {
+function flagValue(effect: { value: unknown }): string | number | boolean {
   const value = effect.value;
   if (typeof value === "number" && !Number.isFinite(value)) {
     throw new Error(`FLAG_SET requires a finite number, got ${String(value)}`);
@@ -137,8 +148,17 @@ function flagValue(effect: EventEffect): string | number | boolean {
 export function applyEventEffect(
   state: WorldState,
   effect: EventEffect,
-  changes: StateChange[]
+  changes: StateChange[],
+  context?: EffectContext
 ): void {
+  // Proof effects share this entry point, so an immediate choice and a delayed
+  // consequence cannot reach them by different routes. Their semantics live in
+  // one module; the switch below still owns the four M1 types.
+  if (isProofEffectType((effect as { type: unknown }).type)) {
+    applyProofEffect(state, effect as Parameters<typeof applyProofEffect>[1], changes, context);
+    return;
+  }
+
   if (effect.type === "RESOURCE_DELTA") {
     const key = identifier(effect.key, "RESOURCE_DELTA");
     // The authoritative path, not the flat projection: a change written to the
