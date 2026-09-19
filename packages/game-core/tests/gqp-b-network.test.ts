@@ -364,6 +364,23 @@ describe("GQP-B network properties (GQP spec 11.3, issue #42)", () => {
     expect(wearStep.inspection.optionsOpened).toContain("evt_f2_recycler_breakdown:emergency_rebuild");
   });
 
+  it("stops the League calling in its debt once its access desire is met another way (GQP-6)", () => {
+    const t = runTrajectory("league-satisfied", [
+      ["evt_f3_conduit_offer", "tap_quietly"],
+      ["evt_f2_recycler_warning", "patch_and_defer"],
+      ["evt_f2_tarek_second_warning", "let_it_ride"],
+      ["evt_f1_clinic_request", "ration_district"],
+      ["evt_f2_recycler_breakdown", "front_technicians"]
+    ]);
+    const before = t.steps.filter(step => step.kind === "decision")[3]!.after;
+    expect(eligibleIds(before)).toContain("evt_f3_debt_called");
+    // The line is still live and Mara still holds the debt; what changed is the
+    // League's agenda item, and that alone retires the demand.
+    expect(t.final.flags.unregistered_conduit_active).toBe(true);
+    expect(readProofWorld(t.final, CATALOGUE).agenda.agenda_fcl_access).toBe(true);
+    expect(eligibleIds(t.final)).not.toContain("evt_f3_debt_called");
+  });
+
   it("imposes no fixed family sequence", () => {
     const orders = new Set(Object.values(COVERAGE_PATHS).map(path => familyOrder(path).join(">")));
     expect(orders.size).toBeGreaterThanOrEqual(3);
@@ -441,6 +458,20 @@ describe("GQP-5: characters act on what they remember, for the right reason", ()
     expect(optionsOf(world, "evt_f1_outbreak")).not.toContain("quarantine_district");
     expect(optionsOf(withoutMemory(world, "sela_001", "fact_f1_clinic_refused"), "evt_f1_outbreak")).toContain(
       "quarantine_district"
+    );
+  });
+
+  it("Mara will not bring the League's technicians after refusing the League", () => {
+    const world = runTrajectory("decline-then-break", [
+      ["evt_f3_conduit_offer", "decline"],
+      ["evt_f2_recycler_warning", "patch_and_defer"],
+      ["evt_f2_tarek_second_warning", "let_it_ride"],
+      ["evt_f1_clinic_request", "protect_reserve"]
+    ]).final;
+    expect(eligibleIds(world)).toContain("evt_f2_recycler_breakdown");
+    expect(optionsOf(world, "evt_f2_recycler_breakdown")).not.toContain("front_technicians");
+    expect(optionsOf(withoutMemory(world, "mara_001", "fact_f3_offer_declined"), "evt_f2_recycler_breakdown")).toContain(
+      "front_technicians"
     );
   });
 

@@ -595,3 +595,50 @@ describe("GQP-B tick rule: water shortage feeds the epidemic, derived rather tha
     expect(ticked.delta.changes.some(c => c.type.startsWith("epidemic"))).toBe(false);
   });
 });
+
+describe("The save boundary for the memory fields GQP-B adds", () => {
+  const directMemory = (patch: Record<string, unknown>): CharacterMemory =>
+    ({
+      id: "fact_saved",
+      summary: "saved",
+      tags: [],
+      turn: 1,
+      source: SOURCE,
+      valence: "negative",
+      salience: 0.6,
+      origin: "direct",
+      callbackEligible: true,
+      ...patch
+    }) as CharacterMemory;
+
+  function withMemories(state: WorldState, memories: CharacterMemory[]): WorldState {
+    const copy = structuredClone(state);
+    copy.party.find(c => c.id === "tarek_001")!.memories = memories;
+    return copy;
+  }
+
+  it("accepts a well-formed exposure at v2", () => {
+    expect(validateSystemicWorldState(withMemories(proof(), [directMemory({ exposure: "secret" })])).ok).toBe(true);
+  });
+
+  it("refuses exposure on a baseline v1 save, as every proof memory field", () => {
+    const baseline = createSystemicScenario(7419);
+    const copy = structuredClone(baseline);
+    copy.party[0]!.memories = [{ id: "m", summary: "s", tags: [], turn: 1, source: SOURCE, exposure: "private" } as CharacterMemory];
+    const verdict = validateSystemicWorldState(copy);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("; ")).toMatch(/exposure/);
+  });
+
+  it("refuses an exposure outside the vocabulary", () => {
+    const verdict = validateSystemicWorldState(withMemories(proof(), [directMemory({ exposure: "rumoured" })]));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("; ")).toMatch(/exposure/);
+  });
+
+  it("refuses one character holding the same fact twice", () => {
+    const verdict = validateSystemicWorldState(withMemories(proof(), [directMemory({}), directMemory({ salience: 0.9 })]));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("; ")).toMatch(/holds memory 'fact_saved' more than once/);
+  });
+});
