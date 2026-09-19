@@ -21,3 +21,6 @@ export * from "./proof/create-gqp-scenario";
 export * from "./proof/proof-effect-contract";
 export * from "./proof/epidemic-contributors";
 export * from "./proof/propagation";
+export * from "./proof/proof-events";
+export * from "./proof/resolve-proof-choice";
+export * from "./proof/validate-proof-catalogue";

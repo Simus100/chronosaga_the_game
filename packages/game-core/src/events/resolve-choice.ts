@@ -1,6 +1,7 @@
 import type { EventChoice, StateDelta, WorldState } from "@paa/game-types";
 import { readAuthoritativeResource } from "../state/resource-authority.js";
-import { applyEventEffect } from "./event-effect.js";
+import { commitDecision } from "./commit-decision.js";
+import { isProofEffectType } from "../proof/proof-effect-contract.js";
 
 /**
  * Whether the player may take this choice.
@@ -29,17 +30,21 @@ export function resolveChoice(
 ): { state: WorldState; delta: StateDelta } {
   if (!canChoose(choice, state)) throw new Error("Choice requirements not met");
 
-  const next: WorldState = structuredClone(state);
-  const changes: StateDelta["changes"] = [];
+  // A proof effect in an M1 choice is refused, not applied without a record.
+  // `resolveProofChoice` is the only path that writes the resolved-decision
+  // history GQP spec 12.3 requires, and a choice that moved the epidemic or a
+  // character's memory without an entry there would be a decision the proof's
+  // repetition and liveness rules could never see.
+  const proofEffect = choice.effects.find(effect => isProofEffectType((effect as { type: unknown }).type));
+  if (proofEffect) {
+    throw new Error(
+      `${proofEffect.type} is a proof effect; proof choices resolve through resolveProofChoice, which records the decision`
+    );
+  }
 
-  // The same applicator a delayed consequence uses. An effect must not mean
-  // one thing now and another thing three turns from now.
-  for (const effect of choice.effects) applyEventEffect(next, effect, changes);
-
-  // One significant decision is one Player Turn. The day belongs to the world
-  // and advances with the World Tick, so that a decision and the simulation
-  // step that follows it cannot both claim to have moved the calendar.
-  next.turn += 1;
+  // The same applicator a delayed consequence uses, and the same single
+  // Player Turn increment the proof resolver uses.
+  const { state: next, changes } = commitDecision(state, choice.effects);
 
   return {
     state: next,
