@@ -23,21 +23,47 @@ export function App() {
 
 type DesktopSurface = "play" | "diagnostics";
 
+/**
+ * The play surface stays mounted while diagnostics is on screen.
+ *
+ * It used to be swapped out, and the swap threw the run away. The session, the
+ * narration lines and the persistence lock all live inside `SystemicPlayScreen`
+ * — unmounting it destroyed every one of them, so opening diagnostics and
+ * coming back produced a blank "new campaign" screen with the unsaved progress
+ * gone and nothing said about it.
+ *
+ * The lock made that worse rather than better. It exists to guarantee that no
+ * second action interleaves with a save, and it enforces that for the lifetime
+ * of the screen; a button that ends the screen's lifetime mid-write is outside
+ * anything the lock can promise.
+ *
+ * Hiding rather than unmounting is the smaller repair, and it fixes the cause
+ * instead of the symptom: the owner is never destroyed, so there is nothing to
+ * restore. Lifting the state into this component would have moved four pieces
+ * of state and a ref up here and left the same failure one level higher the
+ * next time a surface is added.
+ *
+ * Diagnostics is still mounted on demand — it polls the runtime, and there is
+ * no reason to keep it doing that behind the game.
+ */
 function DesktopShell() {
   const [surface, setSurface] = useState<DesktopSurface>("play");
 
-  if (surface === "diagnostics") {
-    return (
-      <div className="surface">
-        <button className="surface__switch" onClick={() => setSurface("play")}>
-          ← TORNA AL GIOCO
-        </button>
-        <DesktopP0Screen />
+  return (
+    <>
+      <div style={{ display: surface === "play" ? "contents" : "none" }}>
+        <SystemicPlayScreen onExit={() => setSurface("diagnostics")} />
       </div>
-    );
-  }
-
-  return <SystemicPlayScreen onExit={() => setSurface("diagnostics")} />;
+      {surface === "diagnostics" ? (
+        <div className="surface">
+          <button className="surface__switch" onClick={() => setSurface("play")}>
+            ← TORNA AL GIOCO
+          </button>
+          <DesktopP0Screen />
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function WebSimulationScreen() {
