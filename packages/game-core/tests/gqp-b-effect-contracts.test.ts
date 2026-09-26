@@ -851,3 +851,74 @@ describe("MEMORY_PUBLISH names its holder, and publishes only what it can (P2-4)
     expect(validateSystemicWorldState(real).ok).toBe(true);
   });
 });
+
+describe("One memory id, one fact, across the party (P2-7)", () => {
+  const fact = (patch: Record<string, unknown>): CharacterMemory =>
+    ({
+      id: "fact_x",
+      summary: "A",
+      tags: ["t"],
+      turn: 1,
+      source: SOURCE,
+      valence: "negative",
+      subjectId: "faction_front",
+      salience: 0.8,
+      origin: "direct",
+      callbackEligible: true,
+      ...patch
+    }) as CharacterMemory;
+  function holding(entries: [string, CharacterMemory][]): WorldState {
+    const state = proof();
+    for (const [characterId, memory] of entries) {
+      const character = state.party.find(c => c.id === characterId)!;
+      character.memories = [...(character.memories ?? []), memory];
+    }
+    return state;
+  }
+  const errorsOf = (state: WorldState) => validateSystemicWorldState(state).errors.join("; ");
+
+  it("refuses two first-hand holders of one id, with different contents", () => {
+    const state = holding([
+      ["mara_001", fact({ summary: "A" })],
+      ["tarek_001", fact({ summary: "B" })]
+    ]);
+    expect(errorsOf(state)).toMatch(/fact 'fact_x' is held first-hand by more than one character: mara_001, tarek_001/);
+    expect(errorsOf(state)).toMatch(/fact 'fact_x' held by tarek_001 differs from the fact it copies/);
+  });
+
+  it("refuses two first-hand holders even with identical contents", () => {
+    expect(errorsOf(holding([["mara_001", fact({})], ["tarek_001", fact({})]]))).toMatch(/held first-hand by more than one character/);
+  });
+
+  it.each([
+    ["summary", { summary: "B" }],
+    ["tags", { tags: ["other"] }],
+    ["valence", { valence: "positive" }],
+    ["subject", { subjectId: "faction_compact" }],
+    ["callback eligibility", { callbackEligible: false }]
+  ])("refuses a copy whose %s differs from its fact", (_label, patch) => {
+    const state = holding([["mara_001", fact({})], ["tarek_001", fact({ origin: "reflected", salience: 0.4, ...patch })]]);
+    expect(errorsOf(state)).toMatch(/fact 'fact_x' held by tarek_001 differs from the fact it copies/);
+  });
+
+  it("refuses a second-hand copy with no first-hand holder, and a hook on a copy", () => {
+    expect(errorsOf(holding([["tarek_001", fact({ origin: "public" })]]))).toMatch(/second-hand copies but no first-hand holder/);
+    const hooked = holding([["mara_001", fact({})], ["tarek_001", fact({ origin: "reflected", behaviorHook: "call_in_debt" })]]);
+    expect(errorsOf(hooked)).toMatch(/held second-hand by tarek_001 carries a behaviour hook/);
+  });
+
+  it("accepts a fact and its channel copies: origin, salience, turn and cause may differ", () => {
+    const state = holding([
+      ["mara_001", fact({ behaviorHook: "call_in_debt" })],
+      ["tarek_001", fact({ origin: "reflected", salience: 0.4, turn: 3 })],
+      ["sela_001", fact({ origin: "public", salience: 0.4, source: { kind: "choice", id: "evt_other:x" } })]
+    ]);
+    expect(validateSystemicWorldState(state)).toEqual({ ok: true, errors: [] });
+  });
+
+  it("holds on every world the proof itself produces", () => {
+    const state = proof();
+    applyEventEffect(state, memoryRecord({ characterId: "mara_001", memoryId: "fact_y", exposure: "public", behaviorHook: "call_in_debt", subjectId: "faction_front" }), [], CONTEXT);
+    expect(validateSystemicWorldState(state)).toEqual({ ok: true, errors: [] });
+  });
+});

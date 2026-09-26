@@ -524,22 +524,23 @@ describe("GQP-A: every new contract is validated against hostile input", () => {
   });
 
   it("accepts a fully specified proof memory", () => {
+    // Every v2 field, well formed, on a first-hand memory -- and a second-hand
+    // copy of the same fact, as the channels write it. Since GQP-B (P2-7) a
+    // fact is one fact across the party: a reflected copy needs a first-hand
+    // holder and carries no behaviour hook.
     const state = proof() as any;
+    const fact = {
+      id: "mem_probe",
+      summary: "probe",
+      tags: ["water"],
+      valence: "negative",
+      subjectId: state.party[1].id,
+      callbackEligible: true
+    };
     state.party[0].memories = [
-      {
-        id: "mem_probe",
-        summary: "probe",
-        tags: ["water"],
-        turn: 1,
-        source: { kind: "choice", id: "c1" },
-        valence: "negative",
-        salience: 0.8,
-        subjectId: state.party[1].id,
-        origin: "reflected",
-        behaviorHook: "refuse_similar_request",
-        callbackEligible: true
-      }
+      { ...fact, turn: 1, source: { kind: "choice", id: "c1" }, salience: 0.8, origin: "direct", behaviorHook: "refuse_similar_request" }
     ];
+    state.party[2].memories = [{ ...fact, turn: 1, source: { kind: "choice", id: "c1" }, salience: 0.4, origin: "reflected" }];
     expect(errorsOf(state)).toEqual([]);
   });
 
