@@ -61,7 +61,7 @@ describe("GQP-B history: one resolved decision, one entry", () => {
     const snapshot = structuredClone(state);
     for (let i = 0; i < 5; i += 1) {
       const eligible = eligibleProofEvents(state, CATALOGUE);
-      for (const event of eligible) for (const choice of event.choices) describeProofChoice(choice);
+      for (const event of eligible) for (const choice of event.choices) describeProofChoice(choice, state);
     }
     expect(state).toEqual(snapshot);
     expect(history(state)).toEqual([]);

@@ -6,6 +6,7 @@ import type { EventEffect, ProofChoice, WorldState } from "@paa/game-types";
 import { GQP_PROOF_EVENTS } from "@paa/game-data";
 import {
   createGqpScenario,
+  describeProofChoice,
   eligibleProofEvents,
   findProofEvent,
   isProofChoiceAvailable,
@@ -615,5 +616,50 @@ describe("game-data / game-core boundary", () => {
     expect(data.length).toBeGreaterThanOrEqual(3);
     expect(core.filter(file => readFileSync(file, "utf8").includes("@paa/game-data"))).toEqual([]);
     expect(data.filter(file => readFileSync(file, "utf8").includes("@paa/game-core"))).toEqual([]);
+  });
+});
+
+describe("KNOWN matches the resolution, at every decision point the network reaches (P2-6)", () => {
+  it("previews exactly what resolving each open option does to the world", () => {
+    let compared = 0;
+    for (const context of allContexts()) {
+      const event = findProofEvent(CATALOGUE, context.eventId);
+      for (const choice of event.choices.filter(item => isProofChoiceAvailable(item, context.before))) {
+        const known = describeProofChoice(choice, context.before).known!;
+        const after = resolveProofChoice(context.before, CATALOGUE, event.id, choice.id).state;
+        // Each item's `after` is a reading of the authority once all the
+        // choice's effects before it have applied; for the last write to each
+        // target that is the resolved world's value.
+        const last = new Map<string, number | string | boolean>();
+        for (const item of known) {
+          if (item.kind === "resource") last.set(`resource:${item.key}`, item.after);
+          if (item.kind === "node_condition") last.set(`node:${item.nodeId}`, item.after);
+          if (item.kind === "stress") last.set(`stress:${item.characterId}`, item.after);
+          if (item.kind === "pressure") last.set("pressure", item.after);
+          if (item.kind === "epidemic") last.set(`epidemic:${item.cause}`, item.after);
+          if (item.kind === "flag") last.set(`flag:${item.key}`, item.after);
+        }
+        for (const [key, value] of last) {
+          const [kind, id] = key.split(":");
+          const actual =
+            kind === "resource" ? readAuthoritativeResource(after, id!)
+            : kind === "node" ? after.simulation!.productionNodes.find(n => n.id === id)!.condition
+            : kind === "stress" ? after.party.find(c => c.id === id)!.stress
+            : kind === "pressure" ? after.worldPressure
+            : kind === "flag" ? after.flags[id!]
+            : ((after.simulation as unknown as { epidemic: { contributors: { cause: string; magnitude: number }[] } })
+                .epidemic.contributors.find(c => c.cause === id)?.magnitude ?? 0);
+          expect([event.id, choice.id, key, value]).toEqual([event.id, choice.id, key, actual]);
+          compared += 1;
+        }
+        for (const item of known) {
+          if (item.kind === "memory" || item.kind === "publish") {
+            const holders = after.party.filter(c => (c.memories ?? []).some(m => m.id === item.memoryId)).map(c => c.id);
+            for (const id of item.reach) expect(holders).toContain(id);
+          }
+        }
+      }
+    }
+    expect(compared).toBeGreaterThan(200);
   });
 });

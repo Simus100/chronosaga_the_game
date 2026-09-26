@@ -1,11 +1,15 @@
 import type {
+  CausalSource,
   EventEffect,
   ProofChoice,
   ProofEvent,
   ProofPredicate,
   ProofRiskCategory,
+  SystemicSimulationStateV2,
   WorldState
 } from "@paa/game-types";
+import { applyEventEffect } from "../events/event-effect.js";
+import { rounded } from "../state/numeric.js";
 import { readAuthoritativeResource } from "../state/resource-authority.js";
 import { agendaConditionHolds } from "./agenda-condition.js";
 import { epidemicStage, pressureStage, settlementInfrastructurePressure } from "./pressure.js";
@@ -222,41 +226,99 @@ export function proofConsequenceId(eventId: string, choiceId: string, key: strin
   return `con.${eventId}.${choiceId}.${key}`;
 }
 
-/** One certain, immediate consequence of a choice, as the Core will apply it. */
+/**
+ * One certain, immediate consequence of a choice: the transition the Core will
+ * actually make from the current world, not the delta the content requests.
+ *
+ * `before` / `after` are read from the authority itself; `delta` is their
+ * difference. They differ from the authored delta exactly when the Core
+ * saturates -- a node already near 1, a cause already at 0, stress at 100 --
+ * which is when a player most needs the true figure (GQP-3, P2-6).
+ */
 export type KnownItem =
-  | { kind: "resource"; key: string; delta: number }
-  | { kind: "flag"; key: string; value: string | number | boolean }
-  | { kind: "pressure"; delta: number }
-  | { kind: "stress"; characterId: string; delta: number }
-  | { kind: "epidemic"; cause: string; delta: number }
-  | { kind: "node_condition"; nodeId: string; delta: number }
-  | { kind: "memory"; characterId: string; memoryId: string; valence: string; exposure: string }
-  | { kind: "publish"; characterId: string; memoryId: string };
+  | { kind: "resource"; key: string; before: number; after: number; delta: number }
+  | { kind: "flag"; key: string; before: string | number | boolean | null; after: string | number | boolean }
+  | { kind: "pressure"; before: number; after: number; delta: number }
+  | { kind: "stress"; characterId: string; before: number; after: number; delta: number }
+  | { kind: "epidemic"; cause: string; before: number; after: number; delta: number }
+  | { kind: "node_condition"; nodeId: string; before: number; after: number; delta: number }
+  | { kind: "memory"; characterId: string; memoryId: string; valence: string; exposure: string; reach: string[] }
+  | { kind: "publish"; characterId: string; memoryId: string; reach: string[] };
 
-function knownOf(effect: EventEffect): KnownItem {
+/** The cause a preview records on its throwaway clone. Never reaches a real world. */
+const PREVIEW: CausalSource = { kind: "choice", id: "preview:known" };
+
+function holdersOf(world: WorldState, memoryId: string): string[] {
+  return world.party
+    .filter(character => (character.memories ?? []).some(memory => memory.id === memoryId))
+    .map(character => character.id)
+    .sort(byCodeUnit);
+}
+
+/**
+ * Apply one effect to the preview clone with the real applicator, reading the
+ * authority before and after. The arithmetic is the Core's, run once: there is
+ * no second copy of saturation, clamping or rounding here.
+ */
+function previewEffect(world: WorldState, effect: EventEffect, turn: number): KnownItem {
+  const apply = () => applyEventEffect(world, effect, [], { source: PREVIEW, turn });
+  const simulation = world.simulation as SystemicSimulationStateV2;
+  const change = (before: number, after: number) => ({ before, after, delta: rounded(after - before) });
   switch (effect.type) {
-    case "RESOURCE_DELTA":
-      return { kind: "resource", key: effect.key, delta: effect.value };
-    case "FLAG_SET":
-      return { kind: "flag", key: effect.key, value: effect.value };
-    case "PRESSURE_DELTA":
-      return { kind: "pressure", delta: effect.value };
-    case "CHARACTER_STRESS":
-      return { kind: "stress", characterId: effect.targetId, delta: effect.value };
-    case "EPIDEMIC_SHIFT":
-      return { kind: "epidemic", cause: effect.cause, delta: effect.delta };
-    case "NODE_CONDITION_SHIFT":
-      return { kind: "node_condition", nodeId: effect.nodeId, delta: effect.delta };
-    case "MEMORY_RECORD":
+    case "RESOURCE_DELTA": {
+      const before = readAuthoritativeResource(world, effect.key);
+      apply();
+      return { kind: "resource", key: effect.key, ...change(before, readAuthoritativeResource(world, effect.key)) };
+    }
+    case "FLAG_SET": {
+      const before = Object.hasOwn(world.flags, effect.key) ? world.flags[effect.key]! : null;
+      apply();
+      return { kind: "flag", key: effect.key, before, after: world.flags[effect.key]! };
+    }
+    case "PRESSURE_DELTA": {
+      const before = world.worldPressure;
+      apply();
+      return { kind: "pressure", ...change(before, world.worldPressure) };
+    }
+    case "CHARACTER_STRESS": {
+      const stress = () => world.party.find(character => character.id === effect.targetId)?.stress ?? 0;
+      const before = stress();
+      apply();
+      return { kind: "stress", characterId: effect.targetId, ...change(before, stress()) };
+    }
+    case "EPIDEMIC_SHIFT": {
+      const magnitude = () => simulation.epidemic.contributors.find(item => item.cause === effect.cause)?.magnitude ?? 0;
+      const before = magnitude();
+      apply();
+      return { kind: "epidemic", cause: effect.cause, ...change(before, magnitude()) };
+    }
+    case "NODE_CONDITION_SHIFT": {
+      const condition = () => simulation.productionNodes.find(node => node.id === effect.nodeId)?.condition ?? 0;
+      const before = condition();
+      apply();
+      return { kind: "node_condition", nodeId: effect.nodeId, ...change(before, condition()) };
+    }
+    case "MEMORY_RECORD": {
+      apply();
       return {
         kind: "memory",
         characterId: effect.characterId,
         memoryId: effect.memoryId,
         valence: effect.valence,
-        exposure: effect.exposure
+        exposure: effect.exposure,
+        reach: holdersOf(world, effect.memoryId)
       };
-    case "MEMORY_PUBLISH":
-      return { kind: "publish", characterId: effect.characterId, memoryId: effect.memoryId };
+    }
+    case "MEMORY_PUBLISH": {
+      const before = new Set(holdersOf(world, effect.memoryId));
+      apply();
+      return {
+        kind: "publish",
+        characterId: effect.characterId,
+        memoryId: effect.memoryId,
+        reach: holdersOf(world, effect.memoryId).filter(id => !before.has(id))
+      };
+    }
     default: {
       const unknown: never = effect;
       throw new Error(`Cannot describe effect type ${JSON.stringify((unknown as { type: unknown }).type)}`);
@@ -267,22 +329,37 @@ function knownOf(effect: EventEffect): KnownItem {
 /**
  * What a player may know before choosing (GQP-3), as presentation data.
  *
- * KNOWN is derived from the choice's immediate effects, so the costs shown are
- * the costs charged and cannot drift apart. RISK and UNKNOWN are authored:
- * categories and open questions, not outcomes. None of this is authority -- the
- * rule that decides whether infrastructure worsens lives in the effects and
- * the World Tick, never here.
+ * KNOWN is the transition the Core would make from `state` (P2-6): the choice's
+ * immediate effects run through the real applicator, in order, on a clone,
+ * and read back from the authority. So the costs shown are the costs charged,
+ * saturation included, and they cannot drift apart. The world passed in is
+ * never touched. An option that cannot be taken now has no KNOWN -- only the
+ * reason.
+ *
+ * RISK and UNKNOWN are authored: categories and open questions, not outcomes.
+ * None of this is authority.
  */
-export function describeProofChoice(choice: ProofChoice): {
-  known: KnownItem[];
+export function describeProofChoice(
+  choice: ProofChoice,
+  state: WorldState
+): {
+  available: boolean;
+  refusal: string | null;
+  known: KnownItem[] | null;
   knownNotes: string[];
   risks: ProofRiskCategory[];
   unknowns: string[];
 } {
-  return {
-    known: choice.effects.map(knownOf),
+  proofWorld(state);
+  const disclosure = {
     knownNotes: [...(choice.disclosure.knownNotes ?? [])],
     risks: [...choice.disclosure.risks],
     unknowns: [...choice.disclosure.unknowns]
   };
+  if (!isProofChoiceAvailable(choice, state)) {
+    return { available: false, refusal: "not available now", known: null, ...disclosure };
+  }
+  const world = structuredClone(state);
+  const known = choice.effects.map(effect => previewEffect(world, effect, state.turn));
+  return { available: true, refusal: null, known, ...disclosure };
 }

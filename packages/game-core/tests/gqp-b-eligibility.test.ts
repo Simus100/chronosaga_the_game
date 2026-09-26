@@ -129,7 +129,7 @@ describe("GQP-B predicates read typed state", () => {
 
   it("refuses to describe an effect it does not know", () => {
     const hostile = { ...CATALOGUE[0]!.choices[0]!, effects: [{ type: "REPUTATION_SET", value: 1 }] } as unknown as ProofChoice;
-    expect(() => describeProofChoice(hostile)).toThrow(/Cannot describe effect type "REPUTATION_SET"/);
+    expect(() => describeProofChoice(hostile, proof())).toThrow(/Cannot describe effect type "REPUTATION_SET"/);
   });
 
   it("refuses to evaluate against a baseline world", () => {
@@ -212,19 +212,20 @@ describe("GQP-B eligibility is pure, stable and order-independent", () => {
 });
 
 describe("GQP-B disclosure is derived where it can be", () => {
-  it("derives KNOWN from the effects, so shown costs cannot drift from charged ones", () => {
-    const described = describeProofChoice(CATALOGUE[0]!.choices[0]!);
+  it("derives KNOWN from the effects applied to the current world, so shown costs are charged costs", () => {
+    const described = describeProofChoice(CATALOGUE[0]!.choices[0]!, proof());
+    expect(described.available).toBe(true);
     expect(described.known).toEqual([
-      { kind: "resource", key: "energy", delta: -10 },
-      { kind: "node_condition", nodeId: "prod_recycler_01", delta: 0.2 }
+      { kind: "resource", key: "energy", before: 42, after: 32, delta: -10 },
+      { kind: "node_condition", nodeId: "prod_recycler_01", before: 0.73, after: 0.93, delta: 0.2 }
     ]);
     expect(described.risks).toEqual(["supply"]);
     expect(described.unknowns).toEqual(["how long it holds"]);
   });
 
   it("never shows what a delayed consequence will do, only that there is a risk", () => {
-    const described = describeProofChoice(CATALOGUE[0]!.choices[1]!);
-    expect(described.known.map(k => k.kind)).toEqual(["memory"]);
+    const described = describeProofChoice(CATALOGUE[0]!.choices[1]!, proof());
+    expect(described.known!.map(k => k.kind)).toEqual(["memory"]);
     expect(JSON.stringify(described)).not.toContain("-0.2");
     expect(described.risks).toEqual(["infrastructure", "social"]);
   });
@@ -248,5 +249,70 @@ describe("An option that would publish the impossible is closed, not an error (P
     const published = structuredClone(recorded);
     published.simulation!.factions[0]!.memoryTags.push("aware:fact_t_warning");
     expect(isProofChoiceAvailable(publishing, published)).toBe(false);
+  });
+});
+
+describe("KNOWN is the transition the Core makes, not the delta the content asks for (P2-6)", () => {
+  const only = (effects: ProofChoice["effects"]): ProofChoice => ({
+    id: "probe",
+    label: "probe",
+    effects,
+    disclosure: { risks: ["supply"], unknowns: ["x"] }
+  });
+
+  it("shows a node's saturation: 0.79 + 0.22 is +0.21, to 1", () => {
+    const state = proof();
+    state.simulation!.productionNodes[0]!.condition = 0.79;
+    const [item] = describeProofChoice(only([{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: 0.22 }]), state).known!;
+    expect(item).toEqual({ kind: "node_condition", nodeId: "prod_recycler_01", before: 0.79, after: 1, delta: 0.21 });
+  });
+
+  it("shows an epidemic cause's floor: -0.12 on a cause at 0 changes nothing", () => {
+    const [item] = describeProofChoice(only([{ type: "EPIDEMIC_SHIFT", cause: "deferred_triage", delta: -0.12 }]), proof()).known!;
+    expect(item).toEqual({ kind: "epidemic", cause: "deferred_triage", before: 0, after: 0, delta: 0 });
+  });
+
+  it("shows an epidemic cause's ceiling: the room the other causes leave", () => {
+    const state = proof();
+    const epidemic = (state.simulation as unknown as { epidemic: { value: number; contributors: { cause: string; magnitude: number }[] } }).epidemic;
+    epidemic.contributors.find(c => c.cause === "water_shortage")!.magnitude = 0.89;
+    epidemic.value = 0.95;
+    const [item] = describeProofChoice(only([{ type: "EPIDEMIC_SHIFT", cause: "crowding", delta: 0.1 }]), state).known!;
+    expect(item).toEqual({ kind: "epidemic", cause: "crowding", before: 0.06, after: 0.11, delta: 0.05 });
+  });
+
+  it("shows stress clamped at 100: 95 + 10 is +5", () => {
+    const state = proof();
+    state.party.find(c => c.id === "tarek_001")!.stress = 95;
+    const [item] = describeProofChoice(only([{ type: "CHARACTER_STRESS", targetId: "tarek_001", value: 10 }]), state).known!;
+    expect(item).toEqual({ kind: "stress", characterId: "tarek_001", before: 95, after: 100, delta: 5 });
+  });
+
+  it("shows a resource cost exactly, and several on one stock in order", () => {
+    const [first, second] = describeProofChoice(
+      only([{ type: "RESOURCE_DELTA", key: "energy", value: -10 }, { type: "RESOURCE_DELTA", key: "energy", value: -5 }]),
+      proof()
+    ).known!;
+    expect(first).toEqual({ kind: "resource", key: "energy", before: 42, after: 32, delta: -10 });
+    expect(second).toEqual({ kind: "resource", key: "energy", before: 32, after: 27, delta: -5 });
+  });
+
+  it("shows who a fact will reach, which is how a secret shows it stays secret", () => {
+    const secret = describeProofChoice(CATALOGUE[0]!.choices[1]!, proof()).known![0]!;
+    expect(secret).toMatchObject({ kind: "memory", memoryId: "fact_t_warning", reach: ["mara_001", "tarek_001"] });
+  });
+
+  it("has no KNOWN for an option that cannot be taken, only the reason", () => {
+    const state = proof();
+    state.simulation!.settlements[0]!.resourceStock.energy = 4;
+    state.resources.energy = 4;
+    expect(describeProofChoice(CATALOGUE[0]!.choices[0]!, state)).toMatchObject({ available: false, refusal: "not available now", known: null });
+  });
+
+  it("never touches the world it previews", () => {
+    const state = proof();
+    const snapshot = structuredClone(state);
+    for (const choice of CATALOGUE[0]!.choices) describeProofChoice(choice, state);
+    expect(state).toEqual(snapshot);
   });
 });
