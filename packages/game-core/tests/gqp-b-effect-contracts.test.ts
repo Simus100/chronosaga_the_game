@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   CausalSource,
   CharacterMemory,
+  DelayedConsequenceState,
   EventEffect,
   GameEvent,
   StateChange,
@@ -17,6 +18,7 @@ import {
   runWorldTick,
   scheduleDelayedConsequence,
   settlementInfrastructurePressure,
+  validateDelayedConsequence,
   validateGameEvent,
   validateSystemicWorldState
 } from "../src";
@@ -66,6 +68,27 @@ function refusedWithoutMutation(state: WorldState, effect: unknown, pattern: Reg
   expect(() => applyEventEffect(state, effect as EventEffect, changes, CONTEXT)).toThrow(pattern);
   expect(state).toEqual(snapshot);
   expect(changes).toEqual([]);
+}
+
+/** A delayed consequence carrying `effects`, as the scheduler would store it. */
+function consequenceOf(effects: unknown[], id = "con_probe"): DelayedConsequenceState {
+  return {
+    id,
+    triggerTurn: 1,
+    visibility: "visible",
+    scope: "settlement",
+    effects: effects as EventEffect[],
+    reversible: false,
+    status: "pending",
+    source: SOURCE
+  };
+}
+
+/** A world that holds `effects` as a pending consequence, bypassing the scheduler. */
+function stored(state: WorldState, effects: unknown[]): WorldState {
+  const copy = structuredClone(state);
+  copy.simulation!.delayedConsequences.push(consequenceOf(effects));
+  return copy;
 }
 
 /** A delayed consequence carrying `effects`, scheduled on `state`. */
@@ -175,7 +198,7 @@ describe("GQP-B effects: vocabulary and version boundaries", () => {
   });
 
   it("refuses a v2 consequence whose proof effect names something absent", () => {
-    const world = scheduled(proof(), [
+    const world = stored(proof(), [
       { type: "NODE_CONDITION_SHIFT", nodeId: "prod_ghost", delta: -0.2 },
       memoryRecord({ characterId: "ghost_999" }),
       memoryRecord({ memoryId: "fact_two", subjectId: "faction_ghost" })
@@ -640,5 +663,67 @@ describe("The save boundary for the memory fields GQP-B adds", () => {
     const verdict = validateSystemicWorldState(withMemories(proof(), [directMemory({}), directMemory({ salience: 0.9 })]));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors.join("; ")).toMatch(/holds memory 'fact_saved' more than once/);
+  });
+});
+
+describe("The scheduler meets the save boundary before it stores anything (P2-2)", () => {
+  const baseline = () => createSystemicScenario(7419);
+
+  it.each([
+    ["a proof effect in a baseline world", baseline, [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: -0.1 }], /cannot appear at schema v1/],
+    ["a malformed legacy effect", baseline, [{ type: "RESOURCE_DELTA", key: "water", value: Number.NaN }], /requires finite numeric value/],
+    ["a legacy effect naming an absent character", baseline, [{ type: "CHARACTER_STRESS", targetId: "nobody_999", value: 3 }], /unknown character 'nobody_999'/],
+    ["a malformed proof effect", proof, [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: Number.NaN }], /delta/],
+    ["a proof effect naming an absent node", proof, [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_ghost", delta: -0.1 }], /prod_ghost/],
+    ["a memory for an absent character", proof, [memoryRecord({ characterId: "ghost_999" })], /ghost_999/],
+    ["no effects at all", proof, [], /must contain at least one effect/]
+  ] as const)("refuses %s, and leaves the input world untouched", (_label, world, effects, pattern) => {
+    const state = world();
+    const snapshot = structuredClone(state);
+    expect(() => scheduleDelayedConsequence(state, consequenceOf([...effects]))).toThrow(pattern);
+    expect(state).toEqual(snapshot);
+  });
+
+  it.each([
+    ["a zero trigger turn", { triggerTurn: 0 }, /triggerTurn/],
+    ["an unknown visibility", { visibility: "secret" }, /visibility/],
+    ["a missing cause", { source: undefined }, /source/]
+  ] as const)("refuses a consequence with %s", (_label, patch, pattern) => {
+    const state = proof();
+    const consequence = { ...consequenceOf([{ type: "PRESSURE_DELTA", value: 1 }]), ...patch } as unknown as DelayedConsequenceState;
+    expect(() => scheduleDelayedConsequence(state, consequence)).toThrow(pattern);
+  });
+
+  it.each([
+    ["a legacy effect in a baseline world", () => createSystemicScenario(7419), [{ type: "PRESSURE_DELTA", value: 1 }]],
+    ["a legacy effect in a proof world", proof, [{ type: "RESOURCE_DELTA", key: "water", value: -1 }]],
+    ["a proof effect in a proof world", proof, [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: -0.1 }]],
+    ["a memory in a proof world", proof, [memoryRecord({})]]
+  ] as const)("keeps scheduling %s, into a world the boundary accepts", (_label, world, effects) => {
+    const next = scheduleDelayedConsequence(world(), consequenceOf([...effects])).state;
+    expect(validateSystemicWorldState(next)).toEqual({ ok: true, errors: [] });
+  });
+
+  it("refuses exactly what the boundary refuses once stored -- one contract, not two", () => {
+    const cases: [() => WorldState, unknown[]][] = [
+      [baseline, [{ type: "EPIDEMIC_SHIFT", cause: "crowding", delta: 0.1 }]],
+      [baseline, [{ type: "PRESSURE_DELTA", value: 2 }]],
+      [proof, [{ type: "EPIDEMIC_SHIFT", cause: "water_shortage", delta: 0.1 }]],
+      [proof, [{ type: "EPIDEMIC_SHIFT", cause: "crowding", delta: 0.1 }]],
+      [proof, [{ type: "FLAG_SET", key: "", value: true }]],
+      [proof, [{ type: "FLAG_SET", key: "ok", value: true }]]
+    ];
+    for (const [world, effects] of cases) {
+      const state = world();
+      const boundary = validateSystemicWorldState(stored(state, effects)).ok;
+      const direct = validateDelayedConsequence(consequenceOf(effects), state).length === 0;
+      let scheduler = true;
+      try {
+        scheduleDelayedConsequence(state, consequenceOf(effects));
+      } catch {
+        scheduler = false;
+      }
+      expect([direct, scheduler]).toEqual([boundary, boundary]);
+    }
   });
 });

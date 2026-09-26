@@ -224,10 +224,11 @@ describe("GQP-B resolution is atomic, the last step included", () => {
     expect(state).toEqual(snapshot);
   });
 
-  it("refuses at the final gate a schedule the save would reject, with nothing applied", () => {
-    // Shape-valid, so it passes the scheduler; it names a node that does not
-    // exist, which only the persistence boundary checks. Without the final
-    // gate the resolver would return a world that cannot be saved.
+  it("refuses a schedule the save would reject before storing it, with nothing applied", () => {
+    // Shape-valid, but it names a node that does not exist. The scheduler
+    // applies the save boundary's consequence contract (P2-2), so the decision
+    // is refused there -- after its effects applied on the clone, and with the
+    // caller's world untouched.
     const broken = withChoice(
       [{ type: "RESOURCE_DELTA", key: "energy", value: -10 }],
       [
@@ -243,7 +244,9 @@ describe("GQP-B resolution is atomic, the last step included", () => {
     );
     const state = proof();
     const snapshot = structuredClone(state);
-    expect(() => resolveProofChoice(state, broken, "evt_t_maint", "repair")).toThrow(/would produce an invalid world.*prod_ghost/);
+    expect(() => resolveProofChoice(state, broken, "evt_t_maint", "repair")).toThrow(
+      /Refused delayed consequence 'con\.evt_t_maint\.repair\.ghost'.*prod_ghost/
+    );
     expect(state).toEqual(snapshot);
   });
 
@@ -254,7 +257,7 @@ describe("GQP-B resolution is atomic, the last step included", () => {
     [
       "a malformed delayed effect",
       { effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: Number.NaN }] },
-      /Refused schedule 'wear'/
+      /Refused delayed consequence 'con\.evt_t_maint\.repair\.wear'/
     ]
   ])("refuses a schedule with %s, with nothing applied", (_label, patch, pattern) => {
     const planned = { ...CATALOGUE[0]!.choices[1]!.schedules![0]!, ...patch } as never;

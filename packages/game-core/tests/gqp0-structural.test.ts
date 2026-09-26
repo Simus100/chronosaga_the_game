@@ -180,17 +180,23 @@ describe("C: what a validator accepts, the applicator can apply", () => {
       resolveChoice(scenario(), { id: "ghost", label: "GHOST", effects: [ghost] }, "test")
     ).toThrow(/Unknown character/);
 
-    const scheduled = scheduleDelayedConsequence(scenario(), {
+    const consequence = {
       id: "con_ghost",
       triggerTurn: 1,
-      visibility: "visible",
-      scope: "personal",
+      visibility: "visible" as const,
+      scope: "personal" as const,
       effects: [ghost],
       reversible: false,
-      status: "pending",
-      source: { kind: "system", id: "test" }
-    });
-    expect(() => applyDueConsequences(scheduled.state, 1)).toThrow(/Unknown character/);
+      status: "pending" as const,
+      source: { kind: "system" as const, id: "test" }
+    };
+    // The scheduler refuses to store it (GQP-B P2-2)...
+    expect(() => scheduleDelayedConsequence(scenario(), consequence)).toThrow(/unknown character 'nobody_999'/);
+    // ...and a world that holds it anyway -- a tampered save, a hand edit --
+    // is still refused when it fires, rather than applying nothing.
+    const stored = scenario();
+    stored.simulation!.delayedConsequences.push(consequence);
+    expect(() => applyDueConsequences(stored, 1)).toThrow(/Unknown character/);
   });
 });
 
@@ -274,7 +280,10 @@ describe("C: a failed effect leaves no half-applied world", () => {
   });
 
   it("a delayed consequence that throws mid-list leaves the stored world intact", () => {
-    const scheduled = scheduleDelayedConsequence(scenario(), {
+    // Stored directly: the scheduler would refuse it (GQP-B P2-2), and this
+    // test is about the trigger-time defence for a world that holds it anyway.
+    const scheduled = scenario();
+    scheduled.simulation!.delayedConsequences.push({
       id: "con_half",
       triggerTurn: 1,
       visibility: "visible",
@@ -283,7 +292,7 @@ describe("C: a failed effect leaves no half-applied world", () => {
       reversible: false,
       status: "pending",
       source: { kind: "system", id: "test" }
-    }).state;
+    });
     const snapshot = structuredClone(scheduled);
 
     expect(() => applyDueConsequences(scheduled, 1)).toThrow(/Unknown character/);

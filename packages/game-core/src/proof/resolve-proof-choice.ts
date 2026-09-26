@@ -16,7 +16,6 @@ import {
   isProofEventEligible,
   proofConsequenceId
 } from "./proof-events.js";
-import { isProofEffectType, validateProofEffectShape } from "./proof-effect-contract.js";
 import { isProofSimulation } from "./schema-version.js";
 
 /**
@@ -78,16 +77,6 @@ export function resolveProofChoice(
     if (!Number.isSafeInteger(planned.delay) || planned.delay < 1 || !Number.isSafeInteger(state.turn + 1 + planned.delay)) {
       throw new Error(`Scheduled consequence '${planned.key}' needs a positive whole delay`);
     }
-    // Validated before it is stored, not when it fires. A consequence that
-    // would be refused three decisions from now is a broken decision now.
-    const errors: string[] = [];
-    planned.effects.forEach((effect, index) => {
-      if (isProofEffectType((effect as { type: unknown }).type)) {
-        validateProofEffectShape(effect, `${planned.key} effect[${index}]`, errors);
-      }
-    });
-    if (errors.length > 0) throw new Error(`Refused schedule '${planned.key}': ${errors.join("; ")}`);
-
     const consequence: DelayedConsequenceState = {
       id: proofConsequenceId(eventId, choiceId, planned.key),
       // `delay` counts subsequent decisions. The decision being made is turn T;
@@ -101,6 +90,9 @@ export function resolveProofChoice(
       status: "pending",
       source
     };
+    // Validated before it is stored, not when it fires, and by the scheduler
+    // itself: a consequence that would be refused three decisions from now is
+    // a broken decision now.
     const scheduled = scheduleDelayedConsequence(next, consequence, `proof:${source.id}`);
     next = scheduled.state;
     changes.push(...scheduled.delta.changes);
