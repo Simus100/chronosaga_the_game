@@ -1,4 +1,4 @@
-import type { DelayedConsequenceState, EventEffect, WorldState } from "@paa/game-types";
+import type { DelayedConsequenceState, EventEffect, SystemicSimulationStateV2, WorldState } from "@paa/game-types";
 import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
 import { validateCausalSource } from "./causal-source.js";
 import {
@@ -13,6 +13,7 @@ import {
   isSupportedSchemaVersion
 } from "../proof/schema-version.js";
 import { refuseProofFieldsOnBaseline, validateProofState } from "../proof/validate-proof-state.js";
+import { publicationRefusal } from "../proof/proof-effects.js";
 
 export interface SystemicValidationResult {
   ok: boolean;
@@ -422,6 +423,7 @@ function consequenceShapeErrors(consequence: JsonRecord, errors: string[]): void
 }
 
 interface ConsequenceContext {
+  readonly world: WorldState;
   readonly schemaVersion: unknown;
   readonly characterIds: Set<string>;
   readonly proofReferences: ProofEffectReferences;
@@ -461,8 +463,20 @@ function consequenceEffectErrors(
     }
     // One definition of well formed, shared with the applicator and the
     // proof catalogue.
+    const before = errors.length;
     validateProofEffectShape(effect, label, errors);
     validateProofEffectReferences(effect, label, errors, context.proofReferences);
+    // A pending publication must be one its holder can make: the fact held
+    // first-hand, and not yet public (P2-4). A permissive "it may exist by
+    // then" would store a consequence the boundary cannot prove will work.
+    if (type === "MEMORY_PUBLISH" && consequence.status === "pending" && errors.length === before) {
+      const refusal = publicationRefusal(
+        context.world,
+        context.world.simulation as SystemicSimulationStateV2,
+        effect as { characterId: string; memoryId: string }
+      );
+      if (refusal) errors.push(`${label}: ${refusal}`);
+    }
   });
 }
 
@@ -470,6 +484,7 @@ function consequenceContext(state: WorldState): ConsequenceContext {
   const simulation = state.simulation!;
   const characterIds = new Set(state.party.map(character => character.id));
   return {
+    world: state,
     schemaVersion: simulation.schemaVersion,
     characterIds,
     proofReferences: {

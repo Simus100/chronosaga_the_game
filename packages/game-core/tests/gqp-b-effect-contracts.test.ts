@@ -519,7 +519,7 @@ describe("GQP-B effects: MEMORY_PUBLISH makes a kept fact public, by decision", 
     const changes: StateChange[] = [];
     expect(isFactPublic(state, state.simulation as never, "fact_secret")).toBe(false);
     const before = structuredClone(memoriesOf(state, "mara_001").find(m => m.id === "fact_secret")!);
-    applyEventEffect(state, { type: "MEMORY_PUBLISH", memoryId: "fact_secret" }, changes, publish);
+    applyEventEffect(state, { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_secret" }, changes, publish);
 
     // Publication rewrites nothing: Mara's copy is untouched, and what makes
     // the fact public is what channel 3 writes -- derived, never stored.
@@ -541,10 +541,10 @@ describe("GQP-B effects: MEMORY_PUBLISH makes a kept fact public, by decision", 
   });
 
   it("refuses to publish a fact nobody holds, or one already public", () => {
-    refusedWithoutMutation(proof(), { type: "MEMORY_PUBLISH", memoryId: "fact_nobody" }, /no character holds that fact/);
+    refusedWithoutMutation(proof(), { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_nobody" }, /does not hold that fact/);
     const state = withSecret();
-    applyEventEffect(state, { type: "MEMORY_PUBLISH", memoryId: "fact_secret" }, [], CONTEXT);
-    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", memoryId: "fact_secret" }, /already public/);
+    applyEventEffect(state, { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_secret" }, [], CONTEXT);
+    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_secret" }, /already public/);
   });
 });
 
@@ -664,7 +664,7 @@ describe("The save boundary for proof memories (P2-5: schema v2 stays GQP-A's co
     applyEventEffect(state, memoryRecord({ characterId: "tarek_001", exposure: "private" }), [], CONTEXT);
     applyEventEffect(state, memoryRecord({ characterId: "ira_001", memoryId: "fact_public", exposure: "public" }), [], CONTEXT);
     applyEventEffect(state, memoryRecord({ characterId: "mara_001", memoryId: "fact_secret", exposure: "secret", behaviorHook: "call_in_debt", subjectId: "faction_front" }), [], CONTEXT);
-    applyEventEffect(state, { type: "MEMORY_PUBLISH", memoryId: "fact_secret" }, [], CONTEXT);
+    applyEventEffect(state, { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_secret" }, [], CONTEXT);
     const later = applyDueConsequences(scheduled(state, [memoryRecord({ characterId: "sela_001", memoryId: "fact_later", exposure: "public" })]), 1).state;
     const keys = new Set(later.party.flatMap(c => (c.memories ?? []).flatMap(m => Object.keys(m))));
     expect([...keys].filter(key => !GQP_A_MEMORY_FIELDS.includes(key))).toEqual([]);
@@ -685,7 +685,7 @@ describe("The save boundary for proof memories (P2-5: schema v2 stays GQP-A's co
     applyEventEffect(state, memoryRecord({ characterId: "ira_001", memoryId: "fact_lonely", exposure: "public" }), [], CONTEXT);
     expect(holderOf(state, "fact_lonely")).toEqual(["ira_001"]);
     expect(isFactPublic(state, state.simulation as never, "fact_lonely")).toBe(true);
-    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", memoryId: "fact_lonely" }, /already public/);
+    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", characterId: "ira_001", memoryId: "fact_lonely" }, /already public/);
   });
 
   it("derives public from a public copy alone, whatever became of the faction's tags", () => {
@@ -693,7 +693,7 @@ describe("The save boundary for proof memories (P2-5: schema v2 stays GQP-A's co
     state.party.find(c => c.id === "sela_001")!.memories = [directMemory({ origin: "public", salience: 0.3 })];
     expect(state.simulation!.factions.some(f => f.memoryTags.includes("aware:fact_saved"))).toBe(false);
     expect(isFactPublic(state, state.simulation as never, "fact_saved")).toBe(true);
-    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", memoryId: "fact_saved" }, /already public/);
+    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", characterId: "tarek_001", memoryId: "fact_saved" }, /already public/);
   });
 
   it("treats a stray exposure key as inert, exactly as a GQP-A reader would", () => {
@@ -702,7 +702,7 @@ describe("The save boundary for proof memories (P2-5: schema v2 stays GQP-A's co
     const clean = withMemories(proof(), [directMemory({})]);
     const stray = withMemories(proof(), [directMemory({ exposure: "public" })]);
     expect(isFactPublic(stray, stray.simulation as never, "fact_saved")).toBe(false);
-    const publish = { type: "MEMORY_PUBLISH", memoryId: "fact_saved" } as EventEffect;
+    const publish = { type: "MEMORY_PUBLISH", characterId: "tarek_001", memoryId: "fact_saved" } as EventEffect;
     applyEventEffect(clean, publish, [], CONTEXT);
     applyEventEffect(stray, publish, [], CONTEXT);
     const withoutKey = (w: WorldState) => JSON.parse(JSON.stringify(w).replace(',"exposure":"public"', ""));
@@ -775,5 +775,79 @@ describe("The scheduler meets the save boundary before it stores anything (P2-2)
       }
       expect([direct, scheduler]).toEqual([boundary, boundary]);
     }
+  });
+});
+
+describe("MEMORY_PUBLISH names its holder, and publishes only what it can (P2-4)", () => {
+  function secretOnMara(): WorldState {
+    const state = proof();
+    applyEventEffect(
+      state,
+      memoryRecord({ characterId: "mara_001", memoryId: "fact_secret", exposure: "private", behaviorHook: "call_in_debt", subjectId: "faction_front" }),
+      [],
+      CONTEXT
+    );
+    return state;
+  }
+  const publish = (characterId: string, memoryId = "fact_secret") =>
+    ({ type: "MEMORY_PUBLISH", characterId, memoryId }) as EventEffect;
+
+  it.each([
+    ["no holder", { type: "MEMORY_PUBLISH", memoryId: "fact_secret" }, /characterId/],
+    ["an unknown holder", { type: "MEMORY_PUBLISH", characterId: "ghost_999", memoryId: "fact_secret" }, /ghost_999/],
+    ["an extra field", { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_secret", origin: "direct" }, /origin/]
+  ])("refuses a payload with %s, touching nothing", (_label, effect, pattern) => {
+    refusedWithoutMutation(secretOnMara(), effect, pattern);
+  });
+
+  it("refuses to publish from a holder who only heard it second-hand", () => {
+    const state = secretOnMara();
+    // Tarek received a reflected copy along the high bond.
+    expect(memoriesOf(state, "tarek_001").find(m => m.id === "fact_secret")!.origin).toBe("reflected");
+    refusedWithoutMutation(state, publish("tarek_001"), /holds it second-hand, not directly/);
+  });
+
+  it("refuses to publish from someone who does not hold the fact at all", () => {
+    refusedWithoutMutation(secretOnMara(), publish("ira_001"), /'ira_001' does not hold that fact/);
+  });
+
+  it("publishes from the named direct holder", () => {
+    const state = secretOnMara();
+    applyEventEffect(state, publish("mara_001"), [], CONTEXT);
+    expect(isFactPublic(state, state.simulation as never, "fact_secret")).toBe(true);
+    expect(holderOf(state, "fact_secret").sort()).toEqual(["brann_001", "ira_001", "mara_001", "sela_001", "tarek_001"]);
+  });
+
+  it("stores a pending publication only if its holder can make it now", () => {
+    const pending = (effect: EventEffect) => consequenceOf([effect], "con_publish");
+    // Scheduler and boundary refuse the impossible: nobody holds it, or the
+    // named holder holds it second-hand.
+    for (const [state, effect, pattern] of [
+      [proof(), publish("mara_001", "fact_typo"), /does not hold that fact/],
+      [secretOnMara(), publish("tarek_001"), /second-hand/]
+    ] as const) {
+      const snapshot = structuredClone(state);
+      expect(() => scheduleDelayedConsequence(state, pending(effect))).toThrow(pattern);
+      expect(state).toEqual(snapshot);
+      expect(validateSystemicWorldState(stored(state, [effect])).errors.join("; ")).toMatch(pattern);
+    }
+    // And accept what will work.
+    const next = scheduleDelayedConsequence(secretOnMara(), pending(publish("mara_001"))).state;
+    expect(validateSystemicWorldState(next)).toEqual({ ok: true, errors: [] });
+    const fired = applyDueConsequences(next, 1).state;
+    expect(isFactPublic(fired, fired.simulation as never, "fact_secret")).toBe(true);
+    // Once applied, the publication is history, not a promise: still valid.
+    expect(validateSystemicWorldState(fired).ok).toBe(true);
+  });
+
+  it("still requires an applied publication to name a real character", () => {
+    // An applied consequence is history: its holder need not hold anything
+    // now, but it must exist -- the reference check is what says so.
+    const world = stored(proof(), [publish("ghost_999")]);
+    world.simulation!.delayedConsequences.find(c => c.id === "con_probe")!.status = "applied";
+    expect(validateSystemicWorldState(world).errors.join("; ")).toMatch(/characterId 'ghost_999' matches no party character/);
+    const real = stored(proof(), [publish("mara_001", "fact_long_published")]);
+    real.simulation!.delayedConsequences.find(c => c.id === "con_probe")!.status = "applied";
+    expect(validateSystemicWorldState(real).ok).toBe(true);
   });
 });

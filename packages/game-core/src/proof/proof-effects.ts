@@ -55,6 +55,32 @@ function referencesOf(state: WorldState, simulation: SystemicSimulationStateV2):
 }
 
 /**
+ * Why `holder` cannot publish `fact` in `state` now, or null if it can.
+ *
+ * The one precondition of a publication, read by everyone who needs it: the
+ * applicator refuses on it, option availability is derived from it (an option
+ * that would publish the impossible is closed, not an error at resolve time),
+ * and the save boundary and the scheduler refuse a pending publication that
+ * fails it (P2-4). The named character must hold the fact first-hand, and the
+ * fact must not already be public.
+ */
+export function publicationRefusal(
+  state: WorldState,
+  simulation: SystemicSimulationStateV2,
+  effect: { readonly characterId: string; readonly memoryId: string }
+): string | null {
+  const holder = state.party.find(character => character.id === effect.characterId);
+  if (!holder) return `Cannot publish '${effect.memoryId}': '${effect.characterId}' is not a party character`;
+  const memory = (holder.memories ?? []).find(item => item.id === effect.memoryId);
+  if (!memory) return `Cannot publish '${effect.memoryId}': '${effect.characterId}' does not hold that fact`;
+  if (memory.origin !== "direct") {
+    return `Cannot publish '${effect.memoryId}': '${effect.characterId}' holds it second-hand, not directly`;
+  }
+  if (isFactPublic(state, simulation, effect.memoryId)) return `Cannot publish '${effect.memoryId}': it is already public`;
+  return null;
+}
+
+/**
  * Apply one proof effect: validate it exactly as the boundaries do, compute the
  * whole result, check it, and only then write.
  *
@@ -141,31 +167,17 @@ export function applyProofEffect(
 
     case "MEMORY_PUBLISH": {
       const { source, turn } = requireContext(context, effect.type);
-      const holders = state.party
-        .filter(character => (character.memories ?? []).some(memory => memory.id === effect.memoryId))
-        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      if (holders.length === 0) {
-        throw new Error(`Cannot publish '${effect.memoryId}': no character holds that fact`);
-      }
-      // Public is derived from the traces channel 3 already wrote (P2-5), so
-      // a second publication finds them and is refused.
-      if (isFactPublic(state, simulation, effect.memoryId)) {
-        throw new Error(`Cannot publish '${effect.memoryId}': it is already public`);
-      }
-      const copies = holders.map(character => character.memories!.find(memory => memory.id === effect.memoryId)!);
-      const directIndex = copies.findIndex(memory => memory.origin === "direct");
-      if (directIndex < 0) {
-        throw new Error(`Cannot publish '${effect.memoryId}': no direct holder to publish from`);
-      }
+      const refusal = publicationRefusal(state, simulation, effect);
+      if (refusal) throw new Error(refusal);
+      const holder = state.party.find(character => character.id === effect.characterId)!;
+      const memory = holder.memories!.find(item => item.id === effect.memoryId)!;
 
-      // Channel 3 from the direct holder's settlement, as though the fact had
+      // Channel 3 from the named holder's settlement, as though the fact had
       // been public from the start. Reflection is not re-run: a publication
       // reaches the community, not a second round of confidants. Nothing is
-      // rewritten on the copies that already exist -- the public copies and
-      // the faction's awareness are the publication.
-      const plan = planPropagation(state, simulation, holders[directIndex]!, copies[directIndex]!, "public", source, turn, {
-        reflection: false
-      });
+      // rewritten on copies that already exist -- the public copies and the
+      // faction's awareness are the publication (P2-5).
+      const plan = planPropagation(state, simulation, holder, memory, "public", source, turn, { reflection: false });
       commitPropagation(state, simulation, plan, changes);
       return;
     }

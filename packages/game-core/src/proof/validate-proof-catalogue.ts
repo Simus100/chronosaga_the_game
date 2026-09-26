@@ -146,6 +146,10 @@ export function validateProofCatalogue(
   const settableFlags = new Set<string>(Object.keys(world.flags));
   const scheduledIds = new Set<string>();
   const eventIds = new Set<string>();
+  // Who records which fact, and how widely: what a publication must be able
+  // to rely on (P2-4).
+  const producers: { memoryId: string; characterId: string; exposure: unknown }[] = [];
+  const publishedBy = new Map<string, string>(); // fact -> event
 
   const events = catalogue.filter(isRecord);
   if (events.length !== catalogue.length) errors.push("every catalogue entry must be an object");
@@ -184,6 +188,7 @@ export function validateProofCatalogue(
           }
           recordedMemories.set(key, id);
           recordedFacts.add(effect.memoryId);
+          producers.push({ memoryId: effect.memoryId, characterId: effect.characterId, exposure: effect.exposure });
           if (nonEmpty(effect.behaviorHook)) hooksByCharacter.add(`${effect.characterId}:${effect.behaviorHook}`);
         }
       }
@@ -365,6 +370,35 @@ export function validateProofCatalogue(
       for (const effect of Array.isArray(choice.effects) ? choice.effects.filter(isRecord) : []) {
         if (effect.type === "MEMORY_RECORD" && nonEmpty(effect.memoryId)) recordedHere.set(effect.memoryId, effect);
       }
+      // A publication must be one the content can make (P2-4): the named
+      // holder records the fact somewhere, not already public, and only one
+      // event ever publishes it. An immediate publication may not publish
+      // what its own choice records -- availability reads the world before
+      // the choice, and that fact is not in it yet; record it public instead.
+      const publications = (at2: string, effect: JsonRecord, delayed: boolean) => {
+        if (!nonEmpty(effect.memoryId) || !nonEmpty(effect.characterId)) return;
+        const fact = effect.memoryId;
+        const recorders = producers.filter(item => item.memoryId === fact && item.characterId === effect.characterId);
+        if (recorders.length === 0) {
+          errors.push(`${at2} publishes '${fact}' from '${effect.characterId}', but no choice records it on '${effect.characterId}'`);
+        } else if (recorders.some(item => item.exposure === "public")) {
+          errors.push(`${at2} publishes '${fact}', which is recorded public already`);
+        }
+        const owner = publishedBy.get(fact);
+        if (owner !== undefined && owner !== id) errors.push(`fact '${fact}' is published by both '${owner}' and '${id}'`);
+        publishedBy.set(fact, id);
+        const recordedByThisChoice = recordedHere.get(fact)?.characterId === effect.characterId;
+        if (!delayed && recordedHere.has(fact)) {
+          errors.push(`${at2} records and publishes '${fact}' in one choice; record it public instead`);
+        }
+        if (delayed && !recordedByThisChoice) {
+          errors.push(`${at2} is a delayed publication of '${fact}', which the same choice does not record on '${effect.characterId}'`);
+        }
+      };
+      (Array.isArray(choice.effects) ? choice.effects : []).forEach((effect, index) => {
+        if (isRecord(effect) && effect.type === "MEMORY_PUBLISH") publications(`${at}.effects[${index}]`, effect, false);
+      });
+
       const scheduleKeys = new Set<string>();
       for (const schedule of recordsOf(choice.schedules, `${at}.schedules`, errors, true)) {
         const sat = `${at} schedule ${String(schedule.key)}`;
@@ -379,6 +413,9 @@ export function validateProofCatalogue(
           errors.push(`${sat}.scope is invalid`);
         }
         effectList(schedule.effects, `${sat}.effects`);
+        (Array.isArray(schedule.effects) ? schedule.effects : []).forEach((effect, index) => {
+          if (isRecord(effect) && effect.type === "MEMORY_PUBLISH") publications(`${sat}.effects[${index}]`, effect, true);
+        });
 
         // A delayed outcome needs a breadcrumb the player could have seen: a
         // memory this same choice records, and that may be called back.

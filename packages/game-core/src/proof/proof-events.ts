@@ -9,6 +9,7 @@ import type {
 import { readAuthoritativeResource } from "../state/resource-authority.js";
 import { agendaConditionHolds } from "./agenda-condition.js";
 import { epidemicStage, pressureStage, settlementInfrastructurePressure } from "./pressure.js";
+import { publicationRefusal } from "./proof-effects.js";
 import { isProofSimulation } from "./schema-version.js";
 
 /**
@@ -169,6 +170,14 @@ export function isProofChoiceAvailable(choice: ProofChoice, state: WorldState): 
   for (const [key, cost] of immediateCosts(choice)) {
     if (readAuthoritativeResource(state, key) + cost < 0) return false;
   }
+  // A publication the named holder cannot make now closes the option, by the
+  // applicator's own precondition (P2-4). The catalogue gate guarantees the
+  // fact is produced somewhere and not by this same choice, so reading the
+  // current world is reading the world the effect will meet.
+  const simulation = proofWorld(state);
+  for (const effect of choice.effects) {
+    if (effect.type === "MEMORY_PUBLISH" && publicationRefusal(state, simulation, effect) !== null) return false;
+  }
   return true;
 }
 
@@ -222,7 +231,7 @@ export type KnownItem =
   | { kind: "epidemic"; cause: string; delta: number }
   | { kind: "node_condition"; nodeId: string; delta: number }
   | { kind: "memory"; characterId: string; memoryId: string; valence: string; exposure: string }
-  | { kind: "publish"; memoryId: string };
+  | { kind: "publish"; characterId: string; memoryId: string };
 
 function knownOf(effect: EventEffect): KnownItem {
   switch (effect.type) {
@@ -247,7 +256,7 @@ function knownOf(effect: EventEffect): KnownItem {
         exposure: effect.exposure
       };
     case "MEMORY_PUBLISH":
-      return { kind: "publish", memoryId: effect.memoryId };
+      return { kind: "publish", characterId: effect.characterId, memoryId: effect.memoryId };
     default: {
       const unknown: never = effect;
       throw new Error(`Cannot describe effect type ${JSON.stringify((unknown as { type: unknown }).type)}`);

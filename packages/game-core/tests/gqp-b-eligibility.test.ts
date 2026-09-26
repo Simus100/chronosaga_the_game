@@ -229,3 +229,24 @@ describe("GQP-B disclosure is derived where it can be", () => {
     expect(described.risks).toEqual(["infrastructure", "social"]);
   });
 });
+
+describe("An option that would publish the impossible is closed, not an error (P2-4)", () => {
+  const publishing: ProofChoice = {
+    id: "disclose",
+    label: "Disclose",
+    effects: [{ type: "MEMORY_PUBLISH", characterId: "tarek_001", memoryId: "fact_t_warning" }],
+    disclosure: { risks: ["political"], unknowns: ["x"] }
+  };
+
+  it("opens only when the named holder holds the fact first-hand and it is not yet public", () => {
+    const before = proof();
+    expect(isProofChoiceAvailable(publishing, before)).toBe(false);
+    const recorded = resolveProofChoice(before, CATALOGUE, "evt_t_maint", "defer").state;
+    expect(isProofChoiceAvailable(publishing, recorded)).toBe(true);
+    // Mara holds it too -- reflected. Naming her keeps the option closed.
+    expect(isProofChoiceAvailable({ ...publishing, effects: [{ type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_t_warning" }] }, recorded)).toBe(false);
+    const published = structuredClone(recorded);
+    published.simulation!.factions[0]!.memoryTags.push("aware:fact_t_warning");
+    expect(isProofChoiceAvailable(publishing, published)).toBe(false);
+  });
+});

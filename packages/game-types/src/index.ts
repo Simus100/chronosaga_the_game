@@ -275,6 +275,12 @@ export interface MemoryRecordEffect {
  */
 export interface MemoryPublishEffect {
   type: "MEMORY_PUBLISH";
+  /**
+   * The direct holder the fact is published from. Named, not chosen: two
+   * characters could otherwise hold a fact under one id, and an implicit
+   * "first direct holder" would decide which version became public (P2-4).
+   */
+  characterId: string;
   memoryId: string;
 }
 

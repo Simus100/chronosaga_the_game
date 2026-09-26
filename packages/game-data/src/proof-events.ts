@@ -475,7 +475,7 @@ const f3DebtCalled: ProofEvent = {
       id: "disclose_and_register",
       label: "Disclose the line and register it",
       effects: [
-        { type: "MEMORY_PUBLISH", memoryId: "fact_f3_secret_tap" },
+        { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_f3_secret_tap" },
         { type: "FLAG_SET", key: "conduit_registered", value: true },
         { type: "FLAG_SET", key: "unregistered_conduit_active", value: false },
         { type: "PRESSURE_DELTA", value: 2 },

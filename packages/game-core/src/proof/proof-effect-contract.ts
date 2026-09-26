@@ -57,7 +57,7 @@ const ALLOWED_FIELDS: Readonly<Record<ProofEventEffect["type"], readonly string[
     "summary",
     "tags"
   ],
-  MEMORY_PUBLISH: ["type", "memoryId"]
+  MEMORY_PUBLISH: ["type", "characterId", "memoryId"]
 };
 
 /** The ids a proof effect may name, taken from the world it will act on. */
@@ -188,6 +188,7 @@ export function validateProofEffectShape(effect: unknown, label: string, errors:
       return;
     }
     case "MEMORY_PUBLISH": {
+      identifier(effect, "characterId", label, errors);
       identifier(effect, "memoryId", label, errors);
       return;
     }
@@ -197,10 +198,9 @@ export function validateProofEffectShape(effect: unknown, label: string, errors:
 /**
  * With a world: every id the effect names must exist in it.
  *
- * `MEMORY_PUBLISH` is deliberately not checked here. A pending consequence may
- * publish a fact that another consequence records first, so its target can
- * legitimately be absent at save time; the applicator refuses it if it is still
- * absent when it runs.
+ * For `MEMORY_PUBLISH` that is the named holder. Whether the holder can
+ * publish the fact *now* is `publicationRefusal`, which needs the whole world;
+ * the save boundary and the scheduler apply it to pending publications.
  */
 export function validateProofEffectReferences(
   effect: unknown,
@@ -212,6 +212,11 @@ export function validateProofEffectReferences(
   if (effect.type === "NODE_CONDITION_SHIFT" && typeof effect.nodeId === "string") {
     if (!references.nodeIds.has(effect.nodeId)) {
       errors.push(`${label}.nodeId '${effect.nodeId}' matches no production node`);
+    }
+  }
+  if (effect.type === "MEMORY_PUBLISH" && typeof effect.characterId === "string") {
+    if (!references.characterIds.has(effect.characterId)) {
+      errors.push(`${label}.characterId '${effect.characterId}' matches no party character`);
     }
   }
   if (effect.type === "MEMORY_RECORD") {

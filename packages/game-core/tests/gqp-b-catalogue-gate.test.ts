@@ -276,4 +276,57 @@ describe("GQP-B catalogue gate", () => {
       expect(errors(c)).toEqual([]);
     });
   });
+
+
+  describe("a publication must be one the content can make (P2-4)", () => {
+    const withPublication = (effect: Record<string, unknown>, where: "signal" | "maint" = "signal") => {
+      const c = clone();
+      if (where === "signal") c[1].choices[0].effects.push(effect);
+      else c[0].choices[0].effects.push(effect);
+      return c;
+    };
+    const publish = (characterId: string, memoryId: string) => ({ type: "MEMORY_PUBLISH", characterId, memoryId });
+
+    it("accepts publishing a private fact from the character who records it", () => {
+      expect(errors(withPublication(publish("tarek_001", "fact_t_warning")))).toEqual([]);
+    });
+
+    it("refuses a fact no choice records -- a typo is dead content", () => {
+      refuses(withPublication(publish("tarek_001", "fact_typo")), /publishes 'fact_typo' from 'tarek_001', but no choice records it on 'tarek_001'/);
+    });
+
+    it("refuses publishing from a character who does not record the fact", () => {
+      refuses(withPublication(publish("mara_001", "fact_t_warning")), /no choice records it on 'mara_001'/);
+    });
+
+    it("refuses publishing a fact that is recorded public already", () => {
+      const c = withPublication(publish("tarek_001", "fact_t_warning"));
+      c[0].choices[1].effects[0].exposure = "public";
+      refuses(c, /publishes 'fact_t_warning', which is recorded public already/);
+    });
+
+    it("refuses one fact published by two events", () => {
+      const c = withPublication(publish("tarek_001", "fact_t_warning"));
+      c[0].choices[0].effects.push(publish("tarek_001", "fact_t_warning"));
+      refuses(c, /fact 'fact_t_warning' is published by both/);
+    });
+
+    it("refuses recording and publishing a fact in one choice", () => {
+      const c = clone();
+      c[0].choices[1].effects.push(publish("tarek_001", "fact_t_warning"));
+      refuses(c, /records and publishes 'fact_t_warning' in one choice/);
+    });
+
+    it("requires a delayed publication to publish what its own choice records", () => {
+      const ok = clone();
+      ok[0].choices[1].schedules[0].effects.push(publish("tarek_001", "fact_t_warning"));
+      ok[0].choices[1].disclosure.risks.push("political"); // a publication is political exposure
+      expect(errors(ok)).toEqual([]);
+      const orphan = clone();
+      orphan[0].choices[1].schedules[0].effects.push(publish("tarek_001", "fact_t_warning"));
+      orphan[0].choices[1].effects[0].characterId = "mara_001";
+      orphan[0].choices[1].disclosure.risks.push("political");
+      refuses(orphan, /delayed publication of 'fact_t_warning', which the same choice does not record on 'tarek_001'/);
+    });
+  });
 });
