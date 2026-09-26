@@ -71,6 +71,42 @@ function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
+/**
+ * The object elements of a list, with every departure from "an array of
+ * objects" reported rather than smoothed over.
+ *
+ * GQP-B P2-3: the gate used to `filter(isRecord)` and treat a non-array as
+ * empty, so `[choice, null]` was validated as `[choice]` and `schedules:
+ * "invalid"` as no schedules at all. The gate takes `unknown` because content
+ * is untrusted; it must refuse a malformed catalogue, not validate a
+ * different, well-formed one in its place.
+ */
+function recordsOf(value: unknown, label: string, errors: string[], optional: boolean): JsonRecord[] {
+  if (value === undefined && optional) return [];
+  if (!Array.isArray(value)) {
+    errors.push(`${label} must be an array`);
+    return [];
+  }
+  const records: JsonRecord[] = [];
+  value.forEach((item, index) => {
+    if (isRecord(item)) records.push(item);
+    else errors.push(`${label}[${index}] must be an object, got ${item === null ? "null" : typeof item}`);
+  });
+  return records;
+}
+
+/** A list of non-empty strings, refused whole if it is anything else. */
+function requireTextList(value: unknown, label: string, errors: string[]): string[] {
+  if (!Array.isArray(value)) {
+    errors.push(`${label} must be an array of strings`);
+    return [];
+  }
+  value.forEach((item, index) => {
+    if (!nonEmpty(item)) errors.push(`${label}[${index}] must be a non-empty string`);
+  });
+  return value.filter(nonEmpty);
+}
+
 const PREDICATE_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
   epidemic_stage_in: ["predicate", "stages"],
   infrastructure_stage_in: ["predicate", "settlementId", "stages"],
@@ -279,7 +315,7 @@ export function validateProofCatalogue(
     }
     predicates(event.eligibility, `event ${id}.eligibility`);
 
-    const choices = Array.isArray(event.choices) ? event.choices.filter(isRecord) : [];
+    const choices = recordsOf(event.choices, `event ${id}.choices`, errors, false);
     if (choices.length === 0) {
       errors.push(`event ${id} has no choices`);
       continue;
@@ -299,14 +335,21 @@ export function validateProofCatalogue(
       if (choice.availability !== undefined) predicates(choice.availability, `${at}.availability`);
       effectList(choice.effects, `${at}.effects`);
 
-      // GQP-3: the disclosure contract.
+      // GQP-3: the disclosure contract. Every list is a list, or it is refused:
+      // a `risks: "supply"` read as no risks would pass a major choice that
+      // discloses nothing.
       const disclosure = isRecord(choice.disclosure) ? choice.disclosure : null;
       if (!disclosure) {
         errors.push(`${at} has no disclosure`);
         continue;
       }
-      const risks = Array.isArray(disclosure.risks) ? disclosure.risks : [];
-      const unknowns = Array.isArray(disclosure.unknowns) ? disclosure.unknowns : [];
+      if (!Array.isArray(disclosure.risks)) errors.push(`${at}.disclosure.risks must be an array`);
+      if (!Array.isArray(disclosure.unknowns)) errors.push(`${at}.disclosure.unknowns must be an array`);
+      const risks: unknown[] = Array.isArray(disclosure.risks) ? disclosure.risks : [];
+      const unknowns: unknown[] = Array.isArray(disclosure.unknowns) ? disclosure.unknowns : [];
+      if (disclosure.knownNotes !== undefined) {
+        requireTextList(disclosure.knownNotes, `${at}.disclosure.knownNotes`, errors);
+      }
       if (risks.some(r => !(PROOF_RISK_CATEGORIES as readonly string[]).includes(r as string))) {
         errors.push(`${at}.disclosure.risks holds an unknown category`);
       }
@@ -323,7 +366,7 @@ export function validateProofCatalogue(
         if (effect.type === "MEMORY_RECORD" && nonEmpty(effect.memoryId)) recordedHere.set(effect.memoryId, effect);
       }
       const scheduleKeys = new Set<string>();
-      for (const schedule of Array.isArray(choice.schedules) ? choice.schedules.filter(isRecord) : []) {
+      for (const schedule of recordsOf(choice.schedules, `${at}.schedules`, errors, true)) {
         const sat = `${at} schedule ${String(schedule.key)}`;
         if (!nonEmpty(schedule.key)) errors.push(`${at} has a schedule with no key`);
         else if (scheduleKeys.has(schedule.key)) errors.push(`${at} repeats schedule key '${schedule.key}'`);

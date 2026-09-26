@@ -249,4 +249,31 @@ describe("GQP-B catalogue gate", () => {
       expect(found.some(e => /effects\[1\].*water_shortage/.test(e))).toBe(true);
     });
   });
+
+  describe("malformed input is refused, never normalised (P2-3)", () => {
+    const valid = (): Hostile => clone()[0].choices[0];
+
+    it.each([
+      ["a null choice", (c: Hostile[]) => c[0].choices.push(null), /event evt_t_maint\.choices\[2\] must be an object, got null/],
+      ["a string choice", (c: Hostile[]) => c[0].choices.push("x"), /event evt_t_maint\.choices\[2\] must be an object, got string/],
+      ["choices that are not a list", (c: Hostile[]) => (c[0].choices = { a: valid() }), /event evt_t_maint\.choices must be an array/],
+      ["a null schedule", (c: Hostile[]) => c[0].choices[1].schedules.push(null), /choice defer\.schedules\[1\] must be an object, got null/],
+      ["schedules that are not a list", (c: Hostile[]) => (c[0].choices[0].schedules = "invalid"), /choice repair\.schedules must be an array/],
+      ["risks that are a string", (c: Hostile[]) => (c[0].choices[0].disclosure.risks = "supply"), /choice repair\.disclosure\.risks must be an array/],
+      ["unknowns that are an object", (c: Hostile[]) => (c[0].choices[0].disclosure.unknowns = {}), /choice repair\.disclosure\.unknowns must be an array/],
+      ["knownNotes that are a number", (c: Hostile[]) => (c[0].choices[0].disclosure.knownNotes = 123), /choice repair\.disclosure\.knownNotes must be an array of strings/],
+      ["knownNotes holding a number", (c: Hostile[]) => (c[0].choices[0].disclosure.knownNotes = ["ok", 2]), /choice repair\.disclosure\.knownNotes\[1\] must be a non-empty string/]
+    ] as [string, (c: Hostile[]) => unknown, RegExp][])("refuses %s", (_label, corrupt, pattern) => {
+      const c = clone();
+      corrupt(c);
+      refuses(c, pattern);
+      expect(validateProofCatalogue(c, proofWorld()).ok).toBe(false);
+    });
+
+    it("still accepts the valid catalogue, and well-formed knownNotes", () => {
+      const c = clone();
+      c[0].choices[0].disclosure.knownNotes = ["The overhaul takes the recycler offline."];
+      expect(errors(c)).toEqual([]);
+    });
+  });
 });
