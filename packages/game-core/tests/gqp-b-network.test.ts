@@ -199,7 +199,11 @@ function outcome(state: WorldState, eventId: string, choice: ProofChoice): numbe
   const node = (r: typeof a) => Object.values(r.nodeCondition).reduce((x, y) => x + y, 0);
   const stress = (w: WorldState) => w.party.reduce((total, c) => total + c.stress, 0);
   const recorded = choice.effects.filter(effect => effect.type === "MEMORY_RECORD");
-  const secrets = (r: typeof a) => r.memories.filter(m => m.exposure === "secret").length;
+  // Secrets this option creates count against it, publications for it. Read
+  // from the payload that decides them: exposure is not stored (P2-5).
+  const secretsCreated =
+    recorded.filter(effect => effect.exposure === "secret").length -
+    choice.effects.filter(effect => effect.type === "MEMORY_PUBLISH").length;
 
   return [
     ...["energy", "water", "medicine", "food", "alloys", "credits"].map(
@@ -211,7 +215,7 @@ function outcome(state: WorldState, eventId: string, choice: ProofChoice): numbe
     -(stress(resolved) - stress(state)),
     -recorded.filter(effect => effect.valence === "negative").length,
     recorded.filter(effect => effect.valence === "positive").length,
-    -(secrets(b) - secrets(a)),
+    -secretsCreated,
     -choice.disclosure.risks.length,
     ...Object.keys(b.agenda).map(id => Number(b.agenda[id]) - Number(a.agenda[id]))
   ];
@@ -536,8 +540,11 @@ describe("Social propagation: three channels, no hive mind", () => {
     const reading = readProofWorld(disclosed, CATALOGUE);
     const holders = reading.memories.filter(m => m.memoryId === "fact_f3_secret_tap");
     expect(holders.length).toBe(disclosed.party.length);
-    expect(holders.every(m => m.exposure === "public")).toBe(true);
+    // Mara keeps her direct copy; everyone else learned it from the publication.
+    expect(holders.filter(m => m.origin === "direct").map(m => m.characterId)).toEqual(["mara_001"]);
+    expect(holders.filter(m => m.origin !== "direct").every(m => m.origin === "public")).toBe(true);
     expect(reading.factionAwareness).toContain("faction_compact:aware:fact_f3_secret_tap");
+    expect(reading.publicFacts).toContain("fact_f3_secret_tap");
   });
 });
 

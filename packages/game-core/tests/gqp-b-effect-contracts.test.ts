@@ -17,6 +17,8 @@ import {
   createSystemicScenario,
   runWorldTick,
   scheduleDelayedConsequence,
+  PROOF_MEMORY_FIELDS,
+  isFactPublic,
   settlementInfrastructurePressure,
   validateDelayedConsequence,
   validateGameEvent,
@@ -351,10 +353,13 @@ describe("GQP-B effects: NODE_CONDITION_SHIFT is agency over the node itself", (
 });
 
 describe("GQP-B effects: MEMORY_RECORD writes a salient memory, typed", () => {
-  it("records the fact on the character with every GQP-A field, and origin direct", () => {
+  it("records the fact on the character with exactly the GQP-A fields, and origin direct", () => {
     const state = proof();
-    applyEventEffect(state, memoryRecord({ exposure: "secret" }), [], { source: SOURCE, turn: 3 });
+    const changes: StateChange[] = [];
+    applyEventEffect(state, memoryRecord({ exposure: "secret" }), changes, { source: SOURCE, turn: 3 });
     const memory = memoriesOf(state, "tarek_001").find(m => m.id === "fact_probe")!;
+    // No `exposure` on the stored memory (P2-5): it chose the channels, and it
+    // is reported in the delta, but schema v2's memory is GQP-A's.
     expect(memory).toEqual({
       id: "fact_probe",
       summary: "The recycler warning went unheeded.",
@@ -364,10 +369,10 @@ describe("GQP-B effects: MEMORY_RECORD writes a salient memory, typed", () => {
       valence: "negative",
       salience: 0.8,
       origin: "direct",
-      exposure: "secret",
       behaviorHook: "offer_unprompted_warning",
       callbackEligible: true
     });
+    expect(changes.find(c => c.type === "memoryRecorded")!.after).toMatchObject({ exposure: "secret" });
     expect(validateSystemicWorldState(state).ok).toBe(true);
   });
 
@@ -512,9 +517,14 @@ describe("GQP-B effects: MEMORY_PUBLISH makes a kept fact public, by decision", 
     const state = withSecret();
     const publish = { source: { kind: "choice" as const, id: "evt_publish:disclose" }, turn: 4 };
     const changes: StateChange[] = [];
+    expect(isFactPublic(state, state.simulation as never, "fact_secret")).toBe(false);
+    const before = structuredClone(memoriesOf(state, "mara_001").find(m => m.id === "fact_secret")!);
     applyEventEffect(state, { type: "MEMORY_PUBLISH", memoryId: "fact_secret" }, changes, publish);
 
-    expect(memoriesOf(state, "mara_001").find(m => m.id === "fact_secret")!.exposure).toBe("public");
+    // Publication rewrites nothing: Mara's copy is untouched, and what makes
+    // the fact public is what channel 3 writes -- derived, never stored.
+    expect(memoriesOf(state, "mara_001").find(m => m.id === "fact_secret")).toEqual(before);
+    expect(isFactPublic(state, state.simulation as never, "fact_secret")).toBe(true);
     expect(holderOf(state, "fact_secret").sort()).toEqual(
       ["brann_001", "ira_001", "mara_001", "sela_001", "tarek_001"]
     );
@@ -619,7 +629,7 @@ describe("GQP-B tick rule: water shortage feeds the epidemic, derived rather tha
   });
 });
 
-describe("The save boundary for the memory fields GQP-B adds", () => {
+describe("The save boundary for proof memories (P2-5: schema v2 stays GQP-A's contract)", () => {
   const directMemory = (patch: Record<string, unknown>): CharacterMemory =>
     ({
       id: "fact_saved",
@@ -640,23 +650,63 @@ describe("The save boundary for the memory fields GQP-B adds", () => {
     return copy;
   }
 
-  it("accepts a well-formed exposure at v2", () => {
-    expect(validateSystemicWorldState(withMemories(proof(), [directMemory({ exposure: "secret" })])).ok).toBe(true);
+  // The GQP-A (develop@567e94f) schema-v2 memory contract, verbatim.
+  const GQP_A_MEMORY_FIELDS = [
+    "id", "summary", "tags", "turn", "source",
+    "valence", "salience", "subjectId", "origin", "behaviorHook", "callbackEligible"
+  ];
+
+  it("persists no memory field GQP-A does not know, on any path the proof takes", () => {
+    // What an old schema-v2 reader could not interpret, it would accept and
+    // ignore. So the proof must not write it. Every channel, the publication,
+    // and a delayed record are exercised.
+    const state = proof();
+    applyEventEffect(state, memoryRecord({ characterId: "tarek_001", exposure: "private" }), [], CONTEXT);
+    applyEventEffect(state, memoryRecord({ characterId: "ira_001", memoryId: "fact_public", exposure: "public" }), [], CONTEXT);
+    applyEventEffect(state, memoryRecord({ characterId: "mara_001", memoryId: "fact_secret", exposure: "secret", behaviorHook: "call_in_debt", subjectId: "faction_front" }), [], CONTEXT);
+    applyEventEffect(state, { type: "MEMORY_PUBLISH", memoryId: "fact_secret" }, [], CONTEXT);
+    const later = applyDueConsequences(scheduled(state, [memoryRecord({ characterId: "sela_001", memoryId: "fact_later", exposure: "public" })]), 1).state;
+    const keys = new Set(later.party.flatMap(c => (c.memories ?? []).flatMap(m => Object.keys(m))));
+    expect([...keys].filter(key => !GQP_A_MEMORY_FIELDS.includes(key))).toEqual([]);
+    expect(later.party.flatMap(c => c.memories ?? []).length).toBeGreaterThan(10);
   });
 
-  it("refuses exposure on a baseline v1 save, as every proof memory field", () => {
-    const baseline = createSystemicScenario(7419);
-    const copy = structuredClone(baseline);
-    copy.party[0]!.memories = [{ id: "m", summary: "s", tags: [], turn: 1, source: SOURCE, exposure: "private" } as CharacterMemory];
-    const verdict = validateSystemicWorldState(copy);
-    expect(verdict.ok).toBe(false);
-    expect(verdict.errors.join("; ")).toMatch(/exposure/);
+  it("keeps the v2 memory field list GQP-A's", () => {
+    expect([...PROOF_MEMORY_FIELDS].sort()).toEqual(
+      ["valence", "salience", "subjectId", "origin", "behaviorHook", "callbackEligible"].sort()
+    );
   });
 
-  it("refuses an exposure outside the vocabulary", () => {
-    const verdict = validateSystemicWorldState(withMemories(proof(), [directMemory({ exposure: "rumoured" })]));
-    expect(verdict.ok).toBe(false);
-    expect(verdict.errors.join("; ")).toMatch(/exposure/);
+  it("derives public from the faction's awareness alone, when nobody else was there to hear", () => {
+    // Ira is alone in Helios: a public fact reaches no community, but the
+    // controlling faction learns it -- and that alone makes it public.
+    const state = proof();
+    for (const character of state.party) if (character.id !== "ira_001") character.locationId = "elsewhere";
+    applyEventEffect(state, memoryRecord({ characterId: "ira_001", memoryId: "fact_lonely", exposure: "public" }), [], CONTEXT);
+    expect(holderOf(state, "fact_lonely")).toEqual(["ira_001"]);
+    expect(isFactPublic(state, state.simulation as never, "fact_lonely")).toBe(true);
+    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", memoryId: "fact_lonely" }, /already public/);
+  });
+
+  it("derives public from a public copy alone, whatever became of the faction's tags", () => {
+    const state = withMemories(proof(), [directMemory({})]);
+    state.party.find(c => c.id === "sela_001")!.memories = [directMemory({ origin: "public", salience: 0.3 })];
+    expect(state.simulation!.factions.some(f => f.memoryTags.includes("aware:fact_saved"))).toBe(false);
+    expect(isFactPublic(state, state.simulation as never, "fact_saved")).toBe(true);
+    refusedWithoutMutation(state, { type: "MEMORY_PUBLISH", memoryId: "fact_saved" }, /already public/);
+  });
+
+  it("treats a stray exposure key as inert, exactly as a GQP-A reader would", () => {
+    // Neither build reads it, so neither can read it differently: the same
+    // world with and without it publishes, and propagates, identically.
+    const clean = withMemories(proof(), [directMemory({})]);
+    const stray = withMemories(proof(), [directMemory({ exposure: "public" })]);
+    expect(isFactPublic(stray, stray.simulation as never, "fact_saved")).toBe(false);
+    const publish = { type: "MEMORY_PUBLISH", memoryId: "fact_saved" } as EventEffect;
+    applyEventEffect(clean, publish, [], CONTEXT);
+    applyEventEffect(stray, publish, [], CONTEXT);
+    const withoutKey = (w: WorldState) => JSON.parse(JSON.stringify(w).replace(',"exposure":"public"', ""));
+    expect(withoutKey(stray)).toEqual(JSON.parse(JSON.stringify(clean)));
   });
 
   it("refuses one character holding the same fact twice", () => {

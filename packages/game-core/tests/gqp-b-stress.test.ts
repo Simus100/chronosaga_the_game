@@ -14,7 +14,7 @@ import {
   runWorldTick,
   validateSystemicWorldState
 } from "../src";
-import { saveAndLoad } from "./support/proof-trajectory";
+import { publishedFacts, saveAndLoad, secretFacts } from "./support/proof-trajectory";
 
 /**
  * Property and stress matrix over the whole network.
@@ -36,27 +36,37 @@ interface Run {
   readonly decisions: number;
 }
 
+const SECRETS = secretFacts(CATALOGUE);
+
 function secretHoldersOk(state: WorldState): string[] {
   const problems: string[] = [];
-  const copies = new Map<string, { characterId: string; origin?: string; exposure?: string }[]>();
+  const copies = new Map<string, { characterId: string; origin?: string }[]>();
   for (const character of state.party) {
     const ids = new Set<string>();
     for (const memory of character.memories ?? []) {
       if (ids.has(memory.id)) problems.push(`${character.id} holds '${memory.id}' twice`);
       ids.add(memory.id);
       const list = copies.get(memory.id) ?? [];
-      list.push({ characterId: character.id, origin: memory.origin, exposure: memory.exposure });
+      list.push({ characterId: character.id, origin: memory.origin });
       copies.set(memory.id, list);
       if (memory.origin !== undefined && memory.origin !== "direct" && memory.behaviorHook !== undefined) {
         problems.push(`${character.id} carries a behaviour hook on second-hand '${memory.id}'`);
       }
     }
   }
-  for (const [id, list] of copies) {
-    const secret = list.some(copy => copy.exposure === "secret");
-    if (secret && list.length > 1) problems.push(`secret '${id}' is held by ${list.map(c => c.characterId).join(",")}`);
-    const faction = state.simulation!.factions.some(f => f.memoryTags.includes(`aware:${id}`));
-    if (secret && faction) problems.push(`a faction is aware of secret '${id}'`);
+  // A fact recorded as secret, and not published by a decision the history
+  // records, has one holder, no public copy, and no faction that knows it.
+  // Secrecy is read from the content that decided it and publication from the
+  // history, so neither side of this is the thing being checked.
+  const published = publishedFacts(state, CATALOGUE);
+  for (const id of SECRETS) {
+    if (published.has(id)) continue;
+    const list = copies.get(id) ?? [];
+    if (list.length > 1) problems.push(`secret '${id}' is held by ${list.map(c => c.characterId).join(",")}`);
+    if (list.some(copy => copy.origin === "public")) problems.push(`secret '${id}' has a public copy`);
+    if (state.simulation!.factions.some(f => f.memoryTags.includes(`aware:${id}`))) {
+      problems.push(`a faction is aware of secret '${id}'`);
+    }
   }
   return problems;
 }
@@ -148,7 +158,7 @@ describe("Inspection is read-only", () => {
     expect(second).toEqual(first);
     expect([before, after]).toEqual(snapshots);
     expect(first.consequencesScheduled).toEqual(["con.evt_f3_conduit_offer.tap_quietly.strain"]);
-    expect(first.newMemories.map(m => `${m.characterId}:${m.memoryId}:${m.exposure}`)).toContain("mara_001:fact_f3_secret_tap:secret");
+    expect(first.newMemories.filter(m => m.memoryId.startsWith("fact_")).map(m => `${m.characterId}:${m.memoryId}:${m.origin}`)).toEqual(["mara_001:fact_f3_secret_tap:direct"]);
   });
 
   it("refuses a baseline world", () => {

@@ -15,6 +15,7 @@ import {
   TRAJECTORY_B,
   TRAJECTORY_C,
   runTrajectory,
+  secretFacts,
   type Decision,
   type Trajectory
 } from "./support/proof-trajectory";
@@ -31,6 +32,7 @@ import {
  */
 
 const CATALOGUE = GQP_PROOF_EVENTS;
+const SECRETS = secretFacts(CATALOGUE);
 
 function decisions(trajectory: Trajectory) {
   return trajectory.steps.filter(step => step.kind === "decision");
@@ -66,7 +68,7 @@ describe("GQP-B trajectories A and B: same start, different decisions", () => {
     const infra = a.steps.map(step => step.inspection.infrastructure.settlement_helios!.after.stage);
     expect(infra.slice(1).every(stage => stage === "STRAINED")).toBe(true);
     const reading = readProofWorld(a.final, CATALOGUE);
-    expect(reading.memories.some(m => m.exposure === "secret")).toBe(false);
+    expect(reading.memories.some(m => SECRETS.has(m.memoryId))).toBe(false);
     expect(reading.agenda).toMatchObject({
       agenda_co_reliability: true,
       agenda_co_unregistered_access: true,
@@ -89,7 +91,7 @@ describe("GQP-B trajectories A and B: same start, different decisions", () => {
         "con.evt_f1_clinic_request.protect_reserve.spread"
       ])
     );
-    expect(reading.memories.filter(m => m.exposure === "secret").map(m => `${m.characterId}:${m.memoryId}`)).toEqual([
+    expect(reading.memories.filter(m => SECRETS.has(m.memoryId)).map(m => `${m.characterId}:${m.memoryId}`)).toEqual([
       "brann_001:fact_f3_quiet_deal",
       "mara_001:fact_f3_secret_tap"
     ]);
@@ -152,12 +154,11 @@ describe("Step inspection reports what happened, once, in the right direction", 
 
   it("reports a reflected copy beside the direct memory it came from", () => {
     expect(c.steps[0]!.inspection.newMemories.filter(m => m.memoryId === "fact_f2_warning_ignored")).toEqual([
-      { characterId: "mara_001", memoryId: "fact_f2_warning_ignored", origin: "reflected", exposure: "private", behaviorHook: null },
+      { characterId: "mara_001", memoryId: "fact_f2_warning_ignored", origin: "reflected", behaviorHook: null },
       {
         characterId: "tarek_001",
         memoryId: "fact_f2_warning_ignored",
         origin: "direct",
-        exposure: "private",
         behaviorHook: "offer_unprompted_warning"
       }
     ]);
@@ -228,7 +229,8 @@ describe("GQP-10: replay, order independence and persistence", () => {
     const reading = readProofWorld(mid, CATALOGUE);
     expect(reading.history.map(entry => entry.eventId)).toEqual(TRAJECTORY_B.slice(0, 3).map(([eventId]) => eventId));
     expect(reading.consequences.filter(item => item.id.startsWith("con.evt_")).map(item => item.status)).toContain("pending");
-    expect(reading.memories.some(m => m.exposure === "secret")).toBe(true);
+    expect(reading.memories.some(m => SECRETS.has(m.memoryId))).toBe(true);
+    expect(reading.publicFacts.some(id => SECRETS.has(id))).toBe(false);
     const continued = runTrajectory("B-rest", TRAJECTORY_B.slice(3), { start: mid });
     expect(JSON.stringify(continued.final)).toBe(JSON.stringify(runTrajectory("B", TRAJECTORY_B).final));
   });

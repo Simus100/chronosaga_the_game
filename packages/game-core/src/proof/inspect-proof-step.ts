@@ -1,6 +1,5 @@
 import type {
   MemoryBehaviorHook,
-  MemoryExposure,
   MemoryOrigin,
   PressureStage,
   ProofEvent,
@@ -10,6 +9,7 @@ import type {
 import { agendaConditionHolds } from "./agenda-condition.js";
 import { epidemicStage, pressureStage, settlementInfrastructurePressure } from "./pressure.js";
 import { eligibleProofEvents, isProofChoiceAvailable } from "./proof-events.js";
+import { isFactPublic } from "./propagation.js";
 import { isProofSimulation } from "./schema-version.js";
 
 /**
@@ -35,7 +35,6 @@ export interface ProofMemoryReading {
   readonly characterId: string;
   readonly memoryId: string;
   readonly origin: MemoryOrigin | null;
-  readonly exposure: MemoryExposure | null;
   readonly behaviorHook: MemoryBehaviorHook | null;
 }
 
@@ -53,6 +52,8 @@ export interface ProofWorldReading {
   readonly memories: readonly ProofMemoryReading[];
   /** `factionId:tag` for every faction awareness tag. */
   readonly factionAwareness: readonly string[];
+  /** Facts that are public -- derived by the Core's own rule, never stored (P2-5). */
+  readonly publicFacts: readonly string[];
   readonly consequences: readonly { readonly id: string; readonly status: string }[];
   readonly history: readonly ResolvedDecision[];
   /** Eligible events now, in the stable eligibility order. */
@@ -113,7 +114,6 @@ export function readProofWorld(state: WorldState, catalogue: readonly ProofEvent
         characterId: character.id,
         memoryId: memory.id,
         origin: memory.origin ?? null,
-        exposure: memory.exposure ?? null,
         behaviorHook: memory.behaviorHook ?? null
       });
     }
@@ -121,6 +121,10 @@ export function readProofWorld(state: WorldState, catalogue: readonly ProofEvent
 
   const factionAwareness = simulation.factions
     .flatMap(faction => faction.memoryTags.filter(tag => tag.startsWith("aware:")).map(tag => `${faction.id}:${tag}`))
+    .sort(byCodeUnit);
+
+  const publicFacts = [...new Set(memories.map(memory => memory.memoryId))]
+    .filter(id => isFactPublic(state, simulation, id))
     .sort(byCodeUnit);
 
   const eligible = eligibleProofEvents(state, catalogue);
@@ -138,6 +142,7 @@ export function readProofWorld(state: WorldState, catalogue: readonly ProofEvent
     agenda,
     memories,
     factionAwareness,
+    publicFacts,
     consequences: simulation.delayedConsequences
       .map(item => ({ id: item.id, status: item.status }))
       .sort((a, b) => byCodeUnit(a.id, b.id)),

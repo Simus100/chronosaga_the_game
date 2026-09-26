@@ -215,3 +215,36 @@ export const COVERAGE_PATHS: Readonly<Record<string, readonly Decision[]>> = {
     ["evt_f2_recycler_breakdown", "mara_salvaged_parts"]
   ]
 };
+
+/**
+ * The facts a catalogue records as secret.
+ *
+ * Exposure lives in the `MEMORY_RECORD` payload that decided the channels, not
+ * on the stored memory (P2-5), so secrecy is read from the content that
+ * produced the fact.
+ */
+export function secretFacts(catalogue: readonly ProofEvent[] = GQP_PROOF_EVENTS): Set<string> {
+  const secrets = new Set<string>();
+  for (const event of catalogue) {
+    for (const choice of event.choices) {
+      const effects = [...choice.effects, ...(choice.schedules ?? []).flatMap(schedule => schedule.effects)];
+      for (const effect of effects) {
+        if (effect.type === "MEMORY_RECORD" && effect.exposure === "secret") secrets.add(effect.memoryId);
+      }
+    }
+  }
+  return secrets;
+}
+
+/** The facts a run has published by a resolved decision, read from its history. */
+export function publishedFacts(state: WorldState, catalogue: readonly ProofEvent[] = GQP_PROOF_EVENTS): Set<string> {
+  const published = new Set<string>();
+  const history = (state.simulation as unknown as { resolvedHistory: ResolvedDecision[] }).resolvedHistory;
+  for (const entry of history) {
+    const choice = catalogue.find(event => event.id === entry.eventId)?.choices.find(item => item.id === entry.choiceId);
+    for (const effect of choice?.effects ?? []) {
+      if (effect.type === "MEMORY_PUBLISH") published.add(effect.memoryId);
+    }
+  }
+  return published;
+}

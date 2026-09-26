@@ -13,7 +13,7 @@ import {
   validateProofEffectShape,
   type ProofEffectReferences
 } from "./proof-effect-contract.js";
-import { commitPropagation, planPropagation } from "./propagation.js";
+import { commitPropagation, isFactPublic, planPropagation } from "./propagation.js";
 import { isProofSimulation } from "./schema-version.js";
 
 /**
@@ -116,14 +116,13 @@ export function applyProofEffect(
         valence: effect.valence,
         salience: effect.salience,
         origin: "direct",
-        exposure: effect.exposure,
         callbackEligible: effect.callbackEligible
       };
       if (effect.subjectId !== undefined) memory.subjectId = effect.subjectId;
       if (effect.behaviorHook !== undefined) memory.behaviorHook = effect.behaviorHook;
 
       // Plan every copy before writing the first one.
-      const plan = planPropagation(state, simulation, holder, memory, source, turn, {
+      const plan = planPropagation(state, simulation, holder, memory, effect.exposure, source, turn, {
         reflection: true
       });
 
@@ -132,7 +131,9 @@ export function applyProofEffect(
         type: "memoryRecorded",
         key: `${holder.id}.memories.${memory.id}`,
         before: undefined,
-        after: { origin: "direct", exposure: memory.exposure, hook: memory.behaviorHook ?? null }
+        // The exposure goes in the delta -- what this decision did -- not on
+        // the memory, which would persist it (P2-5).
+        after: { origin: "direct", exposure: effect.exposure, hook: memory.behaviorHook ?? null }
       });
       commitPropagation(state, simulation, plan, changes);
       return;
@@ -146,35 +147,25 @@ export function applyProofEffect(
       if (holders.length === 0) {
         throw new Error(`Cannot publish '${effect.memoryId}': no character holds that fact`);
       }
-
-      const copies = holders.map(character => character.memories!.find(memory => memory.id === effect.memoryId)!);
-      if (copies.some(memory => memory.exposure === "public")) {
+      // Public is derived from the traces channel 3 already wrote (P2-5), so
+      // a second publication finds them and is refused.
+      if (isFactPublic(state, simulation, effect.memoryId)) {
         throw new Error(`Cannot publish '${effect.memoryId}': it is already public`);
       }
+      const copies = holders.map(character => character.memories!.find(memory => memory.id === effect.memoryId)!);
       const directIndex = copies.findIndex(memory => memory.origin === "direct");
       if (directIndex < 0) {
         throw new Error(`Cannot publish '${effect.memoryId}': no direct holder to publish from`);
       }
 
-      // The public copies are planned as though the fact had been public from
-      // the start, from its direct holder's settlement. Reflection is not re-run:
-      // a publication reaches the community, not a second round of confidants.
-      const direct = { ...copies[directIndex]!, exposure: "public" as const };
-      const plan = planPropagation(state, simulation, holders[directIndex]!, direct, source, turn, {
+      // Channel 3 from the direct holder's settlement, as though the fact had
+      // been public from the start. Reflection is not re-run: a publication
+      // reaches the community, not a second round of confidants. Nothing is
+      // rewritten on the copies that already exist -- the public copies and
+      // the faction's awareness are the publication.
+      const plan = planPropagation(state, simulation, holders[directIndex]!, copies[directIndex]!, "public", source, turn, {
         reflection: false
       });
-
-      for (let index = 0; index < holders.length; index += 1) {
-        const memory = copies[index]!;
-        const before = memory.exposure ?? null;
-        memory.exposure = "public";
-        changes.push({
-          type: "memoryExposure",
-          key: `${holders[index]!.id}.memories.${memory.id}.exposure`,
-          before,
-          after: "public"
-        });
-      }
       commitPropagation(state, simulation, plan, changes);
       return;
     }

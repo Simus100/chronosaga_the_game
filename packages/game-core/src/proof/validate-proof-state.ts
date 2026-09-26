@@ -8,7 +8,6 @@ import {
   FACTION_AGENDA_KINDS,
   FACTION_AGENDA_SUBJECTS,
   MEMORY_BEHAVIOR_HOOKS,
-  MEMORY_EXPOSURES,
   MEMORY_ORIGINS,
   MEMORY_VALENCES,
   RELATIONSHIP_STRENGTHS
@@ -60,8 +59,7 @@ export const PROOF_MEMORY_FIELDS = [
   "subjectId",
   "origin",
   "behaviorHook",
-  "callbackEligible",
-  "exposure"
+  "callbackEligible"
 ] as const;
 
 function enumValue(
@@ -221,9 +219,6 @@ function proofCharacters(
 
     memories.forEach((memory, index) => {
       const at = `${who} memory[${index}]`;
-      if (memory.exposure !== undefined) {
-        enumValue(memory, "exposure", `${at}.exposure`, MEMORY_EXPOSURES, errors);
-      }
       // Present-or-absent, validated when present. The M1 World Tick writes
       // memories without proof semantics and the accepted baseline is not
       // being rewritten to author them; what must never happen is a proof

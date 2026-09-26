@@ -40,11 +40,12 @@ export interface CharacterMemory {
   behaviorHook?: MemoryBehaviorHook;
   /** Whether this may be surfaced as a causal callback. */
   callbackEligible?: boolean;
-  /**
-   * How widely the fact is known. Schema v2 only, like the fields above; see
-   * `MemoryExposure`. Required on every memory a proof effect writes.
-   */
-  exposure?: MemoryExposure;
+  // Deliberately no `exposure` here (GQP-B P2-5). Schema v2 is GQP-A's
+  // contract, and a GQP-A build tolerates unknown memory keys: a persisted
+  // exposure would be accepted and ignored by it -- the same bytes read two
+  // ways inside one schema version, which is what spec 24.1 forbids. Exposure
+  // is decided when a fact is recorded, and what it produced is already state:
+  // the copies each channel wrote, and the controlling faction's awareness.
 }
 
 export interface CharacterState {
@@ -226,11 +227,13 @@ export interface NodeConditionShiftEffect {
 }
 
 /**
- * How widely the fact behind a memory is known.
+ * How widely the fact behind a memory becomes known when it is recorded.
  *
- * Not the same thing as `origin`, which says how *this copy* reached *this
- * character*. Exposure is a property of the fact, and it decides which of the
- * three propagation channels of spec 7.1 may carry it:
+ * Part of the `MEMORY_RECORD` payload, not of the stored memory: it decides,
+ * at the moment the fact is recorded, which of the three propagation channels
+ * of spec 7.1 carry it, and the copies those channels write are the lasting
+ * record of that decision. Whether a fact is public later is derived from
+ * them, never stored. (`origin` says how *this copy* reached *this character*.)
  *
  *   secret   direct holder only; no reflection, no public knowledge
  *   private  direct holder, plus reflection along a strong relationship

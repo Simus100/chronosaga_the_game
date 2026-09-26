@@ -2,6 +2,7 @@ import type {
   CausalSource,
   CharacterMemory,
   CharacterState,
+  MemoryExposure,
   StateChange,
   SystemicSimulationStateV2,
   WorldState
@@ -81,7 +82,6 @@ function secondHand(
     turn,
     source: structuredClone(source),
     origin,
-    exposure: memory.exposure,
     salience: rounded((memory.salience ?? 0) * SECOND_HAND),
     callbackEligible: memory.callbackEligible ?? false
   };
@@ -167,28 +167,46 @@ function planPublic(
 }
 
 /**
+ * Whether a fact is public. Derived, never stored (GQP-B P2-5).
+ *
+ * Channel 3 leaves authoritative traces, and they are the answer: the
+ * controlling faction's `aware:<fact>` tag, and copies that arrived with
+ * origin `public`. A fact with neither has never been made public, however it
+ * was recorded -- which is exactly what an old schema-v2 reader, which knows
+ * both fields, would also conclude from the same bytes.
+ */
+export function isFactPublic(state: WorldState, simulation: SystemicSimulationStateV2, memoryId: string): boolean {
+  const tag = `aware:${memoryId}`;
+  if (simulation.factions.some(faction => faction.memoryTags.includes(tag))) return true;
+  return state.party.some(character =>
+    (character.memories ?? []).some(memory => memory.id === memoryId && memory.origin === "public")
+  );
+}
+
+/**
  * Plan the propagation of a fact held directly by `holder`.
  *
- * `exposure` is read from the memory, so the channels a fact may travel are
- * decided by the fact itself, not by the caller.
+ * `exposure` comes from the decision that records or publishes the fact. It
+ * chooses the channels once; it is not stored on the memory.
  */
 export function planPropagation(
   state: WorldState,
   simulation: SystemicSimulationStateV2,
   holder: CharacterState,
   memory: CharacterMemory,
+  exposure: MemoryExposure,
   source: CausalSource,
   turn: number,
   channels: { readonly reflection: boolean }
 ): PropagationPlan {
-  if (memory.exposure === "secret") return { copies: [], factionAwareness: null };
+  if (exposure === "secret") return { copies: [], factionAwareness: null };
 
   const planned = new Set<string>([holder.id]);
   const reflected = channels.reflection
     ? planReflection(state, simulation, holder, memory, source, turn, planned)
     : [];
 
-  if (memory.exposure !== "public") return { copies: reflected, factionAwareness: null };
+  if (exposure !== "public") return { copies: reflected, factionAwareness: null };
 
   const publicPlan = planPublic(state, simulation, holder, memory, source, turn, planned);
   return { copies: [...reflected, ...publicPlan.copies], factionAwareness: publicPlan.factionAwareness };
@@ -208,7 +226,7 @@ export function commitPropagation(
       type: copy.channel === "reflected" ? "memoryReflected" : "memoryPublic",
       key: `${recipient.id}.memories.${copy.memory.id}`,
       before: undefined,
-      after: { origin: copy.memory.origin, exposure: copy.memory.exposure, salience: copy.memory.salience }
+      after: { origin: copy.memory.origin, salience: copy.memory.salience }
     });
   }
   if (plan.factionAwareness) {
