@@ -103,6 +103,12 @@ describe("GQP-B catalogue gate", () => {
   });
 
   describe("a decision is a decision", () => {
+    it("refuses a SIGNAL that offers a choice, so no decision escapes the decision gates", () => {
+      const c = clone();
+      c[1].choices.push({ ...c[1].choices[0], id: "ignore", label: "Ignore" });
+      refuses(c, /event evt_t_signal is a SIGNAL with 2 options; an event that asks for a decision must be classified as one/);
+    });
+
     it("refuses a decision with a single option", () => {
       const c = clone();
       c[0].choices = [c[0].choices[0]];

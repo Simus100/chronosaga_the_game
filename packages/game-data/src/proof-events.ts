@@ -132,7 +132,11 @@ const f2RecyclerWarning: ProofEvent = {
 const f2TarekSecondWarning: ProofEvent = {
   id: "evt_f2_tarek_second_warning",
   familyId: "maintenance",
-  taxonomy: "SIGNAL",
+  // A warning that asks for a decision with a real cost either way -- power
+  // now, or Tarek's willingness to help later -- is a dilemma, and passes the
+  // same quality gates as every other one. (Was SIGNAL, which kept it out of
+  // the GQP-1/GQP-2 audits.)
+  taxonomy: "DILEMMA",
   // Tarek warns unprompted only because he remembers being overruled, and only
   // while the damage he warned about is still on its way.
   eligibility: [
@@ -172,6 +176,7 @@ const f2TarekSecondWarning: ProofEvent = {
       id: "let_it_ride",
       label: "Tell him to keep it running",
       effects: [
+        { type: "CHARACTER_STRESS", targetId: "tarek_001", value: 10 },
         memory({
           characterId: "tarek_001",
           memoryId: "fact_f2_warning_dismissed",

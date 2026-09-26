@@ -329,6 +329,15 @@ export function validateProofCatalogue(
     if (NEEDS_ALTERNATIVE.has(String(event.taxonomy)) && choices.length < 2) {
       errors.push(`event ${id} is a ${String(event.taxonomy)} with fewer than two options`);
     }
+    // And a signal with two options is a decision in disguise. Spec 10: a
+    // SIGNAL warns or foreshadows and normally carries no major choice. The
+    // quality gates for decisions (GQP-1, GQP-2, and the full disclosure above)
+    // key on taxonomy, so an event that asks the player to choose must be
+    // classified as one -- otherwise relabelling it SIGNAL would quietly take
+    // it out of every audit.
+    if (event.taxonomy === "SIGNAL" && choices.length > 1) {
+      errors.push(`event ${id} is a SIGNAL with ${choices.length} options; an event that asks for a decision must be classified as one`);
+    }
 
     const choiceIds = new Set<string>();
     for (const choice of choices) {
