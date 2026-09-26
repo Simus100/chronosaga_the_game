@@ -117,7 +117,7 @@ describe("GQP-B history: one resolved decision, one entry", () => {
   });
 });
 
-describe("GQP-B history: the M1 resolver writes none, and cannot carry proof effects", () => {
+describe("GQP-B history: the M1 resolver never decides on a proof world", () => {
   it("leaves a baseline world without any proof history", () => {
     const resolved = resolveChoice(
       createSystemicScenario(7419),
@@ -128,7 +128,19 @@ describe("GQP-B history: the M1 resolver writes none, and cannot carry proof eff
     expect(resolved.state.turn).toBe(2);
   });
 
-  it("refuses a proof effect even on a proof world, so history cannot be bypassed", () => {
+  it("refuses a legacy-only choice on a proof world: no change, no turn, no unrecorded decision", () => {
+    // Spec 12.3: the history is the only record of the proof's decisions. A
+    // legacy effect would still move the world and its Player Turn here, and
+    // the result would still be save-valid -- which is why it must not happen.
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() =>
+      resolveChoice(state, { id: "legacy", label: "legacy", effects: [{ type: "PRESSURE_DELTA", value: 1 }] }, "test")
+    ).toThrow(/schema-v2 proof world resolves decisions through resolveProofChoice/);
+    expect(state).toEqual(snapshot);
+  });
+
+  it("refuses a proof effect on a proof world too", () => {
     const state = proof();
     const snapshot = structuredClone(state);
     expect(() =>
@@ -137,8 +149,27 @@ describe("GQP-B history: the M1 resolver writes none, and cannot carry proof eff
         { id: "sneak", label: "S", effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: 0.2 }] },
         "test"
       )
-    ).toThrow(/resolve through resolveProofChoice/);
+    ).toThrow(/schema-v2 proof world resolves decisions through resolveProofChoice/);
     expect(state).toEqual(snapshot);
+  });
+
+  it("refuses a proof effect on a baseline world, through the applicator", () => {
+    const baseline = createSystemicScenario(7419);
+    const snapshot = structuredClone(baseline);
+    expect(() =>
+      resolveChoice(
+        baseline,
+        { id: "sneak", label: "S", effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: 0.2 }] },
+        "test"
+      )
+    ).toThrow(/cannot apply to a baseline world/);
+    expect(baseline).toEqual(snapshot);
+  });
+
+  it("leaves the proof resolver as the only way a proof world takes a decision", () => {
+    const decided = resolveProofChoice(proof(), CATALOGUE, "evt_t_maint", "repair");
+    expect(decided.state.turn).toBe(2);
+    expect(history(decided.state)).toHaveLength(1);
   });
 });
 
