@@ -14,6 +14,7 @@ import {
 } from "../proof/schema-version.js";
 import { refuseProofFieldsOnBaseline, validateProofState } from "../proof/validate-proof-state.js";
 import { publicationRefusal } from "../proof/proof-effects.js";
+import { isClockValue } from "./clock.js";
 
 export interface SystemicValidationResult {
   ok: boolean;
@@ -92,6 +93,20 @@ function requireInteger(
   }
   if (min !== undefined && (value as number) < min) {
     errors.push(`${label} must be at least ${min}, got ${String(value)}`);
+  }
+}
+
+/**
+ * An authoritative clock: a whole number, a floor, and the safe-integer range
+ * (issue #37). The integer and floor messages are the ones every other
+ * integer field uses; beyond `Number.MAX_SAFE_INTEGER` the value is still an
+ * integer, but no longer one a clock can advance from exactly.
+ */
+function requireClock(owner: JsonRecord, key: string, label: string, errors: string[], min: number): void {
+  const before = errors.length;
+  requireInteger(owner, key, label, errors, min);
+  if (errors.length === before && !isClockValue(owner[key], min)) {
+    errors.push(`${label} must be a safe integer (at most ${Number.MAX_SAFE_INTEGER}), got ${String(owner[key])}`);
   }
 }
 
@@ -247,8 +262,8 @@ function validateShape(input: unknown): string[] {
   // event eligibility, and `campaignId` decides which save is whose.
   requireString(input, "campaignId", "WorldState.campaignId", errors);
   requireFiniteNumber(input, "seed", "WorldState.seed", errors);
-  requireInteger(input, "turn", "WorldState.turn", errors, 1);
-  requireInteger(input, "day", "WorldState.day", errors, 1);
+  requireClock(input, "turn", "WorldState.turn", errors, 1);
+  requireClock(input, "day", "WorldState.day", errors, 1);
   requireFiniteNumber(input, "worldPressure", "WorldState.worldPressure", errors, 0);
   requireFlags(input, "WorldState.flags", errors);
   requireFiniteNumberMap(input, "resources", "WorldState.resources", errors);
@@ -264,6 +279,12 @@ function validateShape(input: unknown): string[] {
   // Untrusted input: a save may arrive without it, or with a string.
   if (!Number.isInteger(simulationValue.tick) || (simulationValue.tick as number) < 0) {
     errors.push("WorldState.simulation.tick must be a non-negative integer");
+  } else if (!isClockValue(simulationValue.tick, 0)) {
+    // The quiet bound and every "ticks since" reading subtract this clock
+    // (GQP spec 14.6). At 2^53 a World Tick no longer moves it.
+    errors.push(
+      `WorldState.simulation.tick must be a safe integer (at most ${Number.MAX_SAFE_INTEGER}), got ${String(simulationValue.tick)}`
+    );
   }
 
   const settlements = requireEntityArray(simulationValue, "settlements", "settlements", errors);
@@ -405,7 +426,8 @@ function validateShape(input: unknown): string[] {
  */
 function consequenceShapeErrors(consequence: JsonRecord, errors: string[]): void {
   const label = `consequence ${String(consequence.id)}`;
-  requireInteger(consequence, "triggerTurn", `${label}.triggerTurn`, errors, 1);
+  // A Player Turn clock like `WorldState.turn` it is compared against (#37).
+  requireClock(consequence, "triggerTurn", `${label}.triggerTurn`, errors, 1);
   requireEnum(consequence, "visibility", `${label}.visibility`, ["visible", "hidden"], errors);
   requireEnum(
     consequence,

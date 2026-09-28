@@ -6,6 +6,7 @@ export * from "./state/resource-authority";
 export * from "./state/cast-roles";
 export * from "./state/delayed-consequences";
 export * from "./state/run-world-tick";
+export * from "./state/clock";
 export * from "./events/event-effect";
 export * from "./events/eligibility";
 export * from "./events/select-event";

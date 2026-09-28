@@ -1,5 +1,6 @@
 import type { EventEffect, StateChange, WorldState } from "@paa/game-types";
 import { applyEventEffect, type EffectContext } from "./event-effect.js";
+import { advanceClock } from "../state/clock.js";
 
 /**
  * The one place a decision advances the Player Turn.
@@ -24,6 +25,9 @@ export function commitDecision(
   effects: readonly EventEffect[],
   context?: EffectContext
 ): { state: WorldState; changes: StateChange[] } {
+  // Decided first, so a Player Turn that cannot advance exactly (issue #37)
+  // is refused before a single effect is applied.
+  const nextTurn = advanceClock(state.turn, "WorldState.turn");
   const next: WorldState = structuredClone(state);
   const changes: StateChange[] = [];
 
@@ -32,7 +36,7 @@ export function commitDecision(
   // One significant decision is one Player Turn. The day belongs to the world
   // and advances with the World Tick, so that a decision and the simulation
   // step that follows it cannot both claim to have moved the calendar.
-  next.turn += 1;
+  next.turn = nextTurn;
 
   return { state: next, changes };
 }
