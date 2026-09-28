@@ -88,10 +88,10 @@ function entry(kind: FeedEntry["kind"], label: string, delta: StateDelta): FeedE
  * have just changed. A remembered event is a stale event.
  */
 export function currentEvent(state: WorldState): GameEvent {
-  // Still M1's selector, deliberately. `selectEventStable` is the
-  // order-independent path GQP will select through; switching the live M1 flow
-  // to it would change which event this accepted baseline offers at each turn,
-  // which is a gameplay change GQP-0 is not allowed to make.
+  // Still M1's selector, deliberately. The proof selects through
+  // `selectProofFocus` in game-core, over proof events and a schema-v2 world;
+  // switching the live M1 flow to it would change which event this accepted
+  // baseline offers at each turn, which is not a change M1 is open to.
   return selectEvent(PLAYABLE_EVENTS, state);
 }
 

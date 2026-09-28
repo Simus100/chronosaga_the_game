@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DelayedConsequenceState, EventEffect, GameEvent, StateChange } from "@paa/game-types";
+import type { DelayedConsequenceState, EventEffect, GameEvent, ProofEvent, StateChange } from "@paa/game-types";
 import { createSystemicScenario } from "../src/state/create-systemic-scenario.js";
 import { resolveChoice } from "../src/events/resolve-choice.js";
 import {
@@ -10,7 +10,8 @@ import { applyEventEffect, EVENT_EFFECT_TYPES } from "../src/events/event-effect
 import { validateGameEvent } from "../src/events/validate-event.js";
 import { validateSystemicWorldState } from "../src/state/validate-systemic-state.js";
 import { selectEvent } from "../src/events/select-event.js";
-import { selectEventStable } from "../src/events/select-event-stable.js";
+import { createGqpScenario } from "../src/proof/create-gqp-scenario.js";
+import { PacingDefect, selectProofFocus } from "../src/proof/select-proof-focus.js";
 
 /**
  * GQP-0 adds no gameplay. These tests protect the three structural properties
@@ -201,53 +202,91 @@ describe("C: what a validator accepts, the applicator can apply", () => {
 });
 
 describe("F: the GQP selection path does not depend on catalogue order", () => {
-  const catalogue: GameEvent[] = ["evt_alpha", "evt_beta", "evt_gamma", "evt_delta"].map(
-    (id, index) => ({
-      id,
-      version: 1,
-      title: id,
-      body: id,
-      category: "test",
-      tags: [],
-      weight: 1 + index * 0.5,
-      choices: [{ id: `${id}_c`, label: "C", effects: [] }]
-    })
-  );
-
-  it("the same seed and state select the same event under any ordering", () => {
-    const state = scenario();
-    const forward = selectEventStable([...catalogue], state);
-    const reversed = selectEventStable([...catalogue].reverse(), state);
-    const shuffled = selectEventStable(
-      [catalogue[2]!, catalogue[0]!, catalogue[3]!, catalogue[1]!],
-      state
-    );
-
-    expect(reversed.id).toBe(forward.id);
-    expect(shuffled.id).toBe(forward.id);
+  /**
+   * GQP-0 introduced `selectEventStable` as "the order-independent path GQP
+   * will select through". GQP-C replaced it with that path: the proof selector,
+   * `selectProofFocus`. Keeping both would have left two GQP selectors that
+   * could become competing authorities, so the placeholder was removed and
+   * its properties are held here, against the real one.
+   *
+   * A world one tick past its last decision is at the quiet bound: the
+   * selector must return an EVENT, so these tests exercise the ordering alone.
+   * Every synthetic event scores 0, so the tie-break decides.
+   */
+  const make = (id: string, title = id): ProofEvent => ({
+    id,
+    familyId: "maintenance",
+    taxonomy: "DILEMMA",
+    eligibility: [],
+    presentation: { title, body: id },
+    choices: [
+      { id: "a", label: "A", effects: [{ type: "RESOURCE_DELTA", key: "energy", value: -1 }], disclosure: { risks: ["supply"], unknowns: ["x"] } },
+      { id: "b", label: "B", effects: [{ type: "RESOURCE_DELTA", key: "water", value: -1 }], disclosure: { risks: ["supply"], unknowns: ["x"] } }
+    ]
   });
+  const atBound = () => {
+    const world = createGqpScenario(7419);
+    world.simulation!.tick = 1;
+    return world;
+  };
+  const chosen = (catalogue: ProofEvent[]) => {
+    const focus = selectProofFocus(atBound(), catalogue);
+    if (focus.kind !== "event") throw new Error("expected an event at the bound");
+    return focus.event;
+  };
 
-  it("the legacy selector is left as it was, order dependence included", () => {
-    // Not a defect to fix here: M1's sequence is accepted and its regressions
-    // expect it. The point is that the two paths are separate, so GQP can be
-    // order-independent without rewriting a validated baseline.
-    const state = scenario();
-    const forward = selectEvent([...catalogue], state);
-    const reversed = selectEvent([...catalogue].reverse(), state);
-    expect(typeof forward.id).toBe("string");
-    expect(typeof reversed.id).toBe("string");
-  });
-
-  it("selection stays deterministic across repeated calls", () => {
-    const state = scenario();
-    const first = selectEventStable([...catalogue], state);
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      expect(selectEventStable([...catalogue], state).id).toBe(first.id);
+  it("the same state selects the same event OBJECT under every rotation and reversal", () => {
+    const set = [make("p_c"), make("p_a"), make("p_d"), make("p_b")];
+    const expected = chosen([...set]);
+    expect(expected.id).toBe("p_a");
+    for (let shift = 0; shift < set.length; shift += 1) {
+      const rotated = [...set.slice(shift), ...set.slice(0, shift)];
+      expect(chosen(rotated)).toBe(expected);
+      expect(chosen([...rotated].reverse())).toBe(expected);
     }
   });
 
-  it("an empty eligible set is refused, not guessed", () => {
-    expect(() => selectEventStable([], scenario())).toThrow(/No eligible events/);
+  it("the legacy selector is left as it was, order dependence included", () => {
+    // M1's sequence is accepted and its regressions expect it. The point is
+    // that the two paths are separate: GQP can be order-independent without
+    // rewriting a validated baseline.
+    const legacy: GameEvent[] = ["evt_alpha", "evt_beta"].map(id => ({
+      id, version: 1, title: id, body: id, category: "test", tags: [], weight: 1, choices: [{ id: `${id}_c`, label: "C", effects: [] }]
+    }));
+    expect(typeof selectEvent([...legacy], scenario()).id).toBe("string");
+    expect(typeof selectEvent([...legacy].reverse(), scenario()).id).toBe("string");
+  });
+
+  it("selection stays deterministic across repeated calls", () => {
+    const set = [make("q_b"), make("q_a")];
+    const first = chosen(set);
+    for (let attempt = 0; attempt < 5; attempt += 1) expect(chosen(set)).toBe(first);
+  });
+
+  it("ordering is by code units, never locale collation", () => {
+    // `localeCompare` can order these differently depending on runtime ICU
+    // data; code units cannot. Uppercase sorts before lowercase in code units.
+    const cased = [make("a_lower"), make("Z_upper"), make("B_upper")];
+    for (const permutation of [cased, [cased[1]!, cased[2]!, cased[0]!], [...cased].reverse()]) {
+      expect(chosen(permutation).id).toBe("B_upper");
+    }
+  });
+
+  it("duplicate ids fail closed, in either catalogue order", () => {
+    const forward = [make("dup", "ONE"), make("dup", "TWO"), make("other")];
+    expect(() => chosen(forward)).toThrow(/Duplicate proof event id 'dup'/);
+    expect(() => chosen([...forward].reverse())).toThrow(/Duplicate proof event id 'dup'/);
+  });
+
+  it("a duplicate hidden by eligibility is still refused", () => {
+    const gated = { ...make("dup"), eligibility: [{ predicate: "flag_equals", key: "never_set", value: true }] } as ProofEvent;
+    expect(() => chosen([make("dup"), gated, make("ok")])).toThrow(/Duplicate proof event id/);
+  });
+
+  it("an ineligible catalogue at the bound is a typed defect, not a guess", () => {
+    const gated = { ...make("gated"), eligibility: [{ predicate: "flag_equals", key: "never_set", value: true }] } as ProofEvent;
+    expect(() => selectProofFocus(atBound(), [gated])).toThrow(PacingDefect);
+    expect(() => selectProofFocus(atBound(), [])).toThrow(/QUIET_BOUND_REACHED_WITH_NO_ELIGIBLE_EVENT/);
   });
 });
 
@@ -326,96 +365,6 @@ describe("a non-finite value never reaches the world", () => {
     applyEventEffect(state, { type: "FLAG_SET", key: "note", value: "text" }, changes);
     expect(state.flags.note).toBe("text");
     expect(changes).toHaveLength(1);
-  });
-});
-
-describe("I: stable selection edge cases", () => {
-  const make = (id: string, weight: number): GameEvent => ({
-    id,
-    version: 1,
-    title: id,
-    body: id,
-    category: "test",
-    tags: [],
-    weight,
-    choices: [{ id: `${id}_c`, label: "C", effects: [] }]
-  });
-
-  it("many permutations of the same set select the same event", () => {
-    const set = [make("e_a", 1), make("e_b", 2), make("e_c", 3), make("e_d", 0.5)];
-    const expected = selectEventStable([...set], scenario()).id;
-    // Every rotation, plus the reversal: a cheap stand-in for "any order".
-    for (let shift = 0; shift < set.length; shift += 1) {
-      const rotated = [...set.slice(shift), ...set.slice(0, shift)];
-      expect(selectEventStable(rotated, scenario()).id).toBe(expected);
-      expect(selectEventStable([...rotated].reverse(), scenario()).id).toBe(expected);
-    }
-  });
-
-  it("zero and negative weights cannot make selection order-sensitive", () => {
-    // The floor of 0.001 already existed in the legacy selector; what matters
-    // here is only that it does not reintroduce array-position dependence.
-    const odd = [make("e_zero", 0), make("e_neg", -5), make("e_ok", 2)];
-    const expected = selectEventStable([...odd], scenario()).id;
-    expect(selectEventStable([...odd].reverse(), scenario()).id).toBe(expected);
-  });
-
-  it("duplicate ids fail closed, in either catalogue order", () => {
-    // A stable sort leaves equal keys in input order, so two events sharing an
-    // id would still be chosen by array position: same `.id`, different weight,
-    // body and choices. The old test compared two calls in the *same* order and
-    // proved only repeat-determinism, which is not the property that matters.
-    const one = { ...make("dup", 1), title: "ONE" };
-    const two = { ...make("dup", 100), title: "TWO" };
-    const forward = [one, two, make("e_other", 1)];
-    const reversed = [...forward].reverse();
-
-    expect(() => selectEventStable(forward, scenario())).toThrow(/Duplicate event id 'dup'/);
-    expect(() => selectEventStable(reversed, scenario())).toThrow(/Duplicate event id 'dup'/);
-  });
-
-  it("a duplicate hidden by eligibility is still refused", () => {
-    // The whole catalogue is checked, not the eligible subset: an id collision
-    // is a content defect even while today's requirements hide it.
-    const gatedDupe: GameEvent = {
-      ...make("dup", 1),
-      requirements: { flagsAll: ["never_set_flag"] }
-    };
-    const catalogue = [make("dup", 1), gatedDupe, make("e_ok", 1)];
-    expect(() => selectEventStable(catalogue, scenario())).toThrow(/Duplicate event id/);
-  });
-
-  it("permutations select the same event OBJECT, not merely the same id", () => {
-    const set = [make("p_a", 1), make("p_b", 2), make("p_c", 3), make("p_d", 4)];
-    const expected = selectEventStable([...set], scenario());
-    for (let shift = 0; shift < set.length; shift += 1) {
-      const rotated = [...set.slice(shift), ...set.slice(0, shift)];
-      // Identity, not just the id string.
-      expect(selectEventStable(rotated, scenario())).toBe(expected);
-      expect(selectEventStable([...rotated].reverse(), scenario())).toBe(expected);
-    }
-  });
-
-  it("ordering does not depend on locale collation", () => {
-    // `localeCompare` can order these differently depending on runtime ICU
-    // data; code-unit comparison cannot. Uppercase sorts before lowercase in
-    // code units, which is the point: the answer is the same everywhere.
-    const cased = [make("Z_upper", 1), make("a_lower", 1), make("B_upper", 1)];
-    const expected = selectEventStable([...cased], scenario()).id;
-    for (const permutation of [
-      [cased[1]!, cased[2]!, cased[0]!],
-      [cased[2]!, cased[0]!, cased[1]!],
-      [...cased].reverse()
-    ]) {
-      expect(selectEventStable(permutation, scenario()).id).toBe(expected);
-    }
-  });
-
-  it("an ineligible catalogue is refused rather than guessed", () => {
-    const gated: GameEvent[] = [
-      { ...make("e_gated", 1), requirements: { flagsAll: ["never_set_flag"] } }
-    ];
-    expect(() => selectEventStable(gated, scenario())).toThrow(/No eligible events/);
   });
 });
 
