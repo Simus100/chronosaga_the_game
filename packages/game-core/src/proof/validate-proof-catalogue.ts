@@ -1,6 +1,8 @@
 import {
   EVENT_FAMILY_IDS,
   MEMORY_BEHAVIOR_HOOKS,
+  PATTERN_IDS,
+  PROTECTION_DIRECTIONS,
   PRESSURE_STAGES,
   PROOF_EVENT_TAXONOMY,
   PROOF_PREDICATES,
@@ -115,7 +117,8 @@ const PREDICATE_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
   memory_hook_present: ["predicate", "characterId", "hook", "subjectId", "value"],
   memory_known: ["predicate", "characterId", "memoryId", "value"],
   agenda_satisfied: ["predicate", "agendaId", "value"],
-  consequence_status: ["predicate", "consequenceId", "status"]
+  consequence_status: ["predicate", "consequenceId", "status"],
+  pattern_detected: ["predicate", "pattern", "subject", "value"]
 };
 
 export function validateProofCatalogue(
@@ -150,6 +153,10 @@ export function validateProofCatalogue(
   // to rely on (P2-4).
   const producers: { memoryId: string; characterId: string; exposure: unknown }[] = [];
   const publishedBy = new Map<string, string>(); // fact -> event
+  // What the pattern detectors can ever match on (GQP-C): factions some choice
+  // records a debt to, and facts whose own choice leaves a scheduled trace.
+  const debtSubjects = new Set<string>();
+  const tracedFacts = new Set<string>();
 
   const events = catalogue.filter(isRecord);
   if (events.length !== catalogue.length) errors.push("every catalogue entry must be an object");
@@ -190,6 +197,8 @@ export function validateProofCatalogue(
           recordedFacts.add(effect.memoryId);
           producers.push({ memoryId: effect.memoryId, characterId: effect.characterId, exposure: effect.exposure });
           if (nonEmpty(effect.behaviorHook)) hooksByCharacter.add(`${effect.characterId}:${effect.behaviorHook}`);
+          if (effect.behaviorHook === "call_in_debt" && nonEmpty(effect.subjectId)) debtSubjects.add(effect.subjectId);
+          if (scheduledEffects.length > 0) tracedFacts.add(effect.memoryId);
         }
       }
       for (const schedule of Array.isArray(choice.schedules) ? choice.schedules.filter(isRecord) : []) {
@@ -286,6 +295,48 @@ export function validateProofCatalogue(
             errors.push(`${at}.status must be pending, applied or absent`);
           }
           return;
+        case "pattern_detected": {
+          if (typeof raw.pattern !== "string" || !(PATTERN_IDS as readonly string[]).includes(raw.pattern)) {
+            errors.push(`${at}.pattern must be one of ${PATTERN_IDS.join(", ")}`);
+            bool(raw.value);
+            return;
+          }
+          bool(raw.value);
+          if (raw.subject === undefined) return;
+          // What `subject` names depends on the pattern, and each is checked
+          // against something the catalogue can actually make true: a subject
+          // no detector can ever match is an event that silently never appears.
+          const subject = raw.subject;
+          switch (raw.pattern) {
+            case "IGNORED_TECHNICAL_WARNINGS":
+              if (!nonEmpty(subject) || !references.characterIds.has(subject)) {
+                errors.push(`${at}.subject must be a party character`);
+              } else if (world.party.find(character => character.id === subject)?.coreValue !== "technical_integrity") {
+                errors.push(`${at}.subject '${subject}' is not a technician (core value technical_integrity)`);
+              }
+              return;
+            case "REPEATED_PROTECTION_OR_NEGLECT":
+              if (typeof subject !== "string" || !(PROTECTION_DIRECTIONS as readonly string[]).includes(subject)) {
+                errors.push(`${at}.subject must be one of ${PROTECTION_DIRECTIONS.join(", ")}`);
+              }
+              return;
+            case "FACTION_DEPENDENCY_GROWING":
+              if (!nonEmpty(subject) || !references.factionIds.has(subject)) {
+                errors.push(`${at}.subject must be a faction`);
+              } else if (!debtSubjects.has(subject)) {
+                errors.push(`${at}.subject '${subject}' is a faction no choice records a debt to`);
+              }
+              return;
+            case "SECRET_ACTION_DISCOVERED":
+              if (!nonEmpty(subject) || !recordedFacts.has(subject)) {
+                errors.push(`${at}.subject '${String(subject)}' is a fact no choice records`);
+              } else if (!tracedFacts.has(subject)) {
+                errors.push(`${at}.subject '${subject}' is recorded by no choice that leaves a trace to discover`);
+              }
+              return;
+          }
+          return;
+        }
       }
     });
   };

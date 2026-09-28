@@ -743,6 +743,25 @@ export type ProofPredicate =
       predicate: "consequence_status";
       consequenceId: string;
       status: "pending" | "applied" | "absent";
+    }
+  | {
+      /**
+       * Whether one of the four GQP-C pattern detectors currently matches.
+       *
+       * How a detector reaches content (spec 12.2: "which families or
+       * variants it can make eligible or reprioritise"). The detector derives
+       * the match from authoritative state; this predicate only reads it.
+       *
+       * `subject` narrows the match, and what it names depends on the pattern:
+       * the technician for IGNORED_TECHNICAL_WARNINGS, `protection` or
+       * `neglect` for REPEATED_PROTECTION_OR_NEGLECT, a faction for
+       * FACTION_DEPENDENCY_GROWING, a fact id for SECRET_ACTION_DISCOVERED.
+       * The catalogue gate validates it per pattern.
+       */
+      predicate: "pattern_detected";
+      pattern: PatternId;
+      subject?: string;
+      value: boolean;
     };
 
 export const PROOF_PREDICATES = [
@@ -753,7 +772,8 @@ export const PROOF_PREDICATES = [
   "memory_hook_present",
   "memory_known",
   "agenda_satisfied",
-  "consequence_status"
+  "consequence_status",
+  "pattern_detected"
 ] as const;
 
 /**
@@ -824,3 +844,53 @@ export interface ProofEvent {
   presentation: { title: string; body: string };
   choices: ProofChoice[];
 }
+
+/* ------------------------------------------------------------------ *
+ * GQP-C directed pacing
+ * ------------------------------------------------------------------ */
+
+/**
+ * The four pattern detectors of GQP spec 12, as a closed set.
+ *
+ * Exactly four, by 12.1. A detector recognises narrative potential in state
+ * the proof already produces -- resolved history, memories, consequences --
+ * and never authors an outcome. None of them is persisted: each match is
+ * derived from the world every time it is asked for.
+ */
+export const PATTERN_IDS = [
+  "IGNORED_TECHNICAL_WARNINGS",
+  "REPEATED_PROTECTION_OR_NEGLECT",
+  "FACTION_DEPENDENCY_GROWING",
+  "SECRET_ACTION_DISCOVERED"
+] as const;
+export type PatternId = (typeof PATTERN_IDS)[number];
+
+/** Which line a REPEATED_PROTECTION_OR_NEGLECT match shows the player holding. */
+export const PROTECTION_DIRECTIONS = ["protection", "neglect"] as const;
+export type ProtectionDirection = (typeof PROTECTION_DIRECTIONS)[number];
+
+/**
+ * What the game is asking of the player right now (GQP-0, spec 25).
+ *
+ * `QUIET` is a decision the game makes, not the absence of one. Modelling it
+ * as `event | null` would scatter a null check across every consumer, and the
+ * one place somebody forgets is the place the screen breaks. A discriminated
+ * union makes the compiler ask the question instead.
+ *
+ * Pacing and presentation, never authority: a focus is not part of
+ * `WorldState`, is not persisted, is not a Gameplay Beat counter, and a quiet
+ * focus does not advance the Player Turn (spec 4.3).
+ *
+ * Declared here once, generic over the event shape, so the M1 controller
+ * (`GameEvent`) and the proof selector (`ProofEvent`) share one definition
+ * rather than each growing its own. The two type parameters after the event
+ * let a selector attach what it knows about *why* -- presentation and debug
+ * data, not a second authority.
+ */
+export type GameplayFocus<
+  TEvent = GameEvent,
+  TEventDetail extends object = {},
+  TQuietDetail extends object = {}
+> =
+  | ({ readonly kind: "event"; readonly event: TEvent } & TEventDetail)
+  | ({ readonly kind: "quiet" } & TQuietDetail);

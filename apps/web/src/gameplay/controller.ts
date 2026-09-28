@@ -9,7 +9,7 @@ import {
   serializeSystemicWorldState
 } from "@paa/game-core";
 import { demoEvents, systemicEvents } from "@paa/game-data";
-import type { GameEvent, StateDelta, WorldState } from "@paa/game-types";
+import type { GameEvent, GameplayFocus as CoreGameplayFocus, StateDelta, WorldState } from "@paa/game-types";
 import type { SystemicPersistence } from "../platform/persistence";
 
 /**
@@ -31,21 +31,20 @@ export const PLAYABLE_EVENTS: GameEvent[] = [...systemicEvents, ...demoEvents];
 /**
  * What the game is asking of the player right now.
  *
- * `QUIET` is a decision the game makes, not the absence of one. Modelling it as
- * `event: GameEvent | null` would scatter a null check across every consumer,
- * and the one place somebody forgets is the place the screen breaks. A
- * discriminated union makes the compiler ask the question instead.
+ * The one `GameplayFocus` of `@paa/game-types`, over M1's `GameEvent`. The
+ * shape is declared there since GQP-C, so the proof selector and this
+ * controller share one definition instead of two; for M1 it is exactly the
+ * union GQP-0 introduced here, `{ kind: "event", event } | { kind: "quiet" }`.
  *
  * This is pacing and presentation, never authority: `GameplayFocus` is not part
  * of `WorldState`, is not persisted, is not a Gameplay Beat counter, and a
  * `quiet` focus does not advance the Player Turn.
  *
- * GQP-0 introduces the shape only. The policy that decides when a quiet focus
- * is produced, and the bound that stops it repeating, belong to GQP-C.
+ * The M1 flow never produces a quiet focus, and GQP-C does not change that:
+ * the quiet policy and its bound live in the proof selector of `game-core`,
+ * which this baseline controller does not use.
  */
-export type GameplayFocus =
-  | { readonly kind: "event"; readonly event: GameEvent }
-  | { readonly kind: "quiet" };
+export type GameplayFocus = CoreGameplayFocus<GameEvent>;
 
 /** What the screen needs to draw one moment of play. */
 export interface GameplaySession {

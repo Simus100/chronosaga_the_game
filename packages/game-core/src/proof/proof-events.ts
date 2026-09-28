@@ -13,6 +13,7 @@ import { rounded } from "../state/numeric.js";
 import { readAuthoritativeResource } from "../state/resource-authority.js";
 import { agendaConditionHolds } from "./agenda-condition.js";
 import { epidemicStage, pressureStage, settlementInfrastructurePressure } from "./pressure.js";
+import { isPatternDetected } from "./pattern-detectors.js";
 import { publicationRefusal } from "./proof-effects.js";
 import { isProofSimulation } from "./schema-version.js";
 
@@ -113,6 +114,11 @@ export function evaluateProofPredicate(predicate: ProofPredicate, state: WorldSt
       if (predicate.status === "absent") return consequence === undefined;
       return consequence?.status === predicate.status;
     }
+
+    case "pattern_detected":
+      // A detector reads the world; this only asks it. The match is derived
+      // afresh on every evaluation -- there is no stored pattern to go stale.
+      return isPatternDetected(state, predicate.pattern, predicate.subject) === predicate.value;
 
     default: {
       // Content that skipped the catalogue gate. Refused like an unknown
