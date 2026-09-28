@@ -90,7 +90,7 @@ function recordsOf(value: unknown, label: string, errors: string[], optional: bo
   const records: JsonRecord[] = [];
   value.forEach((item, index) => {
     if (isRecord(item)) records.push(item);
-    else errors.push(`${label}[${index}] must be an object, got ${item === null ? "null" : typeof item}`);
+    else errors.push(`${label}[${index}] must be an object, got ${item === null ? "null" : Array.isArray(item) ? "array" : typeof item}`);
   });
   return records;
 }

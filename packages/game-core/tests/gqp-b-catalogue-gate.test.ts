@@ -262,6 +262,8 @@ describe("GQP-B catalogue gate", () => {
     it.each([
       ["a null choice", (c: Hostile[]) => c[0].choices.push(null), /event evt_t_maint\.choices\[2\] must be an object, got null/],
       ["a string choice", (c: Hostile[]) => c[0].choices.push("x"), /event evt_t_maint\.choices\[2\] must be an object, got string/],
+      ["an array choice", (c: Hostile[]) => c[0].choices.push([c[0].choices[0]]), /event evt_t_maint\.choices\[2\] must be an object, got array/],
+      ["an array schedule", (c: Hostile[]) => c[0].choices[1].schedules.push([]), /choice defer\.schedules\[1\] must be an object, got array/],
       ["choices that are not a list", (c: Hostile[]) => (c[0].choices = { a: valid() }), /event evt_t_maint\.choices must be an array/],
       ["a null schedule", (c: Hostile[]) => c[0].choices[1].schedules.push(null), /choice defer\.schedules\[1\] must be an object, got null/],
       ["schedules that are not a list", (c: Hostile[]) => (c[0].choices[0].schedules = "invalid"), /choice repair\.schedules must be an array/],
