@@ -275,3 +275,28 @@ describe("inside the window: which is worth more, a quiet beat or an event", () 
     if (focus.kind === "quiet") expect(focus.quiet.rule).toBe("nothing_eligible");
   });
 });
+
+describe("what a quiet beat shows is what the tick changed, each kind on its own", () => {
+  it("shows an event the tick made eligible as a signal", () => {
+    // The second tick from the proof seed takes the epidemic to STRAINED and
+    // opens the clinic's request.
+    const once = runWorldTick(start()).state;
+    const twice = runWorldTick(once).state;
+    expect(relevantDevelopments(once, twice, CATALOGUE)).toContainEqual({ kind: "signal", eventId: "evt_f1_clinic_request" });
+  });
+
+  it("shows a focal stock running out", () => {
+    let world = start();
+    let before = world;
+    while (world.simulation!.settlements[0]!.resourceStock.water! > 0) {
+      before = world;
+      world = runWorldTick(world).state;
+    }
+    expect(relevantDevelopments(before, world, CATALOGUE)).toContainEqual({ kind: "shortage", key: "settlement_helios.water", active: true });
+  });
+
+  it("shows political standing moving under shortage", () => {
+    const developments = relevantDevelopments(start(), runWorldTick(start()).state, CATALOGUE);
+    expect(developments.filter(d => d.kind === "standing").map(d => (d as { groupId: string }).groupId).sort()).toEqual(["group_labor", "group_security"]);
+  });
+});

@@ -80,7 +80,10 @@ describe("help costs something with the other side, immediately and visibly", ()
     expect(agendaOf(before).agenda_co_no_league_client).toBe(true);
     expect(agendaOf(after).agenda_co_no_league_client).toBe(false);
     expect(factionDebtCount(after, "faction_front")).toBe(factionDebtCount(before, "faction_front") + 1);
-    expect(sim(after).delayedConsequences.find(item => item.id === "con.evt_f5_water_convoy.league_convoy.tithe")?.status).toBe("pending");
+    const tithe = sim(after).delayedConsequences.find(item => item.id === "con.evt_f5_water_convoy.league_convoy.tithe");
+    expect(tithe?.status).toBe("pending");
+    // The League takes its share of power later: a cost, not a gift.
+    expect(tithe!.effects).toEqual([{ type: "RESOURCE_DELTA", key: "energy", value: -4 }]);
   });
 
   it("the Council's help opens the League's grievance instead", () => {

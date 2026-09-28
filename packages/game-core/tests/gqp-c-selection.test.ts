@@ -245,6 +245,12 @@ describe("repetition: by family, in Player Turns, from the resolved history (spe
     expect(repetitionOf(tick(world, 3), "maintenance")).toEqual(repetitionOf(world, "maintenance"));
   });
 
+  it("refuses to measure on a Player Turn that cannot advance exactly (#37)", () => {
+    const world = decide(start(), "evt_x_maint_a", "a", content);
+    world.turn = 2 ** 53;
+    expect(() => repetitionOf(world, "maintenance")).toThrow(/unsafe Player Turn/);
+  });
+
   it("gives a family never resolved no entry and no penalty", () => {
     expect(repetitionOf(start(), "external_rescue")).toEqual({ familyId: "external_rescue", lastPlayerTurn: null, elapsed: null, penalty: 0 });
   });
@@ -318,6 +324,24 @@ describe("the causal callback: why this event, now", () => {
     const outbreakOnly = CATALOGUE.filter(event => event.id === "evt_f1_outbreak");
     const focus = selectProofFocus(world, outbreakOnly);
     if (focus.kind !== "event") throw new Error("expected an event");
-    expect(focus.selection.callback?.kind).toBe("pressure");
+    const largest = [...(world.simulation as SystemicSimulationStateV2).epidemic.contributors].sort((a, b) => b.magnitude - a.magnitude)[0]!;
+    expect(focus.selection.callback).toMatchObject({ kind: "pressure", pressure: "epidemic", cause: largest.cause });
+    const smallest = [...(world.simulation as SystemicSimulationStateV2).epidemic.contributors].filter(c => c.magnitude > 0).sort((a, b) => a.magnitude - b.magnitude)[0]!;
+    expect(smallest.cause).not.toBe(largest.cause);
+  });
+
+  it("cites the latest decision behind a pattern it calls back", () => {
+    // Two League debts: the quiet line (turn 1), then the convoy (turn 2).
+    let world = decide(start(), "evt_f3_conduit_offer", "tap_quietly");
+    world = decide(tick(world, 3), "evt_f5_water_convoy", "league_convoy");
+    world.simulation!.tick += 1;
+    const focus = selectProofFocus(world, CATALOGUE.filter(event => event.id === "evt_f5_league_calls_in"));
+    if (focus.kind !== "event") throw new Error("expected an event");
+    expect(focus.selection.callback).toEqual({
+      kind: "pattern",
+      pattern: "FACTION_DEPENDENCY_GROWING",
+      subject: "faction_front",
+      decision: { familyId: "external_rescue", eventId: "evt_f5_water_convoy", choiceId: "league_convoy", playerTurn: 2 }
+    });
   });
 });

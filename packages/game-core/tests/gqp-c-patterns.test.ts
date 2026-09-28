@@ -407,3 +407,62 @@ describe("the catalogue gate reads pattern predicates as typed contracts", () =>
     expect(validateProofCatalogue(alone, start()).errors.join("; ")).toMatch(/'faction_compact' is a faction no choice records a debt to/);
   });
 });
+
+describe("detector boundaries the counterfactuals above do not reach", () => {
+  const note = (id: string, familyId: ProofEvent["familyId"], effects: EventEffect[], schedules?: ProofEvent["choices"][number]["schedules"]): ProofEvent => ({
+    id,
+    familyId,
+    taxonomy: "DILEMMA",
+    eligibility: [],
+    presentation: { title: id, body: id },
+    choices: [
+      { id: "a", label: "A", effects, ...(schedules ? { schedules } : {}), disclosure: { risks: ["infrastructure", "social"], unknowns: ["x"] } },
+      { id: "b", label: "B", effects: [{ type: "RESOURCE_DELTA", key: "energy", value: -1 }], disclosure: { risks: ["supply"], unknowns: ["x"] } }
+    ]
+  });
+  const record = (characterId: string, memoryId: string, fields: Partial<Extract<EventEffect, { type: "MEMORY_RECORD" }>> = {}): EventEffect => ({
+    type: "MEMORY_RECORD", characterId, memoryId, valence: "positive", salience: 0.6, exposure: "private", callbackEligible: true, summary: memoryId, tags: [], ...fields
+  });
+
+  it("IGNORED_TECHNICAL_WARNINGS: an accountability decision that left Tarek unhappy is not an overruled warning", () => {
+    // Patched once (maintenance), then told to bury the line he found
+    // (public accountability): one overruled warning, not two.
+    const found = decide(tick(decide(decide(start(), "evt_f3_conduit_offer", "tap_quietly"), "evt_f2_recycler_warning", "patch_and_defer"), 2), "evt_f1_clinic_request", "treat_now");
+    const buried = decide(found, "evt_f4_conduit_exposed", "bury_it");
+    const tarek = buried.party.find(c => c.id === "tarek_001")!;
+    expect(tarek.memories!.filter(m => m.valence === "negative" && m.origin === "direct").map(m => m.id).sort()).toEqual(["fact_f2_warning_ignored", "fact_f4_told_to_bury"]);
+    expect(isPatternDetected(buried, "IGNORED_TECHNICAL_WARNINGS")).toBe(false);
+  });
+
+  it("REPEATED_PROTECTION_OR_NEGLECT: a memory below salience does not complete a line", () => {
+    const quiet = note("evt_x_care", "scarcity_triage", [record("ira_001", "fact_x_care", { salience: 0.4, callbackEligible: false })]);
+    const loud = note("evt_x_care", "scarcity_triage", [record("ira_001", "fact_x_care", { salience: 0.6 })]);
+    const supplied = decide(tick(start(), 2), "evt_f1_clinic_request", "treat_now");
+    expect(isPatternDetected(decide(supplied, "evt_x_care", "a", [...CATALOGUE, quiet]), "REPEATED_PROTECTION_OR_NEGLECT")).toBe(false);
+    expect(isPatternDetected(decide(supplied, "evt_x_care", "a", [...CATALOGUE, loud]), "REPEATED_PROTECTION_OR_NEGLECT", "protection")).toBe(true);
+  });
+
+  it("SECRET_ACTION_DISCOVERED: the holder never discovers their own secret", () => {
+    // Tarek keeps a secret whose trace is on his own recycler, and keeps working it.
+    const content = [
+      note("evt_x_own_secret", "maintenance", [record("tarek_001", "fact_x_own", { valence: "ambivalent", exposure: "secret" })], [
+        { key: "trace", delay: 1, visibility: "hidden", scope: "settlement", effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: -0.05 }], breadcrumb: { memoryId: "fact_x_own" } }
+      ]),
+      note("evt_x_work", "maintenance", [record("tarek_001", "fact_x_work")])
+    ];
+    const world = decide(decide(start(), "evt_x_own_secret", "a", content), "evt_x_work", "a", content);
+    expect(world.simulation!.delayedConsequences.find(c => c.id === "con.evt_x_own_secret.a.trace")?.status).toBe("applied");
+    expect(isPatternDetected(world, "SECRET_ACTION_DISCOVERED")).toBe(false);
+  });
+
+  it("SECRET_ACTION_DISCOVERED: an observer is at work in the decision that turns him away -- he sees what is there", () => {
+    // Tarek's first involvement after the splice is itself a refusal: he was
+    // on the bus when it was decided, so the refusal does not blind him to it.
+    const content = [...CATALOGUE, note("evt_x_overrule", "maintenance", [record("tarek_001", "fact_x_overruled", { valence: "negative", behaviorHook: "refuse_similar_request" })])];
+    const tapped = decide(start(), "evt_f3_conduit_offer", "tap_quietly", content);
+    const overruled = decide(tapped, "evt_x_overrule", "a", content);
+    const landed = decide(tick(overruled, 2), "evt_f1_clinic_request", "treat_now", content);
+    expect(landed.simulation!.delayedConsequences.find(c => c.id === "con.evt_f3_conduit_offer.tap_quietly.strain")?.status).toBe("applied");
+    expect(isPatternDetected(landed, "SECRET_ACTION_DISCOVERED", "fact_f3_secret_tap")).toBe(true);
+  });
+});

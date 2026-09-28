@@ -108,6 +108,23 @@ describe("agenda and patterns are named with their sources", () => {
     ]);
     expect(explanation.recap[0]!.via).toEqual({ kind: "pattern", pattern: "FACTION_DEPENDENCY_GROWING", subject: "faction_front" });
   });
+
+  it("leads with the callback's chain and adds a second from another decision, at most two", () => {
+    // The League calls in its line: Mara's memory of the splice (turn 1) is the
+    // callback; the dependency the convoy (turn 2) completed is a second chain.
+    let world = decide(start(), "evt_f3_conduit_offer", "tap_quietly");
+    for (let i = 0; i < 3; i += 1) world = runWorldTick(world).state;
+    world = decide(world, "evt_f5_water_convoy", "league_convoy");
+    world.simulation!.tick += 1;
+    const debtCall = CATALOGUE.filter(event => event.id === "evt_f3_debt_called");
+    const focus = selectProofFocus(world, debtCall);
+    const explanation = explainProofFocus(world, focus);
+    if (explanation.kind !== "event") throw new Error("expected an event explanation");
+    const tap = { familyId: "unregistered_conduit", eventId: "evt_f3_conduit_offer", choiceId: "tap_quietly", playerTurn: 1 };
+    const convoy = { familyId: "external_rescue", eventId: "evt_f5_water_convoy", choiceId: "league_convoy", playerTurn: 2 };
+    expect(explanation.causedBy).toEqual(tap);
+    expect(explanation.recap.map(chain => chain.decision)).toEqual([tap, convoy]);
+  });
 });
 
 describe("a QUIET beat explains what the tick will change, and why it is worth showing", () => {
