@@ -28,3 +28,4 @@ export * from "./proof/inspect-proof-step";
 export * from "./proof/pattern-detectors";
 export * from "./proof/select-proof-focus";
 export * from "./proof/pacing-lifecycle";
+export * from "./proof/explain-proof-focus";
