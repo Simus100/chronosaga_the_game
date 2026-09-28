@@ -269,6 +269,22 @@ describe("GQP-B resolution is atomic, the last step included", () => {
   });
 });
 
+describe("GQP-B resolution does not trust its catalogue: the final gate", () => {
+  it("refuses a decision whose history entry the save would reject, with nothing returned", () => {
+    // The resolver takes the catalogue as given; the gate is validateProofCatalogue.
+    // An event outside the proof families (content that skipped the gate) applies
+    // cleanly, schedules nothing -- and would write a history entry the boundary
+    // refuses. Only the final persistence gate stands between it and the caller.
+    const outside = [{ ...CATALOGUE[0]!, familyId: "warfare" }] as unknown as ProofEvent[];
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, outside, "evt_t_maint", "repair")).toThrow(
+      /would produce an invalid world: .*familyId/
+    );
+    expect(state).toEqual(snapshot);
+  });
+});
+
 describe("GQP-B scheduling goes through the one real scheduler", () => {
   it("derives the id, the trigger turn and the cause, and fires after the next decision", () => {
     const deferred = resolveProofChoice(proof(), CATALOGUE, "evt_t_maint", "defer");

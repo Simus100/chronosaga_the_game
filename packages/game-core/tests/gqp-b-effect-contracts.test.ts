@@ -673,6 +673,21 @@ describe("The save boundary for proof memories (P2-5: schema v2 stays GQP-A's co
     expect(later.party.flatMap(c => c.memories ?? []).length).toBeGreaterThan(10);
   });
 
+  it.each([
+    ["valence", "negative"],
+    ["salience", 0.5],
+    ["subjectId", "faction_front"],
+    ["origin", "direct"],
+    ["behaviorHook", "call_in_debt"],
+    ["callbackEligible", true]
+  ])("refuses the proof memory field %s on a baseline v1 save, by name", (field, value) => {
+    const baseline = createSystemicScenario(7419);
+    baseline.party[0]!.memories = [{ id: "m", summary: "s", tags: [], turn: 1, source: SOURCE, [field]: value } as CharacterMemory];
+    const verdict = validateSystemicWorldState(baseline);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("; ")).toMatch(new RegExp(`${field} is schema v2 state and must not appear at schema v1`));
+  });
+
   it("keeps the v2 memory field list GQP-A's", () => {
     expect([...PROOF_MEMORY_FIELDS].sort()).toEqual(
       ["valence", "salience", "subjectId", "origin", "behaviorHook", "callbackEligible"].sort()
