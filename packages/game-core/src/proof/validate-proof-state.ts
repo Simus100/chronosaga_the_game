@@ -13,6 +13,7 @@ import {
   RELATIONSHIP_STRENGTHS
 } from "@paa/game-types";
 import { validateCausalSource } from "../state/causal-source.js";
+import { rounded } from "../state/numeric.js";
 
 /**
  * Validation for the schema v2 contracts, on hostile input.
@@ -187,12 +188,70 @@ export function refuseProofFieldsOnBaseline(state: unknown, errors: string[]): v
   }
 }
 
+/**
+ * A memory id names one fact, across the whole party (GQP-B P2-7).
+ *
+ * Propagation copies a fact under its id, and publication and `memory_known`
+ * find it by id. Per-character uniqueness is not enough: two characters could
+ * each hold a *direct* memory under one id with different contents, and one id
+ * would then mean two facts. So, at v2, for every id held by anyone:
+ *
+ *   - at most one first-hand holder (origin `direct`, or absent for memories
+ *     the M1 World Tick writes), and a second-hand copy requires one;
+ *   - every copy carries the fact's identity unchanged: summary, tags,
+ *     valence, subject and callback eligibility, exactly as the channels copy
+ *     them. Origin, salience, turn and cause differ by channel and may differ;
+ *   - a behaviour hook only on the first-hand copy.
+ */
+function factIdentity(party: readonly JsonRecord[], errors: string[]): void {
+  const copies = new Map<string, { holder: string; memory: JsonRecord }[]>();
+  for (const character of party) {
+    const memories = Array.isArray(character.memories) ? character.memories.filter(isRecord) : [];
+    for (const memory of memories) {
+      if (typeof memory.id !== "string") continue;
+      const list = copies.get(memory.id) ?? [];
+      list.push({ holder: String(character.id), memory });
+      copies.set(memory.id, list);
+    }
+  }
+  const identity = (memory: JsonRecord) =>
+    JSON.stringify([
+      memory.summary,
+      memory.tags,
+      memory.valence ?? null,
+      memory.subjectId ?? null,
+      memory.callbackEligible ?? false
+    ]);
+  for (const [id, list] of copies) {
+    const firstHand = list.filter(copy => copy.memory.origin === undefined || copy.memory.origin === "direct");
+    const secondHand = list.filter(copy => !firstHand.includes(copy));
+    if (firstHand.length > 1) {
+      errors.push(`fact '${id}' is held first-hand by more than one character: ${firstHand.map(c => c.holder).join(", ")}`);
+    }
+    if (secondHand.length > 0 && firstHand.length === 0) {
+      errors.push(`fact '${id}' has second-hand copies but no first-hand holder`);
+    }
+    const reference = identity((firstHand[0] ?? list[0])!.memory);
+    for (const copy of list) {
+      if (identity(copy.memory) !== reference) {
+        errors.push(`fact '${id}' held by ${copy.holder} differs from the fact it copies`);
+      }
+    }
+    for (const copy of secondHand) {
+      if (copy.memory.behaviorHook !== undefined) {
+        errors.push(`fact '${id}' held second-hand by ${copy.holder} carries a behaviour hook`);
+      }
+    }
+  }
+}
+
 function proofCharacters(
   party: readonly JsonRecord[],
   characterIds: ReadonlySet<string>,
   factionIds: ReadonlySet<string>,
   errors: string[]
 ): void {
+  factIdentity(party, errors);
   for (const character of party) {
     const who = `character ${String(character.id)}`;
     // Required, not optional, at v2: a proof cast member with no value and no
@@ -202,6 +261,20 @@ function proofCharacters(
     enumValue(character, "currentGoal", `${who}.currentGoal`, CHARACTER_GOALS, errors);
 
     const memories = Array.isArray(character.memories) ? character.memories.filter(isRecord) : [];
+
+    // One fact, one memory per character. GQP-B writes memories keyed by the
+    // fact they record and propagates them by that id, so a duplicate would be
+    // a character remembering one thing twice -- and `memory_known`, which
+    // asks whether a character knows a fact, would stop meaning anything.
+    // Checked at v2 only: M1 never wrote proof memories, and tightening what a
+    // v1 save may contain is not this slice's to do.
+    const seenIds = new Set<string>();
+    for (const memory of memories) {
+      if (typeof memory.id !== "string") continue;
+      if (seenIds.has(memory.id)) errors.push(`${who} holds memory '${memory.id}' more than once`);
+      seenIds.add(memory.id);
+    }
+
     memories.forEach((memory, index) => {
       const at = `${who} memory[${index}]`;
       // Present-or-absent, validated when present. The M1 World Tick writes
@@ -462,6 +535,41 @@ function epidemic(simulation: JsonRecord, errors: string[]): void {
     unitInterval(item, "magnitude", `${at}.magnitude`, errors);
     validateCausalSource(item.source, `${at}.source`, errors);
   });
+
+  // One contributor per cause, and a value that is the sum of its causes.
+  //
+  // GQP-A stored both and nothing kept them agreeing; the bootstrap scenario
+  // agreed only because it was written that way. Since GQP-B moves the
+  // epidemic through choices and the World Tick, a save whose value drifted
+  // from its listed causes would show a stage the causes cannot explain -- and
+  // the whole point of the contributors is to explain it.
+  const causes = new Set<string>();
+  let sum = 0;
+  let summable = true;
+  for (const item of contributors) {
+    if (!isRecord(item)) {
+      summable = false;
+      continue;
+    }
+    if (typeof item.cause === "string") {
+      if (causes.has(item.cause)) {
+        errors.push(`simulation.epidemic.contributors lists cause '${item.cause}' more than once`);
+      }
+      causes.add(item.cause);
+    }
+    if (typeof item.magnitude === "number" && Number.isFinite(item.magnitude)) sum += item.magnitude;
+    else summable = false;
+  }
+  if (summable && typeof value.value === "number" && Number.isFinite(value.value)) {
+    const expected = rounded(sum);
+    // Tolerance covers only float addition order; both sides are rounded to
+    // four decimals, so a real disagreement is at least 1e-4.
+    if (Math.abs(value.value - expected) > 1e-9) {
+      errors.push(
+        `simulation.epidemic.value is ${value.value} but its contributors add up to ${expected}`
+      );
+    }
+  }
 }
 
 /**

@@ -8,6 +8,9 @@ import type {
 } from "@paa/game-types";
 import { projectResource, resolveSettlementTarget } from "./resource-authority.js";
 import { findCastMember } from "./cast-roles.js";
+import { rounded } from "./numeric.js";
+import { isProofSimulation } from "../proof/schema-version.js";
+import { writeEpidemicContributor } from "../proof/epidemic-contributors.js";
 
 const CONSUMPTION_PER_1000: Readonly<ResourceMap> = {
   water: 4,
@@ -24,6 +27,22 @@ const RESERVE_TARGET_PER_1000: Readonly<ResourceMap> = {
 };
 
 const SHORTAGE_REACTION_THRESHOLD = 0.2;
+
+/**
+ * How much of the settlement's water shortfall becomes epidemic pressure.
+ *
+ * PROVISIONAL, like every number in GQP spec 9.4 -- playtest material. What is
+ * not provisional is the shape it produces, measured on Helios Reach: a total
+ * water failure *on its own* holds the epidemic at 0.40 + 0.06 crowding = 0.46,
+ * just under CRITICAL. Crossing into crisis takes a second cause, and in the
+ * proof that cause comes from triage decisions.
+ *
+ * At 0.5 the water alone reached 0.56, CRITICAL, and stayed there whatever the
+ * player did about the sick: no treatment could lift the stage while the
+ * cistern was dry. A pressure the player cannot move is a timer, and spec 9.4
+ * rules timers out.
+ */
+const EPIDEMIC_WATER_SHORTAGE_WEIGHT = 0.4;
 
 export interface ProductionTrace {
   nodeId: string;
@@ -67,35 +86,8 @@ function clamp(value: number, min = 0, max = 1): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/**
- * Round to four decimals, without inventing an infinity on the way.
- *
- * Rounding here means scaling by `10 ** digits`, rounding, and scaling back —
- * and the scaling step overflows for any input above
- * `Number.MAX_VALUE / factor`, about `1.8e304`. The helper then returned
- * `Infinity` for an input that was perfectly representable. That is not a
- * rounding policy; it is wrong arithmetic, and it was the actual source of both
- * non-finite values an earlier version of this file could produce.
- *
- * Returning `value` unchanged in that case is not a workaround, it is the
- * correct result. A double of that magnitude has no fractional part to round:
- * the spacing between adjacent doubles near `1e305` is about `2.2e289`, some
- * `10 ** 293` times coarser than the fourth decimal this function rounds to. So
- * for every input where the scaling overflows, rounding is the identity.
- *
- * Nothing an ordinary world produces changes: the branch is unreachable below
- * `1.8e304`, and the results of a normal tick are byte-identical.
- *
- * A non-finite *input* still comes back non-finite. This function corrects the
- * arithmetic; it does not launder a value that was already broken, and the
- * write guards below still refuse those.
- */
-function rounded(value: number, digits = 4): number {
-  const factor = 10 ** digits;
-  const scaled = Math.round((value + Number.EPSILON) * factor);
-  if (!Number.isFinite(scaled)) return value;
-  return scaled / factor;
-}
+// `rounded` moved to `./numeric.ts` unchanged, so the epidemic and node
+// condition writers GQP-B adds use the same rule instead of a second copy.
 
 /**
  * The value a World Tick is about to write to an authoritative numeric field,
@@ -562,6 +554,51 @@ function reactFactionAndFlags(
   return reacted;
 }
 
+/**
+ * Water shortage feeds the epidemic. Schema v2 only.
+ *
+ * GQP spec 9.1 names water shortage first among the epidemic's causes. Before
+ * GQP-B nothing made that true: the tick never touched the epidemic, so
+ * spending the settlement's water, or letting the recycler decline, had no
+ * effect on disease at all, and the contributor labelled `water_shortage` was
+ * a number someone had typed in.
+ *
+ * The contributor is now *derived*, every tick, from the shortfall the tick has
+ * just computed. It is set, not accumulated: it describes the current state of
+ * the water supply rather than a history of it, so it falls as soon as water
+ * recovers and cannot drift. That is also why the cause cannot be authored --
+ * an authored shift on it would be overwritten one tick later.
+ *
+ * The baseline M1 world is untouched. It has no epidemic, and a rule that
+ * reached into it would be exactly the silent reinterpretation of v1 that the
+ * version boundary exists to prevent.
+ */
+function deriveEpidemicFromWater(
+  state: WorldState,
+  shortageSeverity: ResourceMap,
+  tick: number,
+  changes: StateChange[]
+): void {
+  const simulation = state.simulation;
+  if (!simulation || !isProofSimulation(simulation)) return;
+
+  // Fail closed rather than guess which settlement's water a single epidemic
+  // should follow, the same stance resource targeting takes.
+  const target = resolveSettlementTarget(state);
+  if (target.kind !== "settlement") {
+    throw new Error("Epidemic water-shortage derivation needs exactly one settlement");
+  }
+  const shortage = shortageSeverity[`${target.settlement.id}:water`] ?? 0;
+
+  writeEpidemicContributor(
+    simulation.epidemic,
+    "water_shortage",
+    rounded(shortage * EPIDEMIC_WATER_SHORTAGE_WEIGHT),
+    { kind: "world_tick", id: `world_tick_${tick}`, tick, rule: "epidemic_water_shortage" },
+    changes
+  );
+}
+
 function mirrorPrimarySettlementResources(state: WorldState, changes: StateChange[]): void {
   const target = resolveSettlementTarget(state);
   if (target.kind !== "settlement") return;
@@ -670,6 +707,7 @@ export function runWorldTick(input: WorldState): WorldTickResult {
     state.turn,
     changes
   );
+  deriveEpidemicFromWater(state, shortageSeverity, nextTick, changes);
   mirrorPrimarySettlementResources(state, changes);
 
   // The Player Turn is deliberately untouched. A tick advances the world; only

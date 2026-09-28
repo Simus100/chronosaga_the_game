@@ -1,12 +1,19 @@
-import type { EventEffect, WorldState } from "@paa/game-types";
+import type { DelayedConsequenceState, EventEffect, SystemicSimulationStateV2, WorldState } from "@paa/game-types";
 import { EVENT_EFFECT_TYPES } from "../events/event-effect.js";
 import { validateCausalSource } from "./causal-source.js";
+import {
+  isProofEffectType,
+  validateProofEffectReferences,
+  validateProofEffectShape,
+  type ProofEffectReferences
+} from "../proof/proof-effect-contract.js";
 import {
   PROOF_SCHEMA_VERSION,
   SUPPORTED_SCHEMA_VERSIONS,
   isSupportedSchemaVersion
 } from "../proof/schema-version.js";
 import { refuseProofFieldsOnBaseline, validateProofState } from "../proof/validate-proof-state.js";
+import { publicationRefusal } from "../proof/proof-effects.js";
 
 export interface SystemicValidationResult {
   ok: boolean;
@@ -384,25 +391,132 @@ function validateShape(input: unknown): string[] {
     requireFiniteNumber(squad, "intelligence", `${label}.intelligence`, errors);
     requireOptionalString(squad, "commanderId", `${label}.commanderId`, errors);
   }
-  for (const consequence of consequences ?? []) {
-    const label = `consequence ${String(consequence.id)}`;
-    requireInteger(consequence, "triggerTurn", `${label}.triggerTurn`, errors, 1);
-    requireEnum(consequence, "visibility", `${label}.visibility`, ["visible", "hidden"], errors);
-    requireEnum(
-      consequence,
-      "scope",
-      `${label}.scope`,
-      ["personal", "local", "settlement", "faction", "regional"],
-      errors
-    );
-    requireEnum(consequence, "status", `${label}.status`, ["pending", "applied"], errors);
-    requireBoolean(consequence, "reversible", `${label}.reversible`, errors);
-    validateCausalSource(consequence.source, `${label}.source`, errors);
-    if (!Array.isArray(consequence.effects)) {
-      errors.push(`${label}.effects must be an array`);
-    }
-  }
+  for (const consequence of consequences ?? []) consequenceShapeErrors(consequence, errors);
 
+  return errors;
+}
+
+/**
+ * The structural contract of one delayed consequence, read from untrusted data.
+ *
+ * One body, two callers: the save boundary runs it over every stored
+ * consequence, and `validateDelayedConsequence` runs it over one about to be
+ * scheduled. Neither has its own copy.
+ */
+function consequenceShapeErrors(consequence: JsonRecord, errors: string[]): void {
+  const label = `consequence ${String(consequence.id)}`;
+  requireInteger(consequence, "triggerTurn", `${label}.triggerTurn`, errors, 1);
+  requireEnum(consequence, "visibility", `${label}.visibility`, ["visible", "hidden"], errors);
+  requireEnum(
+    consequence,
+    "scope",
+    `${label}.scope`,
+    ["personal", "local", "settlement", "faction", "regional"],
+    errors
+  );
+  requireEnum(consequence, "status", `${label}.status`, ["pending", "applied"], errors);
+  requireBoolean(consequence, "reversible", `${label}.reversible`, errors);
+  validateCausalSource(consequence.source, `${label}.source`, errors);
+  if (!Array.isArray(consequence.effects)) {
+    errors.push(`${label}.effects must be an array`);
+  }
+}
+
+interface ConsequenceContext {
+  readonly world: WorldState;
+  readonly schemaVersion: unknown;
+  readonly characterIds: Set<string>;
+  readonly proofReferences: ProofEffectReferences;
+}
+
+/**
+ * The semantic contract of one structurally valid consequence: its trigger,
+ * its cause, and every effect it carries -- legacy or proof, under the world's
+ * schema version and against the ids the world actually has.
+ *
+ * Shared by the save boundary and the scheduler, like the shape pass above.
+ */
+function consequenceEffectErrors(
+  consequence: DelayedConsequenceState,
+  context: ConsequenceContext,
+  errors: string[]
+): void {
+  if (!Number.isInteger(consequence.triggerTurn) || consequence.triggerTurn < 1) {
+    errors.push(`consequence ${consequence.id}.triggerTurn must be a positive integer`);
+  }
+  if (!consequence.source.id.trim()) errors.push(`consequence ${consequence.id} has empty causal source`);
+  if (consequence.effects.length === 0) errors.push(`consequence ${consequence.id} must contain at least one effect`);
+  consequence.effects.forEach((effect, index) => {
+    const label = `consequence ${consequence.id} effect[${index}]`;
+    const type = isRecord(effect) ? effect.type : undefined;
+    if (!isProofEffectType(type)) {
+      validateEffect(effect, context.characterIds, label, errors);
+      return;
+    }
+    // A proof effect is schema-v2 vocabulary. In a baseline world it is
+    // refused by name, not reported as an "unsupported type": the message
+    // has to say which contract it broke, or the next person reads it as a
+    // typo in the effect list.
+    if (context.schemaVersion !== PROOF_SCHEMA_VERSION) {
+      errors.push(`${label} is the proof effect ${String(type)} and cannot appear at schema v1`);
+      return;
+    }
+    // One definition of well formed, shared with the applicator and the
+    // proof catalogue.
+    const before = errors.length;
+    validateProofEffectShape(effect, label, errors);
+    validateProofEffectReferences(effect, label, errors, context.proofReferences);
+    // A pending publication must be one its holder can make: the fact held
+    // first-hand, and not yet public (P2-4). A permissive "it may exist by
+    // then" would store a consequence the boundary cannot prove will work.
+    if (type === "MEMORY_PUBLISH" && consequence.status === "pending" && errors.length === before) {
+      const refusal = publicationRefusal(
+        context.world,
+        context.world.simulation as SystemicSimulationStateV2,
+        effect as { characterId: string; memoryId: string }
+      );
+      if (refusal) errors.push(`${label}: ${refusal}`);
+    }
+  });
+}
+
+function consequenceContext(state: WorldState): ConsequenceContext {
+  const simulation = state.simulation!;
+  const characterIds = new Set(state.party.map(character => character.id));
+  return {
+    world: state,
+    schemaVersion: simulation.schemaVersion,
+    characterIds,
+    proofReferences: {
+      characterIds,
+      factionIds: new Set(simulation.factions.map(faction => faction.id)),
+      nodeIds: new Set(simulation.productionNodes.map(node => node.id))
+    }
+  };
+}
+
+/**
+ * Whether one delayed consequence may be stored in `world` -- by exactly the
+ * rules the save boundary applies to it once stored.
+ *
+ * GQP-B P2-2: `scheduleDelayedConsequence` is a public, authoritative API, and
+ * it checked only the id and the status. It could therefore return, as a
+ * success, a world the boundary already calls invalid: a proof effect in a v1
+ * world, a malformed effect, an effect naming a node that does not exist. It
+ * now asks this function first, which is the boundary's own consequence
+ * contract, not a third copy of it.
+ */
+export function validateDelayedConsequence(consequence: unknown, world: WorldState): string[] {
+  if (!world.simulation) return ["a delayed consequence needs a systemic world"];
+  if (!isRecord(consequence) || typeof consequence.id !== "string") {
+    return ["a delayed consequence must be an object with a string id"];
+  }
+  const errors: string[] = [];
+  consequenceShapeErrors(consequence, errors);
+  // The semantic pass dereferences what the shape pass proved; it never runs
+  // on a consequence that failed it.
+  if (errors.length > 0) return errors;
+  consequenceEffectErrors(consequence as unknown as DelayedConsequenceState, consequenceContext(world), errors);
   return errors;
 }
 
@@ -593,7 +707,8 @@ export function validateSystemicWorldState(input: unknown): SystemicValidationRe
   duplicateIds(simulation.warfareSquads, "warfareSquads", errors);
   duplicateIds(simulation.delayedConsequences, "delayedConsequences", errors);
 
-  const characterIds = new Set(state.party.map(character => character.id));
+  const context = consequenceContext(state);
+  const characterIds = context.characterIds;
   const settlementIds = new Set(simulation.settlements.map(settlement => settlement.id));
   const factionIds = new Set(simulation.factions.map(faction => faction.id));
   const productionIds = new Set(simulation.productionNodes.map(node => node.id));
@@ -695,16 +810,7 @@ export function validateSystemicWorldState(input: unknown): SystemicValidationRe
     range(squad.intelligence, 0, 100, `squad ${squad.id}.intelligence`, errors);
   }
 
-  for (const consequence of simulation.delayedConsequences) {
-    if (!Number.isInteger(consequence.triggerTurn) || consequence.triggerTurn < 1) {
-      errors.push(`consequence ${consequence.id}.triggerTurn must be a positive integer`);
-    }
-    if (!consequence.source.id.trim()) errors.push(`consequence ${consequence.id} has empty causal source`);
-    if (consequence.effects.length === 0) errors.push(`consequence ${consequence.id} must contain at least one effect`);
-    consequence.effects.forEach((effect, index) =>
-      validateEffect(effect, characterIds, `consequence ${consequence.id} effect[${index}]`, errors)
-    );
-  }
+  for (const consequence of simulation.delayedConsequences) consequenceEffectErrors(consequence, context, errors);
 
   return { ok: errors.length === 0, errors };
 }

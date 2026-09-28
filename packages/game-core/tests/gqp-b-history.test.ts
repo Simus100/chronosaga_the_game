@@ -1,0 +1,312 @@
+import { describe, expect, it } from "vitest";
+import type { ProofEvent } from "@paa/game-types";
+import {
+  applyDueConsequences,
+  createSystemicScenario,
+  describeProofChoice,
+  eligibleProofEvents,
+  resolveChoice,
+  resolveProofChoice,
+  runWorldTick,
+  validateSystemicWorldState
+} from "../src";
+import {
+  SYNTHETIC_CATALOGUE as CATALOGUE,
+  proofWorld as proof,
+  resolvedHistory as history
+} from "./support/synthetic-proof-catalogue";
+
+/**
+ * Proof resolution and resolved-decision history (GQP spec 12.3).
+ *
+ * The contract: exactly one history entry per resolved decision, stamped with
+ * the Player Turn it came from and the World Tick it happened in, and nothing
+ * at all for anything short of a resolution. The resolver is atomic, its last
+ * step included, and schedules through the one real scheduler.
+ */
+
+describe("GQP-B history: one resolved decision, one entry", () => {
+  it("appends exactly one entry with family, ids and pre-increment turn", () => {
+    const state = proof();
+    const resolved = resolveProofChoice(state, CATALOGUE, "evt_t_maint", "repair");
+
+    expect(history(resolved.state)).toEqual([
+      { familyId: "maintenance", eventId: "evt_t_maint", choiceId: "repair", playerTurn: 1, worldTick: 0 }
+    ]);
+    expect(resolved.entry.playerTurn).toBe(state.turn);
+    expect(resolved.state.turn).toBe(state.turn + 1);
+    // The same turn the delta reports, per spec 12.3 rule 3.
+    expect(resolved.delta.turn).toBe(resolved.entry.playerTurn);
+    expect(validateSystemicWorldState(resolved.state).ok).toBe(true);
+  });
+
+  it("records the World Tick during which the decision happened", () => {
+    let state = proof();
+    state = runWorldTick(runWorldTick(state).state).state;
+    const resolved = resolveProofChoice(state, CATALOGUE, "evt_t_maint", "repair");
+    expect(resolved.entry.worldTick).toBe(2);
+    // A choice does not advance the tick.
+    expect(resolved.state.simulation!.tick).toBe(2);
+  });
+
+  it("stamps every effect of the decision with the decision as its cause", () => {
+    const resolved = resolveProofChoice(proof(), CATALOGUE, "evt_t_maint", "defer");
+    const memory = resolved.state.party.find(c => c.id === "tarek_001")!.memories!.find(m => m.id === "fact_t_warning")!;
+    expect(memory.source).toEqual({ kind: "choice", id: "evt_t_maint:defer", rule: "maintenance" });
+    expect(memory.turn).toBe(1);
+  });
+
+  it("writes nothing when events are listed, described or asked about", () => {
+    const state = proof();
+    const snapshot = structuredClone(state);
+    for (let i = 0; i < 5; i += 1) {
+      const eligible = eligibleProofEvents(state, CATALOGUE);
+      for (const event of eligible) for (const choice of event.choices) describeProofChoice(choice, state);
+    }
+    expect(state).toEqual(snapshot);
+    expect(history(state)).toEqual([]);
+  });
+
+  it("writes nothing on a World Tick with no decision", () => {
+    const ticked = runWorldTick(proof()).state;
+    expect(history(ticked)).toEqual([]);
+    expect(ticked.turn).toBe(1);
+  });
+
+  it.each([
+    ["an unknown event", "evt_nothing", "repair", /Unknown proof event/],
+    ["an unknown choice", "evt_t_maint", "pray", /has no choice 'pray'/],
+    ["an ineligible event", "evt_t_signal", "inspect", /not eligible now/]
+  ])("refuses %s and leaves the world and the history untouched", (_label, eventId, choiceId, pattern) => {
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, CATALOGUE, eventId, choiceId)).toThrow(pattern);
+    expect(state).toEqual(snapshot);
+    expect(history(state)).toEqual([]);
+  });
+
+  it("refuses a choice the settlement cannot pay for", () => {
+    const state = proof();
+    state.simulation!.settlements[0]!.resourceStock.energy = 4;
+    state.resources.energy = 4;
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, CATALOGUE, "evt_t_maint", "repair")).toThrow(/not available now/);
+    expect(state).toEqual(snapshot);
+  });
+
+  it("refuses a baseline world outright", () => {
+    const baseline = createSystemicScenario(7419);
+    expect(() => resolveProofChoice(baseline, CATALOGUE, "evt_t_maint", "repair")).toThrow(/schema-v2 proof world/);
+    // The world is judged before the catalogue is read: an empty or unrelated
+    // catalogue does not turn a version refusal into an unknown-event one.
+    expect(() => resolveProofChoice(baseline, [], "evt_t_maint", "repair")).toThrow(/schema-v2 proof world/);
+  });
+
+  it("cannot write the same decision twice: a resolved event is no longer eligible", () => {
+    const once = resolveProofChoice(proof(), CATALOGUE, "evt_t_maint", "repair").state;
+    expect(() => resolveProofChoice(once, CATALOGUE, "evt_t_maint", "repair")).toThrow(/not eligible now/);
+    expect(() => resolveProofChoice(once, CATALOGUE, "evt_t_maint", "defer")).toThrow(/not eligible now/);
+    expect(history(once)).toHaveLength(1);
+  });
+
+  it("keeps turns strictly increasing across a run", () => {
+    const first = resolveProofChoice(proof(), CATALOGUE, "evt_t_maint", "defer").state;
+    const second = resolveProofChoice(first, CATALOGUE, "evt_t_signal", "inspect").state;
+    expect((history(second) as Array<{ playerTurn: number }>).map(e => e.playerTurn)).toEqual([1, 2]);
+    expect(validateSystemicWorldState(second).ok).toBe(true);
+  });
+});
+
+describe("GQP-B history: the M1 resolver never decides on a proof world", () => {
+  it("leaves a baseline world without any proof history", () => {
+    const resolved = resolveChoice(
+      createSystemicScenario(7419),
+      { id: "m1", label: "M1", effects: [{ type: "PRESSURE_DELTA", value: 1 }] },
+      "test"
+    );
+    expect(Object.hasOwn(resolved.state.simulation!, "resolvedHistory")).toBe(false);
+    expect(resolved.state.turn).toBe(2);
+  });
+
+  it("refuses a legacy-only choice on a proof world: no change, no turn, no unrecorded decision", () => {
+    // Spec 12.3: the history is the only record of the proof's decisions. A
+    // legacy effect would still move the world and its Player Turn here, and
+    // the result would still be save-valid -- which is why it must not happen.
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() =>
+      resolveChoice(state, { id: "legacy", label: "legacy", effects: [{ type: "PRESSURE_DELTA", value: 1 }] }, "test")
+    ).toThrow(/schema-v2 proof world resolves decisions through resolveProofChoice/);
+    expect(state).toEqual(snapshot);
+  });
+
+  it("refuses a proof effect on a proof world too", () => {
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() =>
+      resolveChoice(
+        state,
+        { id: "sneak", label: "S", effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: 0.2 }] },
+        "test"
+      )
+    ).toThrow(/schema-v2 proof world resolves decisions through resolveProofChoice/);
+    expect(state).toEqual(snapshot);
+  });
+
+  it("refuses a proof effect on a baseline world, through the applicator", () => {
+    const baseline = createSystemicScenario(7419);
+    const snapshot = structuredClone(baseline);
+    expect(() =>
+      resolveChoice(
+        baseline,
+        { id: "sneak", label: "S", effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: 0.2 }] },
+        "test"
+      )
+    ).toThrow(/cannot apply to a baseline world/);
+    expect(baseline).toEqual(snapshot);
+  });
+
+  it("leaves the proof resolver as the only way a proof world takes a decision", () => {
+    const decided = resolveProofChoice(proof(), CATALOGUE, "evt_t_maint", "repair");
+    expect(decided.state.turn).toBe(2);
+    expect(history(decided.state)).toHaveLength(1);
+  });
+});
+
+describe("GQP-B resolution is atomic, the last step included", () => {
+  type Choice = ProofEvent["choices"][number];
+
+  function withChoice(effects: Choice["effects"], schedules?: Choice["schedules"]): ProofEvent[] {
+    return [
+      {
+        ...CATALOGUE[0]!,
+        choices: [
+          {
+            id: "repair",
+            label: "Repair",
+            effects,
+            ...(schedules ? { schedules } : {}),
+            disclosure: { risks: ["supply", "infrastructure"], unknowns: ["x"] }
+          },
+          CATALOGUE[0]!.choices[1]!
+        ]
+      }
+    ];
+  }
+
+  it("refuses a decision whose final effect is impossible, with nothing applied", () => {
+    const broken = withChoice([
+      { type: "RESOURCE_DELTA", key: "energy", value: -10 },
+      { type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: 0.2 },
+      { type: "NODE_CONDITION_SHIFT", nodeId: "prod_ghost", delta: 0.1 }
+    ]);
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, broken, "evt_t_maint", "repair")).toThrow(/prod_ghost/);
+    expect(state).toEqual(snapshot);
+  });
+
+  it("refuses a decision whose schedule collides after its effects applied, with nothing applied", () => {
+    const state = proof();
+    // A consequence with the id this choice will derive is already pending.
+    state.simulation!.delayedConsequences.push({
+      id: "con.evt_t_maint.defer.wear",
+      triggerTurn: 9,
+      visibility: "hidden",
+      scope: "settlement",
+      effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: -0.1 }],
+      reversible: false,
+      status: "pending",
+      source: { kind: "system", id: "seed" }
+    });
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, CATALOGUE, "evt_t_maint", "defer")).toThrow(/already exists/);
+    expect(state).toEqual(snapshot);
+  });
+
+  it("refuses a schedule the save would reject before storing it, with nothing applied", () => {
+    // Shape-valid, but it names a node that does not exist. The scheduler
+    // applies the save boundary's consequence contract (P2-2), so the decision
+    // is refused there -- after its effects applied on the clone, and with the
+    // caller's world untouched.
+    const broken = withChoice(
+      [{ type: "RESOURCE_DELTA", key: "energy", value: -10 }],
+      [
+        {
+          key: "ghost",
+          delay: 1,
+          visibility: "hidden",
+          scope: "settlement",
+          effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_ghost", delta: -0.1 }],
+          breadcrumb: { memoryId: "fact_t_warning" }
+        }
+      ]
+    );
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, broken, "evt_t_maint", "repair")).toThrow(
+      /Refused delayed consequence 'con\.evt_t_maint\.repair\.ghost'.*prod_ghost/
+    );
+    expect(state).toEqual(snapshot);
+  });
+
+  it.each([
+    ["a zero delay", { delay: 0 }, /positive whole delay/],
+    ["a fractional delay", { delay: 1.5 }, /positive whole delay/],
+    ["a delay past the safe integers", { delay: 2 ** 53 }, /positive whole delay/],
+    [
+      "a malformed delayed effect",
+      { effects: [{ type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: Number.NaN }] },
+      /Refused delayed consequence 'con\.evt_t_maint\.repair\.wear'/
+    ]
+  ])("refuses a schedule with %s, with nothing applied", (_label, patch, pattern) => {
+    const planned = { ...CATALOGUE[0]!.choices[1]!.schedules![0]!, ...patch } as never;
+    const broken = withChoice([{ type: "RESOURCE_DELTA", key: "energy", value: -10 }], [planned]);
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, broken, "evt_t_maint", "repair")).toThrow(pattern);
+    expect(state).toEqual(snapshot);
+  });
+});
+
+describe("GQP-B resolution does not trust its catalogue: the final gate", () => {
+  it("refuses a decision whose history entry the save would reject, with nothing returned", () => {
+    // The resolver takes the catalogue as given; the gate is validateProofCatalogue.
+    // An event outside the proof families (content that skipped the gate) applies
+    // cleanly, schedules nothing -- and would write a history entry the boundary
+    // refuses. Only the final persistence gate stands between it and the caller.
+    const outside = [{ ...CATALOGUE[0]!, familyId: "warfare" }] as unknown as ProofEvent[];
+    const state = proof();
+    const snapshot = structuredClone(state);
+    expect(() => resolveProofChoice(state, outside, "evt_t_maint", "repair")).toThrow(
+      /would produce an invalid world: .*familyId/
+    );
+    expect(state).toEqual(snapshot);
+  });
+});
+
+describe("GQP-B scheduling goes through the one real scheduler", () => {
+  it("derives the id, the trigger turn and the cause, and fires after the next decision", () => {
+    const deferred = resolveProofChoice(proof(), CATALOGUE, "evt_t_maint", "defer");
+    const consequence = deferred.state.simulation!.delayedConsequences.find(c => c.id === "con.evt_t_maint.defer.wear");
+    // Decided at turn 1, delay 1: due after the next decision, at turn 3.
+    expect(consequence).toMatchObject({
+      triggerTurn: 3,
+      status: "pending",
+      reversible: false,
+      source: { kind: "choice", id: "evt_t_maint:defer", rule: "maintenance" }
+    });
+    expect(
+      deferred.delta.changes.some(c => c.type === "delayedConsequenceScheduled" && c.key === "con.evt_t_maint.defer.wear")
+    ).toBe(true);
+
+    // Not yet: the world is at turn 2.
+    const early = applyDueConsequences(deferred.state);
+    expect(early.appliedIds).toEqual([]);
+
+    const next = resolveProofChoice(early.state, CATALOGUE, "evt_t_signal", "inspect");
+    const due = applyDueConsequences(next.state);
+    expect(due.appliedIds).toEqual(["con.evt_t_maint.defer.wear"]);
+    expect(due.state.simulation!.productionNodes[0]!.condition).toBe(0.53);
+  });
+});

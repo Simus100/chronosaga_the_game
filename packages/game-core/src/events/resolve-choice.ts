@@ -1,6 +1,7 @@
 import type { EventChoice, StateDelta, WorldState } from "@paa/game-types";
 import { readAuthoritativeResource } from "../state/resource-authority.js";
-import { applyEventEffect } from "./event-effect.js";
+import { commitDecision } from "./commit-decision.js";
+import { isProofSimulation } from "../proof/schema-version.js";
 
 /**
  * Whether the player may take this choice.
@@ -27,19 +28,30 @@ export function resolveChoice(
   choice: EventChoice,
   source: string
 ): { state: WorldState; delta: StateDelta } {
+  // A schema-v2 proof world is refused outright, whatever the choice carries.
+  //
+  // GQP spec 12.3: the resolved-decision history is the only admissible record
+  // of the proof's decisions, and `resolveProofChoice` is its only writer. A
+  // legacy-only choice resolved here would still change a proof world and
+  // advance its Player Turn -- a decision the history never saw, in a world
+  // that stays save-valid. Refusing only proof *effects* left that door open;
+  // the world's version is what decides which resolver may touch it.
+  //
+  // Judged before anything else, so no requirement is read against a world
+  // this resolver will not decide on. A proof effect in an M1 world is still
+  // refused, by the applicator, which never applies one to a baseline world.
+  const simulation = state.simulation;
+  if (simulation && isProofSimulation(simulation)) {
+    throw new Error(
+      "A schema-v2 proof world resolves decisions through resolveProofChoice, which records them in the resolved-decision history"
+    );
+  }
+
   if (!canChoose(choice, state)) throw new Error("Choice requirements not met");
 
-  const next: WorldState = structuredClone(state);
-  const changes: StateDelta["changes"] = [];
-
-  // The same applicator a delayed consequence uses. An effect must not mean
-  // one thing now and another thing three turns from now.
-  for (const effect of choice.effects) applyEventEffect(next, effect, changes);
-
-  // One significant decision is one Player Turn. The day belongs to the world
-  // and advances with the World Tick, so that a decision and the simulation
-  // step that follows it cannot both claim to have moved the calendar.
-  next.turn += 1;
+  // The same applicator a delayed consequence uses, and the same single
+  // Player Turn increment the proof resolver uses.
+  const { state: next, changes } = commitDecision(state, choice.effects);
 
   return {
     state: next,

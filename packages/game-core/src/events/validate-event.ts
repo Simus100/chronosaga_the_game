@@ -14,6 +14,17 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/**
+ * The M1 effect rule, as the event validator applies it.
+ *
+ * Exported for the proof catalogue validator, whose choices may carry the same
+ * legacy effects. Reusing this function -- rather than writing a third copy of
+ * the legacy rules -- is the point: GQP-0 already found two.
+ */
+export function validateLegacyEventEffect(effect: unknown, label: string, errors: string[]): void {
+  validateEffect(effect, label, errors);
+}
+
 function validateEffect(effect: unknown, label: string, errors: string[]): void {
   if (!isRecord(effect)) {
     errors.push(`${label} must be an object`);

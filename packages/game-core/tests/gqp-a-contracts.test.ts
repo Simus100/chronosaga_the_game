@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { SystemicSimulationStateV2, WorldState } from "@paa/game-types";
+import type { ProofEvent, SystemicSimulationStateV2, WorldState } from "@paa/game-types";
 import {
   BASELINE_SCHEMA_VERSION,
   PROOF_SCHEMA_VERSION,
@@ -17,6 +17,7 @@ import {
   serializeSystemicWorldState,
   pressureStage,
   resolveChoice,
+  resolveProofChoice,
   runWorldTick,
   satisfiedAgendaItems,
   settlementInfrastructurePressure,
@@ -32,6 +33,30 @@ function proofSimulation(state: WorldState): SystemicSimulationStateV2 {
   const simulation = state.simulation!;
   if (!isProofSimulation(simulation)) throw new Error("expected a proof simulation");
   return simulation;
+}
+
+/**
+ * Probe decisions for a proof world.
+ *
+ * A proof world decides only through `resolveProofChoice` (GQP-B, P2-1), which
+ * resolves each event id once. So a run of N probe decisions uses N probe
+ * events -- always eligible, one legacy effect each -- and the clock, replay
+ * and round-trip properties below are checked on the path the game really
+ * takes, history entry included.
+ */
+const PROBES: ProofEvent[] = Array.from({ length: 4 }, (_, i) => ({
+  id: "evt_probe_" + i,
+  familyId: "scarcity_triage",
+  taxonomy: "SIGNAL",
+  eligibility: [],
+  presentation: { title: "probe", body: "probe" },
+  choices: [
+    { id: "probe", label: "PROBE", effects: [{ type: "PRESSURE_DELTA", value: 1 }], disclosure: { risks: [], unknowns: [] } }
+  ]
+}));
+
+function decideProbe(state: WorldState, i: number) {
+  return resolveProofChoice(state, PROBES, "evt_probe_" + i, "probe");
 }
 
 /** A world's validation errors, or an empty list. */
@@ -200,11 +225,7 @@ describe("GQP-A: the M1 baseline is untouched", () => {
 
   it("applies the same clock semantics inside the proof scenario", () => {
     const state = proof();
-    const decided = resolveChoice(
-      state,
-      { id: "probe", label: "PROBE", effects: [{ type: "PRESSURE_DELTA", value: 1 }] },
-      "test"
-    ).state;
+    const decided = decideProbe(state, 0).state;
     expect(decided.turn).toBe(state.turn + 1);
 
     const ticked = runWorldTick(decided);
@@ -503,22 +524,23 @@ describe("GQP-A: every new contract is validated against hostile input", () => {
   });
 
   it("accepts a fully specified proof memory", () => {
+    // Every v2 field, well formed, on a first-hand memory -- and a second-hand
+    // copy of the same fact, as the channels write it. Since GQP-B (P2-7) a
+    // fact is one fact across the party: a reflected copy needs a first-hand
+    // holder and carries no behaviour hook.
     const state = proof() as any;
+    const fact = {
+      id: "mem_probe",
+      summary: "probe",
+      tags: ["water"],
+      valence: "negative",
+      subjectId: state.party[1].id,
+      callbackEligible: true
+    };
     state.party[0].memories = [
-      {
-        id: "mem_probe",
-        summary: "probe",
-        tags: ["water"],
-        turn: 1,
-        source: { kind: "choice", id: "c1" },
-        valence: "negative",
-        salience: 0.8,
-        subjectId: state.party[1].id,
-        origin: "reflected",
-        behaviorHook: "refuse_similar_request",
-        callbackEligible: true
-      }
+      { ...fact, turn: 1, source: { kind: "choice", id: "c1" }, salience: 0.8, origin: "direct", behaviorHook: "refuse_similar_request" }
     ];
+    state.party[2].memories = [{ ...fact, turn: 1, source: { kind: "choice", id: "c1" }, salience: 0.4, origin: "reflected" }];
     expect(errorsOf(state)).toEqual([]);
   });
 
@@ -754,11 +776,7 @@ describe("GQP-A: determinism and round trip", () => {
     const run = (): WorldState => {
       let state = createGqpScenario(7419);
       for (let i = 0; i < 4; i += 1) {
-        state = resolveChoice(
-          state,
-          { id: `c${i}`, label: "C", effects: [{ type: "PRESSURE_DELTA", value: 1 }] },
-          "replay"
-        ).state;
+        state = decideProbe(state, i).state;
         state = runWorldTick(state).state;
       }
       return state;
@@ -903,27 +921,23 @@ describe("audit regressions: contract boundaries the first pass missed", () => {
   });
 
   it("keeps a real resolved decision valid end to end", () => {
-    // The rule has to admit the history the Core itself will write. A choice
-    // resolved at turn 1 leaves the world at turn 2, and that entry validates.
-    const resolved = resolveChoice(
-      proof(),
-      { id: "ration", label: "RATION", effects: [{ type: "PRESSURE_DELTA", value: 1 }] },
-      "test"
-    );
+    // The rule has to admit the history the Core itself writes. A choice
+    // resolved at turn 1 leaves the world at turn 2, and that entry -- written
+    // by the proof resolver, not by hand -- validates.
+    const resolved = decideProbe(proof(), 0);
     const state = resolved.state as any;
     expect(state.turn).toBe(2);
     expect(resolved.delta.turn).toBe(1);
-
-    state.simulation.resolvedHistory = [
+    expect(state.simulation.resolvedHistory).toEqual([
       {
         familyId: "scarcity_triage",
-        eventId: "evt",
-        choiceId: "ration",
+        eventId: "evt_probe_0",
+        choiceId: "probe",
         // Exactly what spec 12.3 rule 3 says to write: the delta's turn.
         playerTurn: resolved.delta.turn,
         worldTick: state.simulation.tick
       }
-    ];
+    ]);
     expect(errorsOf(state)).toEqual([]);
   });
 
@@ -1259,11 +1273,7 @@ describe("R39-2: the proof exits and re-enters through the persistence boundary"
     const play = (start: WorldState): WorldState => {
       let current = start;
       for (let i = 0; i < 3; i += 1) {
-        current = resolveChoice(
-          current,
-          { id: `c${i}`, label: "C", effects: [{ type: "PRESSURE_DELTA", value: 1 }] },
-          "round-trip"
-        ).state;
+        current = decideProbe(current, i).state;
         current = runWorldTick(current).state;
       }
       return current;

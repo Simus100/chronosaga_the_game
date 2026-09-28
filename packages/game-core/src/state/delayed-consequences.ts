@@ -5,6 +5,7 @@ import type {
   WorldState
 } from "@paa/game-types";
 import { applyEventEffect } from "../events/event-effect.js";
+import { validateDelayedConsequence } from "./validate-systemic-state.js";
 
 function requireSimulation(state: WorldState) {
   if (!state.simulation) throw new Error("Systemic simulation state is required");
@@ -27,6 +28,15 @@ export function scheduleDelayedConsequence(
   }
   if (consequence.status !== "pending") {
     throw new Error("A newly scheduled delayed consequence must be pending");
+  }
+  // The consequence meets the save boundary's own contract before it is
+  // stored, or it is not stored: a proof effect in a v1 world, a malformed
+  // effect, an effect naming something the world does not have. An
+  // authoritative API does not hand back, as a success, a world the boundary
+  // already calls invalid. Nothing has been cloned or written yet.
+  const errors = validateDelayedConsequence(consequence, state);
+  if (errors.length > 0) {
+    throw new Error(`Refused delayed consequence '${String(consequence.id)}': ${errors.join("; ")}`);
   }
 
   const next = structuredClone(state);
@@ -81,7 +91,12 @@ export function applyDueConsequences(
     .sort((a, b) => a.triggerTurn - b.triggerTurn || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   for (const consequence of due) {
-    for (const effect of consequence.effects) applyEventEffect(next, effect, changes);
+    // A consequence carries its own cause. That is the context a proof effect
+    // records -- the memory it writes, the epidemic contributor it moves -- so
+    // "why did this happen" points at the consequence, and through its source
+    // at the decision that scheduled it. Legacy effects ignore the context.
+    const context = { source: consequence.source, turn: next.turn };
+    for (const effect of consequence.effects) applyEventEffect(next, effect, changes, context);
     const before = consequence.status;
     consequence.status = "applied";
     appliedIds.push(consequence.id);

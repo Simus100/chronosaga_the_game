@@ -129,6 +129,9 @@ importers:
         specifier: workspace:*
         version: link:../game-types
     devDependencies:
+      '@paa/game-data':
+        specifier: workspace:*
+        version: link:../game-data
       '@types/node':
         specifier: 26.2.0
         version: 26.2.0
