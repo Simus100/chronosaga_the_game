@@ -46,8 +46,8 @@ import { isProofSimulation } from "./schema-version.js";
 export const PATTERN_FAMILIES: Readonly<Record<PatternId, readonly EventFamilyId[]>> = {
   IGNORED_TECHNICAL_WARNINGS: ["maintenance", "public_accountability"],
   REPEATED_PROTECTION_OR_NEGLECT: ["scarcity_triage", "public_accountability"],
-  FACTION_DEPENDENCY_GROWING: ["external_rescue", "public_accountability"],
-  SECRET_ACTION_DISCOVERED: ["public_accountability"]
+  FACTION_DEPENDENCY_GROWING: ["external_rescue", "unregistered_conduit", "public_accountability"],
+  SECRET_ACTION_DISCOVERED: ["public_accountability", "unregistered_conduit"]
 };
 
 /** A resolved decision a match rests on. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProofEvent, WorldState } from "@paa/game-types";
-import { GQP_PROOF_EVENTS, demoEvents, systemicEvents } from "@paa/game-data";
+import { demoEvents, systemicEvents } from "@paa/game-data";
 import {
   createGqpScenario,
   isProofEffectType,
@@ -17,6 +17,7 @@ import {
   runTrajectory,
   secretFacts,
   type Decision,
+  GQP_B_CATALOGUE,
   type Trajectory
 } from "./support/proof-trajectory";
 
@@ -31,7 +32,7 @@ import {
  * in the middle, a reordered catalogue and a rewrite of every display string.
  */
 
-const CATALOGUE = GQP_PROOF_EVENTS;
+const CATALOGUE = GQP_B_CATALOGUE;
 const SECRETS = secretFacts(CATALOGUE);
 
 function decisions(trajectory: Trajectory) {

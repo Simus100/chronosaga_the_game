@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { ProofEvent, WorldState } from "@paa/game-types";
-import { GQP_PROOF_EVENTS } from "@paa/game-data";
 import {
   applyDueConsequences,
   createGqpScenario,
@@ -14,7 +13,7 @@ import {
   runWorldTick,
   validateSystemicWorldState
 } from "../src";
-import { publishedFacts, saveAndLoad, secretFacts } from "./support/proof-trajectory";
+import { GQP_B_CATALOGUE, publishedFacts, saveAndLoad, secretFacts } from "./support/proof-trajectory";
 
 /**
  * Property and stress matrix over the whole network.
@@ -26,7 +25,7 @@ import { publishedFacts, saveAndLoad, secretFacts } from "./support/proof-trajec
  * this suite can report is a replayable one.
  */
 
-const CATALOGUE = GQP_PROOF_EVENTS;
+const CATALOGUE = GQP_B_CATALOGUE;
 const SEEDS = [1, 7, 7419, 424242, 20260919];
 const POLICIES = [0, 1, 2, 3, 4, 5, 6, 7];
 const MAX_DECISIONS = 10;

@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { EventEffect, ProofChoice, WorldState } from "@paa/game-types";
-import { GQP_PROOF_EVENTS } from "@paa/game-data";
 import {
   createGqpScenario,
   describeProofChoice,
@@ -21,6 +20,7 @@ import {
   PROOF_SEED,
   runTrajectory,
   type Decision,
+  GQP_B_CATALOGUE,
   type Trajectory
 } from "./support/proof-trajectory";
 
@@ -34,7 +34,7 @@ import {
  * claim is computed from authoritative state, never asserted from content.
  */
 
-const CATALOGUE = GQP_PROOF_EVENTS;
+const CATALOGUE = GQP_B_CATALOGUE;
 const MAJOR = new Set(["DILEMMA", "COMPLICATION", "CRISIS_PAYOFF"]);
 
 const runs = new Map<string, Trajectory>();

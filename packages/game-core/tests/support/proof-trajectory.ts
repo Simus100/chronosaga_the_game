@@ -27,6 +27,35 @@ import {
 
 export type Decision = readonly [eventId: string, choiceId: string];
 
+/**
+ * The eight events GQP-B was accepted on (PR #43), by id.
+ *
+ * GQP-C adds F4 and F5 -- and two more F1/F2 events -- to the same catalogue.
+ * This harness only ticks when nothing is eligible, so running the GQP-B
+ * scripts against a larger catalogue would change when their worlds tick, and
+ * with it every number GQP-B's evidence was reviewed on. The GQP-B suites
+ * therefore keep proving their claims on exactly the network they were made
+ * about; the full F1-F5 network is proven through the real selector in the
+ * GQP-C suites. An explicit list, not a family filter: a family filter would
+ * silently grow with every event later added to those families.
+ */
+export const GQP_B_EVENT_IDS = [
+  "evt_f1_clinic_request",
+  "evt_f1_ira_prevention_drive",
+  "evt_f1_outbreak",
+  "evt_f2_recycler_breakdown",
+  "evt_f2_recycler_warning",
+  "evt_f2_tarek_second_warning",
+  "evt_f3_conduit_offer",
+  "evt_f3_debt_called"
+] as const;
+
+export const GQP_B_CATALOGUE: readonly ProofEvent[] = GQP_B_EVENT_IDS.map(id => {
+  const event = GQP_PROOF_EVENTS.find(item => item.id === id);
+  if (!event) throw new Error(`GQP-B event '${id}' is missing from the proof catalogue`);
+  return event;
+});
+
 export interface TrajectoryStep {
   readonly kind: "decision" | "quiet";
   readonly decision: ResolvedDecision | null;
@@ -71,7 +100,7 @@ export function saveAndLoad(state: WorldState): WorldState {
 }
 
 export function runTrajectory(name: string, decisions: readonly Decision[], options: TrajectoryOptions = {}): Trajectory {
-  const catalogue = options.catalogue ?? GQP_PROOF_EVENTS;
+  const catalogue = options.catalogue ?? GQP_B_CATALOGUE;
   const quietBudget = options.quietBudget ?? 4;
   const start = options.start ?? createGqpScenario(PROOF_SEED);
   let state = start;
@@ -223,7 +252,7 @@ export const COVERAGE_PATHS: Readonly<Record<string, readonly Decision[]>> = {
  * on the stored memory (P2-5), so secrecy is read from the content that
  * produced the fact.
  */
-export function secretFacts(catalogue: readonly ProofEvent[] = GQP_PROOF_EVENTS): Set<string> {
+export function secretFacts(catalogue: readonly ProofEvent[] = GQP_B_CATALOGUE): Set<string> {
   const secrets = new Set<string>();
   for (const event of catalogue) {
     for (const choice of event.choices) {
@@ -237,7 +266,7 @@ export function secretFacts(catalogue: readonly ProofEvent[] = GQP_PROOF_EVENTS)
 }
 
 /** The facts a run has published by a resolved decision, read from its history. */
-export function publishedFacts(state: WorldState, catalogue: readonly ProofEvent[] = GQP_PROOF_EVENTS): Set<string> {
+export function publishedFacts(state: WorldState, catalogue: readonly ProofEvent[] = GQP_B_CATALOGUE): Set<string> {
   const published = new Set<string>();
   const history = (state.simulation as unknown as { resolvedHistory: ResolvedDecision[] }).resolvedHistory;
   for (const entry of history) {
