@@ -313,10 +313,17 @@ describe("GQP-B catalogue gate", () => {
       refuses(c, /publishes 'fact_t_warning', which is recorded public already/);
     });
 
-    it("refuses one fact published by two events", () => {
+    it("accepts one fact published immediately by two events (GQP-C: confessed, or exposed where discovered)", () => {
       const c = withPublication(publish("tarek_001", "fact_t_warning"));
       c[0].choices[0].effects.push(publish("tarek_001", "fact_t_warning"));
-      refuses(c, /fact 'fact_t_warning' is published by both/);
+      expect(errors(c)).toEqual([]);
+    });
+
+    it("refuses a fact shared between a delayed publication and another event's", () => {
+      const c = withPublication(publish("tarek_001", "fact_t_warning"));
+      c[0].choices[1].schedules[0].effects.push(publish("tarek_001", "fact_t_warning"));
+      c[0].choices[1].disclosure.risks.push("political");
+      refuses(c, /fact 'fact_t_warning' is published by both .* and a delayed publication cannot share its fact/);
     });
 
     it("refuses recording and publishing a fact in one choice", () => {

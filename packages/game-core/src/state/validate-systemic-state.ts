@@ -512,7 +512,8 @@ function consequenceContext(state: WorldState): ConsequenceContext {
     proofReferences: {
       characterIds,
       factionIds: new Set(simulation.factions.map(faction => faction.id)),
-      nodeIds: new Set(simulation.productionNodes.map(node => node.id))
+      nodeIds: new Set(simulation.productionNodes.map(node => node.id)),
+      groupIds: new Set(simulation.politicalGroups.map(group => group.id))
     }
   };
 }

@@ -24,7 +24,8 @@ export const PROOF_EVENT_EFFECT_TYPES = [
   "EPIDEMIC_SHIFT",
   "NODE_CONDITION_SHIFT",
   "MEMORY_RECORD",
-  "MEMORY_PUBLISH"
+  "MEMORY_PUBLISH",
+  "POLITICAL_STANDING_SHIFT"
 ] as const satisfies readonly ProofEventEffect["type"][];
 
 export function isProofEffectType(type: unknown): type is ProofEventEffect["type"] {
@@ -57,7 +58,8 @@ const ALLOWED_FIELDS: Readonly<Record<ProofEventEffect["type"], readonly string[
     "summary",
     "tags"
   ],
-  MEMORY_PUBLISH: ["type", "characterId", "memoryId"]
+  MEMORY_PUBLISH: ["type", "characterId", "memoryId"],
+  POLITICAL_STANDING_SHIFT: ["type", "groupId", "delta"]
 };
 
 /** The ids a proof effect may name, taken from the world it will act on. */
@@ -65,6 +67,7 @@ export interface ProofEffectReferences {
   readonly characterIds: ReadonlySet<string>;
   readonly factionIds: ReadonlySet<string>;
   readonly nodeIds: ReadonlySet<string>;
+  readonly groupIds: ReadonlySet<string>;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -192,6 +195,11 @@ export function validateProofEffectShape(effect: unknown, label: string, errors:
       identifier(effect, "memoryId", label, errors);
       return;
     }
+    case "POLITICAL_STANDING_SHIFT": {
+      identifier(effect, "groupId", label, errors);
+      shift(effect, label, errors);
+      return;
+    }
   }
 }
 
@@ -212,6 +220,11 @@ export function validateProofEffectReferences(
   if (effect.type === "NODE_CONDITION_SHIFT" && typeof effect.nodeId === "string") {
     if (!references.nodeIds.has(effect.nodeId)) {
       errors.push(`${label}.nodeId '${effect.nodeId}' matches no production node`);
+    }
+  }
+  if (effect.type === "POLITICAL_STANDING_SHIFT" && typeof effect.groupId === "string") {
+    if (!references.groupIds.has(effect.groupId)) {
+      errors.push(`${label}.groupId '${effect.groupId}' matches no political group`);
     }
   }
   if (effect.type === "MEMORY_PUBLISH" && typeof effect.characterId === "string") {

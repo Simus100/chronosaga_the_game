@@ -139,7 +139,13 @@ function setNumber(
   changes.push({ type: changeType, key: changeKey, before, after });
 }
 
-function weightedSettlementSatisfaction(cohorts: PopulationCohortState[]): number {
+/**
+ * A settlement's satisfaction: the population-weighted mean of its cohorts'.
+ *
+ * Exported (GQP-C) so the one effect that moves cohort satisfaction outside the
+ * tick re-derives the settlement's value by this rule rather than a copy of it.
+ */
+export function weightedSettlementSatisfaction(cohorts: readonly PopulationCohortState[]): number {
   const population = cohorts.reduce((sum, cohort) => sum + cohort.population, 0);
   if (population <= 0) return 0.5;
   return rounded(

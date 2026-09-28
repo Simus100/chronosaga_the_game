@@ -331,6 +331,8 @@ function guardianOf(effect: EventEffect): CharacterCoreValue | null {
       return "duty_of_care";
     case "RESOURCE_DELTA":
       return "practical_autonomy";
+    case "POLITICAL_STANDING_SHIFT":
+      return "community_voice";
     default:
       return null;
   }

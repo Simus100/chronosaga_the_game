@@ -130,12 +130,13 @@ const memoryRecord = (overrides: Record<string, unknown> = {}): EventEffect =>
   }) as unknown as EventEffect;
 
 describe("GQP-B effects: vocabulary and version boundaries", () => {
-  it("adds exactly four proof-only types and leaves the M1 vocabulary alone", () => {
+  it("adds the proof-only types (four in GQP-B, one in GQP-C) and leaves the M1 vocabulary alone", () => {
     expect([...PROOF_EVENT_EFFECT_TYPES].sort()).toEqual([
       "EPIDEMIC_SHIFT",
       "MEMORY_PUBLISH",
       "MEMORY_RECORD",
-      "NODE_CONDITION_SHIFT"
+      "NODE_CONDITION_SHIFT",
+      "POLITICAL_STANDING_SHIFT"
     ]);
     // The GQP-0 list is untouched: it is what M1 content and v1 saves may hold.
     expect([...EVENT_EFFECT_TYPES].sort()).toEqual([
@@ -171,7 +172,8 @@ describe("GQP-B effects: vocabulary and version boundaries", () => {
       EPIDEMIC_SHIFT: { type, cause: "crowding", delta: 0.1 },
       NODE_CONDITION_SHIFT: { type, nodeId: "prod_recycler_01", delta: 0.1 },
       MEMORY_RECORD: memoryRecord(),
-      MEMORY_PUBLISH: { type, memoryId: "fact_probe" }
+      MEMORY_PUBLISH: { type, memoryId: "fact_probe" },
+      POLITICAL_STANDING_SHIFT: { type, groupId: "group_labor", delta: 0.1 }
     };
     refusedWithoutMutation(createSystemicScenario(7419), effects[type], /cannot apply to a baseline world/);
   });

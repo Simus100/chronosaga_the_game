@@ -284,12 +284,39 @@ export interface MemoryPublishEffect {
   memoryId: string;
 }
 
+/**
+ * Move the steward's standing with one internal political group (GQP-C, F4).
+ *
+ * The lever public accountability needs and nothing else provides. Group
+ * approval and cohort satisfaction are authoritative (spec 9.3 names them,
+ * with settlement stability, as where legitimacy already lives), but before
+ * GQP-C only the World Tick wrote them, and only from resource shortage: no
+ * decision could spend or earn consent, so "tell the truth about the costs"
+ * had no currency to be paid in.
+ *
+ * One effect, one group: the group's approval moves by `delta`, the cohorts
+ * whose political affinity is that group move their satisfaction by the same
+ * amount, and the settlement's satisfaction -- which the World Tick derives
+ * from its cohorts -- is re-derived by the same rule. Nothing parallel is
+ * stored, and the next World Tick carries on from the values written here.
+ *
+ * Deliberately not a faction opinion: spec 11.2 keeps "the faction now hates
+ * you" out of authors' hands. External factions still move only through their
+ * typed agenda conditions -- one of which reads exactly this approval.
+ */
+export interface PoliticalStandingShiftEffect {
+  type: "POLITICAL_STANDING_SHIFT";
+  groupId: string;
+  delta: number;
+}
+
 /** Effects only a schema-v2 proof world can apply. */
 export type ProofEventEffect =
   | EpidemicShiftEffect
   | NodeConditionShiftEffect
   | MemoryRecordEffect
-  | MemoryPublishEffect;
+  | MemoryPublishEffect
+  | PoliticalStandingShiftEffect;
 
 export type EventEffect = LegacyEventEffect | ProofEventEffect;
 
@@ -746,6 +773,16 @@ export type ProofPredicate =
     }
   | {
       /**
+       * Whether an authoritative stock is below `value` -- a resource in crisis
+       * (GQP-C, F5). Read from the same authority affordability reads, so an
+       * event cannot see one number while a choice pays from another.
+       */
+      predicate: "resource_below";
+      key: string;
+      value: number;
+    }
+  | {
+      /**
        * Whether one of the four GQP-C pattern detectors currently matches.
        *
        * How a detector reaches content (spec 12.2: "which families or
@@ -773,6 +810,7 @@ export const PROOF_PREDICATES = [
   "memory_known",
   "agenda_satisfied",
   "consequence_status",
+  "resource_below",
   "pattern_detected"
 ] as const;
 
@@ -840,6 +878,16 @@ export interface ProofEvent {
   familyId: EventFamilyId;
   taxonomy: ProofEventTaxonomy;
   eligibility: ProofPredicate[];
+  /**
+   * Typed causal references that make the event more relevant when they hold,
+   * without gating it (GQP-C, spec 12.2 "make eligible *or reprioritise*").
+   *
+   * Read only by selection, as causal relevance, exactly like the positive
+   * references in `eligibility`. An author names which memory, pattern, agenda
+   * item or consequence the event answers to; the selector never infers a
+   * connection from titles, tags or text.
+   */
+  relevance?: ProofPredicate[];
   /** Presentation only. Titles and bodies are never read by a rule. */
   presentation: { title: string; body: string };
   choices: ProofChoice[];
