@@ -132,6 +132,18 @@ export function applyProofEffect(
         // is cheaper than a character who remembers a thing twice.
         throw new Error(`${holder.id} already holds memory '${effect.memoryId}'`);
       }
+      // A memory id names one fact across the party (P2-7): a fact is recorded
+      // once, first-hand, and only propagation makes copies of it. Checking the
+      // holder alone let a second event record the same id first-hand on someone
+      // who had not heard it -- a secret, say -- and this exported applicator
+      // then returned, as a success, a world the save boundary rejects.
+      const others = state.party
+        .filter(character => character.id !== holder.id)
+        .filter(character => (character.memories ?? []).some(memory => memory.id === effect.memoryId))
+        .map(character => character.id);
+      if (others.length > 0) {
+        throw new Error(`Fact '${effect.memoryId}' is already recorded; ${others.join(", ")} hold it. A fact is recorded once`);
+      }
 
       const memory: CharacterMemory = {
         id: effect.memoryId,

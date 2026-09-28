@@ -5,6 +5,7 @@ import type {
   DelayedConsequenceState,
   EventEffect,
   GameEvent,
+  ProofEvent,
   StateChange,
   WorldState
 } from "@paa/game-types";
@@ -16,6 +17,7 @@ import {
   createGqpScenario,
   createSystemicScenario,
   runWorldTick,
+  resolveProofChoice,
   scheduleDelayedConsequence,
   PROOF_MEMORY_FIELDS,
   isFactPublic,
@@ -914,6 +916,35 @@ describe("One memory id, one fact, across the party (P2-7)", () => {
       ["sela_001", fact({ origin: "public", salience: 0.4, source: { kind: "choice", id: "evt_other:x" } })]
     ]);
     expect(validateSystemicWorldState(state)).toEqual({ ok: true, errors: [] });
+  });
+
+  it("refuses, at the applicator, to record a fact someone else already holds (P2-7b)", () => {
+    // The first record is a secret, so nobody else has a copy; the second event
+    // recording the same id first-hand on Tarek used to succeed and leave a world
+    // the boundary rejects. It is refused now, touching nothing.
+    const state = proof();
+    applyEventEffect(state, memoryRecord({ characterId: "mara_001", memoryId: "fact_x", exposure: "secret" }), [], CONTEXT);
+    refusedWithoutMutation(state, memoryRecord({ characterId: "tarek_001", memoryId: "fact_x", exposure: "secret" }), /Fact 'fact_x' is already recorded; mara_001 hold it/);
+    // Same when the other holder only has a propagated copy.
+    const reflected = proof();
+    applyEventEffect(reflected, memoryRecord({ characterId: "mara_001", memoryId: "fact_y", exposure: "private" }), [], CONTEXT);
+    refusedWithoutMutation(reflected, memoryRecord({ characterId: "ira_001", memoryId: "fact_y", exposure: "private" }), /Fact 'fact_y' is already recorded/);
+    expect(validateSystemicWorldState(state).ok).toBe(true);
+  });
+
+  it("refuses the same through the resolver, whose final gate is not the only line", () => {
+    const events: ProofEvent[] = ["a", "b"].map((suffix, i) => ({
+      id: "evt_dup_" + suffix,
+      familyId: "maintenance",
+      taxonomy: "SIGNAL",
+      eligibility: [],
+      presentation: { title: "t", body: "b" },
+      choices: [{ id: "c", label: "c", effects: [memoryRecord({ characterId: i === 0 ? "mara_001" : "tarek_001", memoryId: "fact_dup", exposure: "secret" })], disclosure: { risks: [], unknowns: [] } }]
+    }));
+    const first = resolveProofChoice(proof(), events, "evt_dup_a", "c").state;
+    const snapshot = structuredClone(first);
+    expect(() => resolveProofChoice(first, events, "evt_dup_b", "c")).toThrow(/Fact 'fact_dup' is already recorded/);
+    expect(first).toEqual(snapshot);
   });
 
   it("holds on every world the proof itself produces", () => {
