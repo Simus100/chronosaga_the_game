@@ -256,6 +256,45 @@ describe("inside the window: which is worth more, a quiet beat or an event", () 
     if (crisis.kind === "event") expect(crisis.selection.rule).toBe("mandatory");
   });
 
+  it("presents the event that made the beat mandatory, even when repetition ranks another above it", () => {
+    // A real lifecycle path from the exhaustive walk: F5 answered two beats
+    // ago, so medical relief -- urgent at CRISIS -- carries a repetition
+    // penalty that ranks an unrelated, non-urgent F4 event above it. The rule
+    // is about the crisis, so the crisis is the one presented.
+    const path = [
+      ["evt_f3_conduit_offer", "tap_quietly"],
+      ["evt_f2_recycler_warning", "divert_clinic_power"],
+      ["evt_f5_water_convoy", "council_allocation"],
+      ["evt_f3_debt_called", "grant_access_quietly"],
+      ["evt_f1_clinic_request", "protect_reserve"],
+      ["evt_f5_council_calls_in", "repay_in_credits"],
+      ["evt_f1_outbreak", "ride_it_out"]
+    ] as const;
+    let world = start();
+    for (const [eventId, choiceId] of path) {
+      const quiet = beginProofBeat(world, CATALOGUE);
+      expect(quiet.focus.kind).toBe("quiet");
+      world = completeProofBeat(quiet, CATALOGUE).state;
+      const beat = beginProofBeat(world, CATALOGUE);
+      if (beat.focus.kind !== "event") throw new Error("expected an event");
+      expect(beat.focus.event.id).toBe(eventId);
+      world = completeProofBeat(beat, CATALOGUE, choiceId).state;
+    }
+    const focus = selectProofFocus(world, CATALOGUE);
+    if (focus.kind !== "event") throw new Error("expected an event");
+    const { rule, candidates, chosen } = focus.selection;
+    expect(rule).toBe("mandatory");
+    // The ranking itself is unchanged: something non-urgent is on top...
+    expect(candidates[0]!.urgency.total).toBeLessThan(MANDATORY_URGENCY);
+    // ...and the presented event is the best of the mandatory ones.
+    const mandatory = candidates.filter(candidate => candidate.urgency.total >= MANDATORY_URGENCY);
+    expect(chosen).toBe(mandatory[0]);
+    expect(focus.event.id).toBe("evt_f5_medical_relief");
+    expect(focus.event.id).toBe(chosen.eventId);
+    // A tie-break is judged among the events the rule could choose from.
+    expect(focus.selection.tieBreak).toBe(mandatory.length > 1 && mandatory[1]!.priority === chosen.priority);
+  });
+
   it("lets a quiet beat wait only for an event that presses at QUIET_YIELD_PRIORITY or more", () => {
     expect(QUIET_YIELD_PRIORITY).toBe(3);
     // Same world, one event, one more causal reference: 2 waits, 3 goes first.

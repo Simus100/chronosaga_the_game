@@ -85,7 +85,9 @@ describe("the reference runs are sessions, not scripts", () => {
   it("answers only the event the selector presented, with an option that was open", () => {
     for (const run of [reference("A"), reference("B")]) {
       for (const beat of events(run)) {
-        expect(beat.event.id).toBe(beat.candidates[0]!.eventId);
+        expect(beat.event.id).toBe(beat.chosen!.eventId);
+        // In these runs every presented event is also the top of the ranking.
+        expect(beat.chosen).toBe(beat.candidates[0]);
         const before = run.beats[beat.beat - 2]?.after ?? run.start;
         const choice = findProofEvent(CATALOGUE, beat.event.id).choices.find(c => c.id === beat.choice)!;
         expect(choice, `${beat.event.id}:${beat.choice}`).toBeDefined();

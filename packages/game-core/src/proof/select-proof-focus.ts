@@ -132,7 +132,11 @@ export interface ProofEventSelection {
   readonly ticksSinceLastResolvedDecision: number;
   readonly quietBoundReached: boolean;
   readonly rule: EventRule;
-  /** Every eligible event, scored, best first. The chosen one is `candidates[0]`. */
+  /**
+   * Every eligible event, scored, best first. The chosen one is `candidates[0]`,
+   * except under `mandatory`: there it is the best candidate that is itself
+   * mandatory, which the ranking may place lower.
+   */
   readonly candidates: readonly CandidateScore[];
   readonly chosen: CandidateScore;
   /** Whether the chosen event won only on the event-id tie-break. */
@@ -610,7 +614,8 @@ export function relevantDevelopments(before: WorldState, after: WorldState, cata
  *   1. The quiet bound: once `ticksSinceLastResolvedDecision` reaches
  *      QUIET_TICK_BOUND, a decision is due. Something eligible -> EVENT, by
  *      the normal three terms. Nothing eligible -> PacingDefect (fail closed).
- *   2. Inside the window, an event urgent enough to be mandatory -> EVENT.
+ *   2. Inside the window, an event urgent enough to be mandatory -> EVENT,
+ *      and that event: the best-ranked of the mandatory ones.
  *   3. Otherwise preview the next World Tick. If it would show nothing, a
  *      quiet beat would be empty filler: EVENT if anything is eligible, else
  *      PacingDefect.
@@ -627,8 +632,12 @@ export function selectProofFocus(state: WorldState, catalogue: readonly ProofEve
   const candidates = eligible.map(event => scoreOf(state, simulation, event, patterns)).sort(byRank);
   const boundReached = ticksSince >= QUIET_TICK_BOUND;
 
-  const event = (rule: EventRule): ProofFocus => {
-    const chosen = candidates[0]!;
+  // `pool` is what the rule may choose from, in rank order. Every rule takes
+  // the whole ranking except `mandatory`, which is about particular events:
+  // the crisis that cannot wait is the one presented, even when repetition
+  // ranks something unrelated above it.
+  const event = (rule: EventRule, pool: readonly CandidateScore[] = candidates): ProofFocus => {
+    const chosen = pool[0]!;
     const chosenEvent = eligible.find(item => item.id === chosen.eventId)!;
     return {
       kind: "event",
@@ -639,7 +648,7 @@ export function selectProofFocus(state: WorldState, catalogue: readonly ProofEve
         rule,
         candidates,
         chosen,
-        tieBreak: candidates.length > 1 && candidates[1]!.priority === chosen.priority,
+        tieBreak: pool.length > 1 && pool[1]!.priority === chosen.priority,
         patterns,
         callback: callbackFor(state, simulation, chosenEvent, chosen, patterns)
       }
@@ -651,7 +660,8 @@ export function selectProofFocus(state: WorldState, catalogue: readonly ProofEve
     if (candidates.length === 0) throw defect("QUIET_BOUND_REACHED_WITH_NO_ELIGIBLE_EVENT");
     return event("quiet_bound");
   }
-  if (candidates.some(candidate => candidate.urgency.total >= MANDATORY_URGENCY)) return event("mandatory");
+  const mandatory = candidates.filter(candidate => candidate.urgency.total >= MANDATORY_URGENCY);
+  if (mandatory.length > 0) return event("mandatory", mandatory);
 
   const developments = relevantDevelopments(state, runWorldTick(state).state, catalogue);
   if (developments.length === 0) {

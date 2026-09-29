@@ -98,6 +98,8 @@ export interface BeatRecord {
   readonly playerTurn: { readonly from: number; readonly to: number };
   readonly eligible: readonly string[];
   readonly candidates: readonly CandidateScore[];
+  /** EVENT only: the candidate the selection presented. */
+  readonly chosen: CandidateScore | null;
   readonly patterns: readonly PatternMatch[];
   readonly rule: EventRule | QuietRule;
   readonly ticksSinceLastResolvedDecision: number;
@@ -215,6 +217,7 @@ export function runPacing(policy: PacingPolicy, options: PacingOptions = {}): Pa
         playerTurn: { from: common.turnFrom, to: outcome.state.turn },
         eligible: common.eligible,
         candidates: common.candidates,
+        chosen: null,
         patterns: common.patterns,
         rule: focus.quiet.rule,
         ticksSinceLastResolvedDecision: common.ticksSince,
@@ -239,6 +242,7 @@ export function runPacing(policy: PacingPolicy, options: PacingOptions = {}): Pa
         playerTurn: { from: common.turnFrom, to: outcome.state.turn },
         eligible: common.eligible,
         candidates: common.candidates,
+        chosen: focus.selection.chosen,
         patterns: common.patterns,
         rule: focus.selection.rule,
         ticksSinceLastResolvedDecision: common.ticksSince,
@@ -267,7 +271,7 @@ export function renderRun(run: PacingRun, catalogue: readonly ProofEvent[] = GQP
       lines.push(`${head} shows: ${beat.developments.map(describeDevelopment).join("; ")}`);
       continue;
     }
-    const chosen = beat.candidates[0]!;
+    const chosen = beat.chosen!;
     lines.push(
       `${head} ${beat.event!.id} (${beat.event!.familyId}, ${beat.event!.taxonomy}) -> ${beat.choice}` +
         ` | u${chosen.urgency.total} r${chosen.relevance.total} -rep${chosen.repetition.penalty} = ${chosen.priority}` +
