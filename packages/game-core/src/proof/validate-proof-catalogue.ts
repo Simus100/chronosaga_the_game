@@ -7,6 +7,7 @@ import {
   PROOF_EVENT_TAXONOMY,
   PROOF_PREDICATES,
   PROOF_RISK_CATEGORIES,
+  type EventEffect,
   type ProofRiskCategory,
   type WorldState
 } from "@paa/game-types";
@@ -16,6 +17,7 @@ import {
   validateProofEffectReferences,
   validateProofEffectShape
 } from "./proof-effect-contract.js";
+import { guardianOf } from "./pattern-detectors.js";
 import { proofConsequenceId } from "./proof-events.js";
 import { isProofSimulation } from "./schema-version.js";
 
@@ -210,7 +212,17 @@ export function validateProofCatalogue(
           producers.push({ memoryId: effect.memoryId, characterId: effect.characterId, exposure: effect.exposure });
           if (nonEmpty(effect.behaviorHook)) hooksByCharacter.add(`${effect.characterId}:${effect.behaviorHook}`);
           if (effect.behaviorHook === "call_in_debt" && nonEmpty(effect.subjectId)) debtSubjects.add(effect.subjectId);
-          if (scheduledEffects.length > 0) tracedFacts.add(effect.memoryId);
+          // A trace is discoverable only if one of the choice's scheduled
+          // effects has a guardian, and someone other than the holder carries
+          // that core value. A schedule of flags, stress or memories leaves
+          // nothing SECRET_ACTION_DISCOVERED can ever read: their guardian is
+          // null, and no core value is.
+          const holder = effect.characterId;
+          const readable = scheduledEffects.some(scheduled => {
+            const guardian = typeof scheduled.type === "string" ? guardianOf(scheduled as Pick<EventEffect, "type">) : null;
+            return world.party.some(character => character.id !== holder && character.coreValue === guardian);
+          });
+          if (readable) tracedFacts.add(effect.memoryId);
         }
       }
       for (const schedule of Array.isArray(choice.schedules) ? choice.schedules.filter(isRecord) : []) {

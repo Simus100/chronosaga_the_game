@@ -323,7 +323,7 @@ export function factionDebtCount(state: WorldState, factionId: string): number {
  * guards that part of the world. Effects that leave no trace anyone guards --
  * a memory, a flag, a stress change -- expose nothing.
  */
-function guardianOf(effect: EventEffect): CharacterCoreValue | null {
+export function guardianOf(effect: Pick<EventEffect, "type">): CharacterCoreValue | null {
   switch (effect.type) {
     case "NODE_CONDITION_SHIFT":
       return "technical_integrity";

@@ -402,6 +402,45 @@ describe("the catalogue gate reads pattern predicates as typed contracts", () =>
     expect(errorsOf(predicate)).toMatch(pattern);
   });
 
+  it("counts a fact as traced only when someone other than its holder guards what its schedule changes", () => {
+    // A secret whose only later trace is `trace`, recorded on `holder`.
+    const secretWith = (holder: string, trace: EventEffect[]): ProofEvent[] => [
+      ...reading({ predicate: "pattern_detected", pattern: "SECRET_ACTION_DISCOVERED", subject: "fact_x_hidden", value: true }),
+      {
+        id: "evt_x_hides",
+        familyId: "unregistered_conduit",
+        taxonomy: "DILEMMA",
+        eligibility: [],
+        presentation: { title: "Hides", body: "hides" },
+        choices: [
+          {
+            id: "hide",
+            label: "Hide",
+            effects: [
+              { type: "MEMORY_RECORD", characterId: holder, memoryId: "fact_x_hidden", valence: "ambivalent", salience: 0.7, exposure: "secret", callbackEligible: true, summary: "Hidden.", tags: [] }
+            ],
+            schedules: [{ key: "trace", delay: 1, visibility: "hidden", scope: "settlement", effects: trace, breadcrumb: { memoryId: "fact_x_hidden" } }],
+            disclosure: { risks: ["infrastructure"], unknowns: ["who notices"] }
+          },
+          { id: "skip", label: "Skip", effects: [{ type: "RESOURCE_DELTA", key: "energy", value: -1 }], disclosure: { risks: ["supply"], unknowns: ["cost"] } }
+        ]
+      }
+    ];
+    const errors = (holder: string, trace: EventEffect[]) => validateProofCatalogue(secretWith(holder, trace), start()).errors.join("; ");
+    const untraced = /'fact_x_hidden' is recorded by no choice that leaves a trace to discover/;
+    const node: EventEffect = { type: "NODE_CONDITION_SHIFT", nodeId: "prod_recycler_01", delta: -0.05 };
+
+    // A node strain Tarek guards: discoverable.
+    expect(errors("mara_001", [node])).toBe("");
+    // Flags, stress and memories leave nothing a guardian reads.
+    expect(errors("mara_001", [{ type: "FLAG_SET", key: "league_aid_accepted", value: true }])).toMatch(untraced);
+    expect(errors("mara_001", [{ type: "CHARACTER_STRESS", targetId: "mara_001", value: 4 }])).toMatch(untraced);
+    // The only guardian of the trace is the holder: nobody else can find it.
+    expect(errors("tarek_001", [node])).toMatch(untraced);
+    // One guarded effect among unguarded ones is enough.
+    expect(errors("mara_001", [{ type: "FLAG_SET", key: "league_aid_accepted", value: true }, node])).toBe("");
+  });
+
   it("refuses a dependency on a faction no choice ever puts the settlement in debt to", () => {
     const alone = reading({ predicate: "pattern_detected", pattern: "FACTION_DEPENDENCY_GROWING", subject: "faction_compact", value: true }).slice(-1);
     expect(validateProofCatalogue(alone, start()).errors.join("; ")).toMatch(/'faction_compact' is a faction no choice records a debt to/);
