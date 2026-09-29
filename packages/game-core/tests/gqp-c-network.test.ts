@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { EventEffect, ProofChoice, SystemicSimulationStateV2, WorldState } from "@paa/game-types";
+import { PROOF_RISK_CATEGORIES, type EventEffect, type ProofChoice, type SystemicSimulationStateV2, type WorldState } from "@paa/game-types";
 import { GQP_PROOF_EVENTS } from "@paa/game-data";
 import {
   agendaConditionHolds,
@@ -108,6 +108,11 @@ describe("GQP-2 on F1-F5: every major option touches at least three layers, wher
  * certain immediate effects and authored delayed effects both count; every
  * agenda item, political group and faction debt is its own axis, because
  * conceding to one side is not better or worse than conceding to the other.
+ *
+ * Only what the choice does to the world counts. `disclosure` is GQP-3's
+ * contract -- what the player is told about risk categories -- not a cost:
+ * counting its RISK categories would let an otherwise dominant option escape
+ * the verdict by declaring more of them without changing the world.
  */
 function outcome(state: WorldState, eventId: string, choice: ProofChoice): number[] {
   const after = resolveProofChoice(state, CATALOGUE, eventId, choice.id).state;
@@ -134,7 +139,6 @@ function outcome(state: WorldState, eventId: string, choice: ProofChoice): numbe
     -recorded.filter(effect => effect.valence === "negative").length,
     recorded.filter(effect => effect.valence === "positive").length,
     -secrets,
-    -choice.disclosure.risks.length,
     ...Object.keys(agendaB).sort().map(id => Number(agendaB[id]) - Number(agendaA[id])),
     ...sim(state).factions.map(faction => -(factionDebtCount(after, faction.id) - factionDebtCount(state, faction.id)))
   ];
@@ -180,6 +184,40 @@ describe("GQP-1 on F1-F5: no option dominates another where the network presents
       }
     }
     expect([...missing]).toEqual([]);
+  });
+});
+
+describe("GQP-1 reads outcomes, not disclosure metadata", () => {
+  it("gives the same choice the same verdict whatever RISK categories it declares", () => {
+    const declaring = (choice: ProofChoice, risks: readonly (typeof PROOF_RISK_CATEGORIES)[number][]): ProofChoice => ({
+      ...choice,
+      disclosure: { ...choice.disclosure, risks: [...risks] }
+    });
+    let checked = 0;
+    for (const context of majors()) {
+      const open = context.open.map(id => context.event.choices.find(c => c.id === id)!);
+      const vectors = new Map(open.map(choice => [choice.id, outcome(context.state, context.event.id, choice)]));
+      for (const choice of open) {
+        const v = vectors.get(choice.id)!;
+        const loud = outcome(context.state, context.event.id, declaring(choice, PROOF_RISK_CATEGORIES));
+        const silent = outcome(context.state, context.event.id, declaring(choice, []));
+        expect(loud).toEqual(v);
+        expect(silent).toEqual(v);
+        // The same outcome with more categories declared neither dominates
+        // nor is dominated by itself...
+        expect(dominates(v, loud) || dominates(loud, v)).toBe(false);
+        // ...and against every alternative the verdict is unchanged.
+        for (const other of open) {
+          if (other === choice) continue;
+          const w = vectors.get(other.id)!;
+          expect(dominates(loud, w)).toBe(dominates(v, w));
+          expect(dominates(w, loud)).toBe(dominates(w, v));
+          expect(dominates(silent, w)).toBe(dominates(v, w));
+        }
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(500);
   });
 });
 
