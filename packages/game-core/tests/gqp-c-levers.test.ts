@@ -146,6 +146,37 @@ describe("resource_below", () => {
     world.simulation!.settlements[0]!.resourceStock.water = 2;
     expect(evaluateProofPredicate({ predicate: "resource_below", key: "water", value: 5 }, world)).toBe(true);
   });
+
+  it("is refused by the gate when nothing stocks the key and no choice writes it", () => {
+    // A missing key reads as zero: without this, a typo is a shortage.
+    const reading = (key: string): ProofEvent[] => [
+      ...catalogue(),
+      {
+        id: "evt_x_short",
+        familyId: "external_rescue",
+        taxonomy: "COMPLICATION",
+        eligibility: [{ predicate: "resource_below", key, value: 5 }],
+        presentation: { title: "R", body: "r" },
+        choices: [
+          { id: "wait", label: "Wait", effects: [{ type: "RESOURCE_DELTA", key: "energy", value: -1 }], disclosure: { risks: ["supply"], unknowns: ["x"] } },
+          { id: "ask", label: "Ask", effects: [{ type: "PRESSURE_DELTA", value: 1 }], disclosure: { risks: ["political"], unknowns: ["x"] } }
+        ]
+      }
+    ];
+    expect(validateProofCatalogue(reading("water"), start()).errors).toEqual([]); // settlement stock
+    // The stock is the authority, not the flat projection of it.
+    const unprojected = start();
+    delete unprojected.resources.water;
+    expect(validateProofCatalogue(reading("water"), unprojected).errors).toEqual([]);
+    expect(validateProofCatalogue(reading("credits"), start()).errors).toEqual([]); // campaign resource
+    expect(validateProofCatalogue(reading("wattr"), start()).errors).toEqual([
+      "event evt_x_short.eligibility[0].key 'wattr' is stocked by nothing and written by no choice"
+    ]);
+    // A key no world holds yet is fine once some choice writes it.
+    const written = reading("salvage");
+    written[2]!.choices[0]!.effects = [{ type: "RESOURCE_DELTA", key: "salvage", value: 2 }];
+    expect(validateProofCatalogue(written, start()).errors).toEqual([]);
+  });
 });
 
 /** A two-event catalogue exercising the contracts below. */

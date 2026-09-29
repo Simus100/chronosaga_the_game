@@ -161,6 +161,13 @@ export function validateProofCatalogue(
   // records a debt to, and facts whose own choice leaves a scheduled trace.
   const debtSubjects = new Set<string>();
   const tracedFacts = new Set<string>();
+  // Resource keys a `resource_below` may read: stocked by the settlement or
+  // held by the campaign today, or written by some choice. Anything else reads
+  // as zero, which would be a fabricated shortage rather than an error.
+  const resourceKeys = new Set<string>([
+    ...Object.keys(world.resources),
+    ...simulation.settlements.flatMap(item => Object.keys(item.resourceStock))
+  ]);
 
   const events = catalogue.filter(isRecord);
   if (events.length !== catalogue.length) errors.push("every catalogue entry must be an object");
@@ -187,6 +194,7 @@ export function validateProofCatalogue(
       const withinChoice = new Set<string>();
       for (const effect of [...effects, ...scheduledEffects]) {
         if (effect.type === "FLAG_SET" && nonEmpty(effect.key)) settableFlags.add(effect.key);
+        if (effect.type === "RESOURCE_DELTA" && nonEmpty(effect.key)) resourceKeys.add(effect.key);
         if (effect.type === "MEMORY_RECORD" && nonEmpty(effect.characterId) && nonEmpty(effect.memoryId)) {
           const key = effect.memoryId;
           if (withinChoice.has(key)) {
@@ -301,6 +309,7 @@ export function validateProofCatalogue(
           return;
         case "resource_below":
           if (!nonEmpty(raw.key)) errors.push(`${at}.key must be a non-empty string`);
+          else if (!resourceKeys.has(raw.key)) errors.push(`${at}.key '${raw.key}' is stocked by nothing and written by no choice`);
           if (typeof raw.value !== "number" || !Number.isFinite(raw.value) || raw.value <= 0) {
             errors.push(`${at}.value must be a positive finite number`);
           }
