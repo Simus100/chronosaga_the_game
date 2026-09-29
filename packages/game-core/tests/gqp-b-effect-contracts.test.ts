@@ -359,6 +359,9 @@ describe("GQP-B effects: NODE_CONDITION_SHIFT is agency over the node itself", (
 describe("GQP-B effects: MEMORY_RECORD writes a salient memory, typed", () => {
   it("records the fact on the character with exactly the GQP-A fields, and origin direct", () => {
     const state = proof();
+    // The Core stamps a memory with the turn the world is on; a stamp past the
+    // world's own turn is refused at the boundary (GQP-C P2-1).
+    state.turn = 3;
     const changes: StateChange[] = [];
     applyEventEffect(state, memoryRecord({ exposure: "secret" }), changes, { source: SOURCE, turn: 3 });
     const memory = memoriesOf(state, "tarek_001").find(m => m.id === "fact_probe")!;
@@ -519,6 +522,7 @@ describe("GQP-B effects: MEMORY_PUBLISH makes a kept fact public, by decision", 
 
   it("turns the holder's copy public and runs the public channel from her settlement", () => {
     const state = withSecret();
+    state.turn = 4;
     const publish = { source: { kind: "choice" as const, id: "evt_publish:disclose" }, turn: 4 };
     const changes: StateChange[] = [];
     expect(isFactPublic(state, state.simulation as never, "fact_secret")).toBe(false);
@@ -932,6 +936,7 @@ describe("One memory id, one fact, across the party (P2-7)", () => {
       ["tarek_001", fact({ origin: "reflected", salience: 0.4, turn: 3 })],
       ["sela_001", fact({ origin: "public", salience: 0.4, source: { kind: "choice", id: "evt_other:x" } })]
     ]);
+    state.turn = 3; // the reflected copy is stamped on the world's current turn
     expect(validateSystemicWorldState(state)).toEqual({ ok: true, errors: [] });
   });
 

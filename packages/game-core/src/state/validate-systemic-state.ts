@@ -264,6 +264,9 @@ function validateShape(input: unknown): string[] {
   requireFiniteNumber(input, "seed", "WorldState.seed", errors);
   requireClock(input, "turn", "WorldState.turn", errors, 1);
   requireClock(input, "day", "WorldState.day", errors, 1);
+  // The Player Turn every persisted turn stamp is bounded by, once it is
+  // itself a clock. Nothing a world holds can have happened after it.
+  const currentTurn = isClockValue(input.turn, 1) ? (input.turn as number) : null;
   requireFiniteNumber(input, "worldPressure", "WorldState.worldPressure", errors, 0);
   requireFlags(input, "WorldState.flags", errors);
   requireFiniteNumberMap(input, "resources", "WorldState.resources", errors);
@@ -330,7 +333,17 @@ function validateShape(input: unknown): string[] {
           requireString(memory, "id", `${at}.id`, errors);
           requireString(memory, "summary", `${at}.summary`, errors, false);
           requireStringArray(memory, "tags", `${at}.tags`, errors);
-          requireInteger(memory, "turn", `${at}.turn`, errors, 1);
+          // A clock, not a label: the GQP-C detectors order evidence by it
+          // (`firstInvolvementAfter`, `engagedAt`). Every memory is written at
+          // the Player Turn it happens on -- a World Tick writes on the current
+          // turn, so equality is legitimate -- and the turn only grows. A turn
+          // past the world's own is evidence from the future: a save could use
+          // it to plant an involvement or retract an engagement after the fact.
+          const turnErrors = errors.length;
+          requireClock(memory, "turn", `${at}.turn`, errors, 1);
+          if (errors.length === turnErrors && currentTurn !== null && (memory.turn as number) > currentTurn) {
+            errors.push(`${at}.turn ${String(memory.turn)} is after WorldState.turn ${currentTurn}; a memory cannot come from the future`);
+          }
           validateCausalSource(memory.source, `${at}.source`, errors);
         });
       }
@@ -412,7 +425,25 @@ function validateShape(input: unknown): string[] {
     requireFiniteNumber(squad, "intelligence", `${label}.intelligence`, errors);
     requireOptionalString(squad, "commanderId", `${label}.commanderId`, errors);
   }
-  for (const consequence of consequences ?? []) consequenceShapeErrors(consequence, errors);
+  for (const consequence of consequences ?? []) {
+    const before = errors.length;
+    consequenceShapeErrors(consequence, errors);
+    // A consequence applies only once its trigger turn is reached, and the turn
+    // only grows, so an applied one never lies ahead of the world. The
+    // SECRET_ACTION_DISCOVERED detector reads an applied consequence as the
+    // physical trace of a secret: applied in the future is a planted trace.
+    // Pending ones may of course lie ahead.
+    if (
+      errors.length === before &&
+      currentTurn !== null &&
+      consequence.status === "applied" &&
+      (consequence.triggerTurn as number) > currentTurn
+    ) {
+      errors.push(
+        `consequence ${String(consequence.id)} is applied at triggerTurn ${String(consequence.triggerTurn)}, after WorldState.turn ${currentTurn}`
+      );
+    }
+  }
 
   return errors;
 }
