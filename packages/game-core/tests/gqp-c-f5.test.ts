@@ -172,10 +172,18 @@ describe("self-reliance is a real path, with its own price", () => {
  *   dependency consequence              debts recorded per faction
  *   future cost                         delayed harm scheduled
  *   future availability                 options opened or closed elsewhere
+ *                                       (reported, not an axis -- below)
  *
  * and no option may be at least as good as another on every axis and better
  * on one. Agenda items and factions are separate axes: conceding to the
  * Council is not better or worse than conceding to the League.
+ *
+ * Future availability is descriptive evidence, not an ordinal axis. A door
+ * that opens can be a complication (the League calling in its debt) and a
+ * door that closes can be a relief, so "more open options" is not "better".
+ * The doors that are F5's trade-offs are asserted where they are made:
+ * two debts close the plain offers and open the terms, and the League calls
+ * in only once it holds two -- the "repeated rescue" tests above.
  */
 const RESOURCES = ["water", "energy", "food", "medicine", "alloys", "credits"] as const;
 
@@ -186,6 +194,7 @@ interface AuditRow {
   readonly political: Record<string, number>;
   readonly agenda: Record<string, number>;
   readonly dependency: Record<string, number>;
+  /** `opened` / `closed` are reported, never ranked: see the note above. */
   readonly future: { readonly delayedHarm: number; readonly opened: number; readonly closed: number };
   readonly vector: number[];
 }
