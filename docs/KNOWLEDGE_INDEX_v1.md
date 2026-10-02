@@ -248,6 +248,8 @@ GQP technical completion
 
 GQP-0 è completato con PR #33. Tracking generale: #30.
 
+Il founder playtest di GQP-D (#46) si gioca e si documenta con `GQP_D_FOUNDER_PLAYTEST_RUNBOOK_v0.1.md`.
+
 ---
 
 # File operativi root/config/status
