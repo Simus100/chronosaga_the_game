@@ -3,6 +3,7 @@
 mod inference;
 mod local_ai_runtime;
 mod model_lock;
+mod playtest;
 mod profile_orchestrator;
 mod runtime_lock;
 mod runtime_watcher;
@@ -803,6 +804,33 @@ fn load_systemic_campaign(app: AppHandle, campaign_id: String) -> Result<Systemi
     fetch_systemic(&connection, &campaign_id)
 }
 
+/// Where this playtest session's evidence lives on disk (GQP-D).
+///
+/// Local only: the founder-playtest telemetry and bundle stay in the app's own
+/// data directory, next to the save database, and nothing uploads them.
+#[tauri::command]
+fn playtest_session_dir(app: AppHandle, session_id: String) -> Result<String, String> {
+    Ok(as_string(&playtest::session_dir(&app_local_data_dir(&app)?, &session_id)?))
+}
+
+/// Append one telemetry record to the session's `telemetry.jsonl`.
+#[tauri::command]
+fn playtest_append_line(app: AppHandle, session_id: String, line: String) -> Result<(), String> {
+    playtest::append_line(&app_local_data_dir(&app)?, &session_id, &line).map(|_| ())
+}
+
+/// Write one file of the playtest bundle. Returns where it was written.
+#[tauri::command]
+fn playtest_write_file(
+    app: AppHandle,
+    session_id: String,
+    file_name: String,
+    content: String,
+) -> Result<String, String> {
+    playtest::write_file(&app_local_data_dir(&app)?, &session_id, &file_name, &content)
+        .map(|path| as_string(&path))
+}
+
 #[tauri::command]
 fn get_local_ai_runtime_status(runtime: State<'_, LocalAiRuntimeState>) -> LocalAiRuntimeSnapshot {
     runtime.snapshot()
@@ -1392,6 +1420,9 @@ fn main() {
             load_smoke_campaign,
             save_systemic_campaign,
             load_systemic_campaign,
+            playtest_session_dir,
+            playtest_append_line,
+            playtest_write_file,
             get_local_ai_runtime_status,
             start_local_ai_runtime,
             stop_local_ai_runtime,

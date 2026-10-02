@@ -1,0 +1,511 @@
+/*
+ * The Gameplay Quality Proof screen (GQP-D).
+ *
+ * The existing visual system, not a new one: the same palette, panels and
+ * buttons as play.css. What is added is hierarchy for reading a decision --
+ * the event first, each option as a card with what you know / risks / what
+ * you do not know -- a quiet layout that reads as "the world moves", and a
+ * discreet playtest chip. Every state that matters is said in words as well as
+ * in colour.
+ */
+
+.proof__grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(420px, 2.2fr) minmax(240px, 1.1fr);
+  gap: 1px;
+  background: var(--grid);
+  min-height: 0;
+}
+
+.proof__center,
+.proof__side {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--grid);
+  min-width: 0;
+}
+
+.proof__center > *,
+.proof__side > * {
+  background: var(--surface-1);
+}
+
+.proof-world,
+.proof-crew,
+.proof-factions,
+.proof-focus {
+  overflow-y: auto;
+}
+
+/* Focus visible everywhere on this screen, for keyboard play. */
+.proof button:focus-visible,
+.proof select:focus-visible,
+.proof textarea:focus-visible,
+.questionnaire button:focus-visible,
+.questionnaire textarea:focus-visible,
+.questionnaire select:focus-visible,
+.mode-menu button:focus-visible,
+.proof-landing button:focus-visible,
+.proof-landing input:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- focus */
+
+.proof-focus h2 {
+  font-size: 1.35rem;
+  letter-spacing: 0.02em;
+  margin: 0.4rem 0 0.6rem;
+  color: var(--text-1);
+}
+
+.proof-focus .event__body {
+  font-size: 0.98rem;
+  line-height: 1.55;
+  max-width: 62ch;
+}
+
+.proof-focus--quiet {
+  border-left: 3px solid var(--teal);
+}
+
+.proof-focus--defect {
+  border-left: 3px solid var(--danger);
+}
+
+.proof-focus--prompt {
+  border-left: 3px solid var(--amber);
+}
+
+.proof-focus__technical {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+
+.proof-focus__note {
+  color: var(--amber);
+  font-size: 0.85rem;
+}
+
+.proof-focus__pass {
+  margin-top: 0.8rem;
+}
+
+.proof-developments {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  line-height: 1.5;
+}
+
+.proof-developments li {
+  margin-bottom: 0.35rem;
+}
+
+.proof-developments__more summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 0.8rem;
+  margin-top: 0.4rem;
+}
+
+.proof-why {
+  border-left: 2px solid var(--amber);
+  padding: 0.3rem 0 0.3rem 0.8rem;
+  margin: 0 0 0.8rem;
+  font-size: 0.88rem;
+  color: var(--text-1);
+}
+
+.proof-why__lines,
+.proof-why__recap {
+  margin: 0;
+  padding-left: 1rem;
+  line-height: 1.45;
+}
+
+.proof-why__recap {
+  margin-top: 0.35rem;
+  color: var(--text-2);
+}
+
+.proof-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.proof-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.85rem;
+  background: var(--surface-2);
+  border: 1px solid var(--grid);
+}
+
+.proof-option h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  color: var(--amber);
+}
+
+.proof-option--blocked {
+  opacity: 0.6;
+}
+
+.proof-option--blocked h3 {
+  color: var(--text-2);
+}
+
+.proof-option__heading {
+  display: block;
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin-bottom: 0.2rem;
+}
+
+.proof-option ul {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.proof-option__risks ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.risk {
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--danger);
+  color: var(--text-1);
+}
+
+.proof-option__none {
+  font-size: 0.8rem;
+  color: var(--text-2);
+  font-style: italic;
+}
+
+.proof-option__choose {
+  margin-top: auto;
+  text-align: center;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.proof-last {
+  padding: 0.7rem 1rem;
+  font-size: 0.85rem;
+  border-left: 3px solid var(--positive);
+}
+
+.proof-last ul {
+  margin: 0.3rem 0 0;
+  padding-left: 1rem;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+
+.proof-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+  margin-bottom: 0.7rem;
+}
+
+.proof-field textarea,
+.proof-field select {
+  background: var(--bg-1);
+  color: var(--text-1);
+  border: 1px solid var(--grid);
+  font: inherit;
+  padding: 0.45rem;
+}
+
+/* ---------------------------------------------------------------- world */
+
+.proof-world__heading {
+  font-size: 0.66rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin: 1rem 0 0.4rem;
+}
+
+.resource__flag {
+  font-size: 0.66rem;
+  color: var(--amber);
+  margin-left: 0.4rem;
+}
+
+.pressure {
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.4rem;
+  background: var(--surface-2);
+  border-left: 3px solid var(--teal);
+}
+
+.pressure--strained {
+  border-left-color: var(--amber);
+}
+
+.pressure--critical,
+.pressure--crisis {
+  border-left-color: var(--danger);
+}
+
+.pressure__name {
+  font-size: 0.8rem;
+  margin-right: 0.5rem;
+}
+
+.pressure__stage {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+}
+
+.pressure__causes,
+.proof-pending {
+  margin: 0.3rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.78rem;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.crew__value,
+.crew__memory {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.crew__memory {
+  color: var(--text-1);
+  font-style: italic;
+}
+
+.faction__agenda {
+  margin: 0.3rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.agenda--open {
+  color: var(--amber);
+}
+
+.agenda--settled {
+  color: var(--text-2);
+}
+
+.faction__debt {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------- overlay */
+
+.playtest {
+  position: fixed;
+  right: 0.8rem;
+  bottom: 4.2rem;
+  max-width: min(420px, calc(100vw - 1.6rem));
+  z-index: 10;
+  font-size: 0.75rem;
+}
+
+.playtest__chip {
+  background: var(--bg-1);
+  color: var(--text-2);
+  border: 1px solid var(--grid);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+.playtest__target {
+  margin: 0.3rem 0 0;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg-1);
+  border: 1px solid var(--amber);
+  color: var(--amber);
+}
+
+.playtest__panel {
+  margin-top: 0.3rem;
+  padding: 0.7rem;
+  background: var(--bg-1);
+  border: 1px solid var(--grid);
+}
+
+.playtest__panel dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.6rem;
+  margin: 0 0 0.6rem;
+}
+
+.playtest__panel dt {
+  color: var(--text-2);
+}
+
+.playtest__panel dd {
+  margin: 0;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.playtest__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.playtest__error {
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------- menu */
+
+.mode-menu__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  max-width: 900px;
+  padding: 0 1rem;
+}
+
+.mode-menu__option {
+  flex: 1 1 320px;
+  padding: 1.2rem;
+  background: var(--surface-1);
+  border: 1px solid var(--grid);
+}
+
+.mode-menu__option--proof {
+  border-color: var(--amber);
+}
+
+.mode-menu__option h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.mode-menu__option p {
+  color: var(--text-2);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.mode-menu__build {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: var(--text-2);
+}
+
+.mode-back {
+  position: fixed;
+  left: 0.8rem;
+  bottom: 0.8rem;
+  z-index: 10;
+  background: var(--bg-1);
+  color: var(--text-2);
+  border: 1px solid var(--grid);
+  font-size: 0.7rem;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+.proof-landing__card {
+  max-width: 640px;
+  padding: 1rem 1.2rem;
+  background: var(--surface-1);
+  border: 1px solid var(--grid);
+  line-height: 1.55;
+  margin: 0 1rem;
+}
+
+.proof-landing__toggle {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+
+/* ---------------------------------------------------------------- questionnaire */
+
+.questionnaire {
+  overflow-y: auto;
+}
+
+.questionnaire__head,
+.questionnaire__form {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 1rem 1.2rem;
+  box-sizing: border-box;
+}
+
+.questionnaire__head h1 {
+  color: var(--cyan);
+  letter-spacing: 0.1em;
+}
+
+.questionnaire__head p {
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.questionnaire__question {
+  border: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.questionnaire__question legend {
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: 0.5rem;
+}
+
+/* ---------------------------------------------------------------- small windows */
+
+@media (max-width: 1200px) {
+  .proof__grid {
+    grid-template-columns: minmax(200px, 1fr) minmax(380px, 2fr);
+  }
+
+  .proof__side {
+    grid-column: 1 / -1;
+    flex-direction: row;
+  }
+
+  .proof__side > * {
+    flex: 1;
+  }
+}

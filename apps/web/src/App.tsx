@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GameEvent, WorldState } from "@paa/game-types";
 import { DesktopP0Screen } from "./components/DesktopP0Screen";
-import { SystemicPlayScreen } from "./components/SystemicPlayScreen";
+import { PlayRoot } from "./components/PlayRoot";
 import { isChronosagaDesktop } from "./platform/desktop";
 
 type Resolution = {
@@ -52,7 +52,7 @@ function DesktopShell() {
   return (
     <>
       <div style={{ display: surface === "play" ? "contents" : "none" }}>
-        <SystemicPlayScreen onExit={() => setSurface("diagnostics")} />
+        <PlayRoot onExit={() => setSurface("diagnostics")} />
       </div>
       {surface === "diagnostics" ? (
         <div className="surface">
