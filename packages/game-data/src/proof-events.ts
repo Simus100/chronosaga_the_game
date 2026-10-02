@@ -44,13 +44,13 @@ const f2RecyclerWarning: ProofEvent = {
   // at 0.8, so this is also the event that can satisfy it.
   eligibility: [{ predicate: "node_condition_below", nodeId: RECYCLER, value: 0.8 }],
   presentation: {
-    title: "The recycler is running hot",
-    body: "Tarek Oss reports scoring on the recycler's pump seals. A full overhaul takes power the settlement needs today; a patch keeps it running for now."
+    title: "Il riciclatore si sta surriscaldando",
+    body: "Tarek Oss segnala rigature sulle guarnizioni della pompa del riciclatore. Una revisione completa toglie energia che oggi serve all'insediamento; una toppa lo tiene in funzione per ora."
   },
   choices: [
     {
       id: "full_maintenance",
-      label: "Take it offline for a full overhaul",
+      label: "Fermalo per una revisione completa",
       effects: [
         { type: "RESOURCE_DELTA", key: "energy", value: -10 },
         { type: "NODE_CONDITION_SHIFT", nodeId: RECYCLER, delta: 0.22 },
@@ -62,18 +62,18 @@ const f2RecyclerWarning: ProofEvent = {
           exposure: "private",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "The steward gave the recycler the overhaul it needed.",
+          summary: "Chi guida Helios ha dato al riciclatore la revisione che gli serviva.",
           tags: ["recycler", "maintenance"]
         })
       ],
       disclosure: {
         risks: ["supply"],
-        unknowns: ["How long the rebuilt seals hold under extra load."]
+        unknowns: ["Quanto reggono le guarnizioni rifatte sotto un carico in più."]
       }
     },
     {
       id: "patch_and_defer",
-      label: "Patch the seals and keep it running",
+      label: "Rattoppa le guarnizioni e tienilo acceso",
       effects: [
         { type: "RESOURCE_DELTA", key: "energy", value: -3 },
         { type: "NODE_CONDITION_SHIFT", nodeId: RECYCLER, delta: 0.04 },
@@ -85,7 +85,7 @@ const f2RecyclerWarning: ProofEvent = {
           exposure: "private",
           behaviorHook: "offer_unprompted_warning",
           callbackEligible: true,
-          summary: "My warning about the seals was patched over.",
+          summary: "Il mio avvertimento sulle guarnizioni è stato coperto con una toppa.",
           tags: ["recycler", "warning"]
         })
       ],
@@ -100,14 +100,14 @@ const f2RecyclerWarning: ProofEvent = {
         }
       ],
       disclosure: {
-        knownNotes: ["The patch is not a repair."],
+        knownNotes: ["La toppa non è una riparazione."],
         risks: ["infrastructure", "social"],
-        unknowns: ["When the patched seals give way."]
+        unknowns: ["Quando le guarnizioni rattoppate cederanno."]
       }
     },
     {
       id: "divert_clinic_power",
-      label: "Borrow the clinic's power for the overhaul",
+      label: "Prendi l'energia dell'ambulatorio per la revisione",
       effects: [
         { type: "NODE_CONDITION_SHIFT", nodeId: RECYCLER, delta: 0.15 },
         { type: "EPIDEMIC_SHIFT", cause: "deferred_triage", delta: 0.06 },
@@ -118,13 +118,13 @@ const f2RecyclerWarning: ProofEvent = {
           salience: 0.6,
           exposure: "public",
           callbackEligible: true,
-          summary: "The clinic went dark so the recycler could be serviced.",
+          summary: "L'ambulatorio è rimasto al buio perché si potesse riparare il riciclatore.",
           tags: ["clinic", "power"]
         })
       ],
       disclosure: {
         risks: ["epidemic", "social"],
-        unknowns: ["How many patients the dark days cost."]
+        unknowns: ["Quanti pazienti costeranno i giorni al buio."]
       }
     }
   ]
@@ -149,13 +149,13 @@ const f2TarekSecondWarning: ProofEvent = {
     }
   ],
   presentation: {
-    title: "Tarek will not let it go",
-    body: "Tarek comes back unasked. The patch is weeping again, he says, and it will not last another shift cycle."
+    title: "Tarek non molla",
+    body: "Tarek torna senza che nessuno lo chiami. La toppa perde di nuovo, dice, e non reggerà un altro ciclo di turni."
   },
   choices: [
     {
       id: "authorize_inspection",
-      label: "Authorize an inspection now",
+      label: "Autorizza subito un'ispezione",
       effects: [
         { type: "RESOURCE_DELTA", key: "energy", value: -5 },
         { type: "NODE_CONDITION_SHIFT", nodeId: RECYCLER, delta: 0.14 },
@@ -167,15 +167,15 @@ const f2TarekSecondWarning: ProofEvent = {
           exposure: "private",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "The second time, the steward listened.",
+          summary: "La seconda volta, chi guida Helios mi ha ascoltato.",
           tags: ["recycler", "warning"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["Whether the inspection is in time."] }
+      disclosure: { risks: ["supply"], unknowns: ["Se l'ispezione arriva in tempo."] }
     },
     {
       id: "let_it_ride",
-      label: "Tell him to keep it running",
+      label: "Digli di tenerlo acceso",
       effects: [
         { type: "CHARACTER_STRESS", targetId: "tarek_001", value: 10 },
         memory({
@@ -186,11 +186,11 @@ const f2TarekSecondWarning: ProofEvent = {
           exposure: "private",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "I was told twice to keep a failing pump running.",
+          summary: "Per due volte mi hanno detto di tenere accesa una pompa che stava cedendo.",
           tags: ["recycler", "warning"]
         })
       ],
-      disclosure: { risks: ["infrastructure", "social"], unknowns: ["What Tarek will do next time."] }
+      disclosure: { risks: ["infrastructure", "social"], unknowns: ["Cosa farà Tarek la prossima volta."] }
     }
   ]
 };
@@ -203,14 +203,14 @@ const f2RecyclerBreakdown: ProofEvent = {
   // GQP-C: a breakdown Tarek warned about twice is the one that answers to it.
   relevance: [{ predicate: "pattern_detected", pattern: "IGNORED_TECHNICAL_WARNINGS", subject: "tarek_001", value: true }],
   presentation: {
-    title: "The recycler fails",
-    body: "The seals go. Water output collapses to a trickle, and every route back costs something the settlement was saving."
+    title: "Il riciclatore si guasta",
+    body: "Le guarnizioni cedono. La produzione d'acqua si riduce a un filo, e ogni strada per tornare indietro costa qualcosa che l'insediamento stava mettendo da parte."
   },
   choices: [
     {
       // Recovery by consuming strategic stock.
       id: "emergency_rebuild",
-      label: "Rebuild it from the alloy reserve",
+      label: "Ricostruiscilo con la riserva di leghe",
       effects: [
         { type: "RESOURCE_DELTA", key: "energy", value: -8 },
         { type: "RESOURCE_DELTA", key: "alloys", value: -4 },
@@ -222,16 +222,16 @@ const f2RecyclerBreakdown: ProofEvent = {
           salience: 0.6,
           exposure: "private",
           callbackEligible: true,
-          summary: "The alloy reserve went into the recycler.",
+          summary: "La riserva di leghe è finita nel riciclatore.",
           tags: ["recycler", "reserve"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["What the alloy reserve was going to be needed for."] }
+      disclosure: { risks: ["supply"], unknowns: ["A cosa sarebbe servita la riserva di leghe."] }
     },
     {
       // Tarek helps -- unless he has already been overruled twice.
       id: "tarek_quick_fix",
-      label: "Ask Tarek for a fast repair",
+      label: "Chiedi a Tarek una riparazione rapida",
       availability: [
         { predicate: "memory_hook_present", characterId: "tarek_001", hook: "refuse_similar_request", value: false }
       ],
@@ -246,7 +246,7 @@ const f2RecyclerBreakdown: ProofEvent = {
           salience: 0.6,
           exposure: "private",
           callbackEligible: true,
-          summary: "I got it running again, but not properly.",
+          summary: "L'ho rimesso in funzione, ma non come si deve.",
           tags: ["recycler", "repair"]
         })
       ],
@@ -260,12 +260,12 @@ const f2RecyclerBreakdown: ProofEvent = {
           breadcrumb: { memoryId: "fact_f2_quick_fix" }
         }
       ],
-      disclosure: { risks: ["infrastructure", "social"], unknowns: ["How long a fast repair lasts."] }
+      disclosure: { risks: ["infrastructure", "social"], unknowns: ["Quanto dura una riparazione rapida."] }
     },
     {
       // Channel 2 at work: Mara knows because Tarek told her.
       id: "mara_salvaged_parts",
-      label: "Use the parts Mara set aside",
+      label: "Usa i pezzi che Mara ha messo da parte",
       availability: [
         { predicate: "memory_known", characterId: "mara_001", memoryId: "fact_f2_warning_ignored", value: true }
       ],
@@ -281,16 +281,16 @@ const f2RecyclerBreakdown: ProofEvent = {
           exposure: "private",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "I had the parts ready because Tarek saw it coming.",
+          summary: "Avevo i pezzi pronti perché Tarek l'aveva visto arrivare.",
           tags: ["recycler", "supply"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["Where Mara found the parts."] }
+      disclosure: { risks: ["supply"], unknowns: ["Dove Mara ha trovato i pezzi."] }
     },
     {
       // Recovery by accepting technical dependency on a faction.
       id: "front_technicians",
-      label: "Let the League's technicians fix it",
+      label: "Fallo riparare ai tecnici della Lega",
       availability: [
         { predicate: "memory_hook_present", characterId: "mara_001", hook: "refuse_similar_request", value: false },
         { predicate: "agenda_satisfied", agendaId: "agenda_fcl_access", value: false }
@@ -306,15 +306,15 @@ const f2RecyclerBreakdown: ProofEvent = {
           salience: 0.7,
           exposure: "public",
           callbackEligible: true,
-          summary: "League technicians now hold the recycler's service contract.",
+          summary: "Ora sono i tecnici della Lega ad avere il contratto di manutenzione del riciclatore.",
           tags: ["recycler", "league"]
         })
       ],
-      disclosure: { risks: ["political"], unknowns: ["What the League will ask for next."] }
+      disclosure: { risks: ["political"], unknowns: ["Cosa chiederà la Lega la prossima volta."] }
     },
     {
       id: "accept_degradation",
-      label: "Run it degraded and ration water",
+      label: "Fallo andare a regime ridotto e raziona l'acqua",
       effects: [
         { type: "FLAG_SET", key: "recycler_running_degraded", value: true },
         { type: "EPIDEMIC_SHIFT", cause: "cohort_dissatisfaction", delta: 0.04 },
@@ -327,13 +327,13 @@ const f2RecyclerBreakdown: ProofEvent = {
           exposure: "private",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "The recycler was left broken on purpose.",
+          summary: "Il riciclatore è stato lasciato rotto di proposito.",
           tags: ["recycler"]
         })
       ],
       disclosure: {
         risks: ["infrastructure", "epidemic", "social"],
-        unknowns: ["How long the settlement can live on a trickle."]
+        unknowns: ["Per quanto l'insediamento può vivere con un filo d'acqua."]
       }
     }
   ]
@@ -354,13 +354,13 @@ const f3ConduitOffer: ProofEvent = {
   // GQP-C: the League offers its line because it wants a way into Helios.
   relevance: [{ predicate: "agenda_satisfied", agendaId: "agenda_fcl_access", value: false }],
   presentation: {
-    title: "A line from the League",
-    body: "Mara Senn can splice a Free Conduit League power line into the recycler bus tonight. Nobody on the Council needs to know -- unless you tell them."
+    title: "Una linea dalla Lega",
+    body: "Stanotte Mara Senn può collegare una linea elettrica della Lega del Libero Condotto alla dorsale del riciclatore. Nessuno nel Consiglio deve saperlo — a meno che non glielo dica tu."
   },
   choices: [
     {
       id: "tap_quietly",
-      label: "Splice it in quietly",
+      label: "Collegala senza dire nulla",
       effects: [
         { type: "RESOURCE_DELTA", key: "energy", value: 10 },
         { type: "FLAG_SET", key: "unregistered_conduit_active", value: true },
@@ -374,7 +374,7 @@ const f3ConduitOffer: ProofEvent = {
           exposure: "secret",
           behaviorHook: "call_in_debt",
           callbackEligible: true,
-          summary: "We owe the League for a line nobody declared.",
+          summary: "Siamo in debito con la Lega per una linea che nessuno ha dichiarato.",
           tags: ["conduit", "league", "secret"]
         })
       ],
@@ -390,12 +390,12 @@ const f3ConduitOffer: ProofEvent = {
       ],
       disclosure: {
         risks: ["infrastructure", "political"],
-        unknowns: ["What the League will want in return.", "Whether anyone notices the draw."]
+        unknowns: ["Cosa vorrà la Lega in cambio.", "Se qualcuno si accorge del prelievo."]
       }
     },
     {
       id: "register_the_line",
-      label: "Register the line with the Council",
+      label: "Registra la linea presso il Consiglio",
       effects: [
         { type: "RESOURCE_DELTA", key: "energy", value: 5 },
         { type: "RESOURCE_DELTA", key: "credits", value: -5 },
@@ -409,18 +409,18 @@ const f3ConduitOffer: ProofEvent = {
           salience: 0.6,
           exposure: "public",
           callbackEligible: true,
-          summary: "The League line is on the Council's books.",
+          summary: "La linea della Lega è nei registri del Consiglio.",
           tags: ["conduit", "league"]
         })
       ],
       disclosure: {
         risks: ["political"],
-        unknowns: ["How the Council reads a League line on its grid."]
+        unknowns: ["Come il Consiglio leggerà una linea della Lega sulla sua rete."]
       }
     },
     {
       id: "decline",
-      label: "Refuse the League's line",
+      label: "Rifiuta la linea della Lega",
       effects: [
         { type: "CHARACTER_STRESS", targetId: "mara_001", value: 5 },
         memory({
@@ -432,13 +432,13 @@ const f3ConduitOffer: ProofEvent = {
           exposure: "private",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "I burned a League contact for nothing.",
+          summary: "Ho bruciato un contatto della Lega per niente.",
           tags: ["conduit", "league"]
         })
       ],
       disclosure: {
         risks: ["supply", "social"],
-        unknowns: ["Whether the League asks again."]
+        unknowns: ["Se la Lega lo chiederà di nuovo."]
       }
     }
   ]
@@ -462,13 +462,13 @@ const f3DebtCalled: ProofEvent = {
     { predicate: "pattern_detected", pattern: "SECRET_ACTION_DISCOVERED", subject: "fact_f3_secret_tap", value: true }
   ],
   presentation: {
-    title: "The League calls in the line",
-    body: "Mara brings a message: the League wants standing access to Helios in return for the power it has been sending. Quietly, or it stops."
+    title: "La Lega presenta il conto della linea",
+    body: "Mara porta un messaggio: la Lega vuole un accesso stabile a Helios in cambio dell'energia che ha mandato finora. In silenzio, oppure smette."
   },
   choices: [
     {
       id: "grant_access_quietly",
-      label: "Grant the access, say nothing",
+      label: "Concedi l'accesso, senza dire nulla",
       effects: [
         { type: "FLAG_SET", key: "front_access_granted", value: true },
         { type: "RESOURCE_DELTA", key: "energy", value: 4 },
@@ -480,16 +480,16 @@ const f3DebtCalled: ProofEvent = {
           salience: 0.8,
           exposure: "secret",
           callbackEligible: true,
-          summary: "I gave the League access the Council never approved.",
+          summary: "Ho dato alla Lega un accesso che il Consiglio non ha mai approvato.",
           tags: ["conduit", "league", "secret"]
         })
       ],
-      disclosure: { risks: ["political"], unknowns: ["Who else learns of the deal."] }
+      disclosure: { risks: ["political"], unknowns: ["Chi altro verrà a sapere dell'accordo."] }
     },
     {
       // Channel 3 made explicit: the secret is published, not discovered.
       id: "disclose_and_register",
-      label: "Disclose the line and register it",
+      label: "Rendi pubblica la linea e registrala",
       effects: [
         { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_f3_secret_tap" },
         { type: "FLAG_SET", key: "conduit_registered", value: true },
@@ -499,12 +499,12 @@ const f3DebtCalled: ProofEvent = {
       ],
       disclosure: {
         risks: ["political", "social"],
-        unknowns: ["How the community takes being told late."]
+        unknowns: ["Come la comunità prenderà l'essere informata tardi."]
       }
     },
     {
       id: "cut_the_line",
-      label: "Cut the line and pay the League off",
+      label: "Taglia la linea e salda il debito con la Lega",
       effects: [
         { type: "FLAG_SET", key: "unregistered_conduit_active", value: false },
         { type: "RESOURCE_DELTA", key: "energy", value: -6 },
@@ -517,11 +517,11 @@ const f3DebtCalled: ProofEvent = {
           exposure: "private",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "I was made to cut the line I spliced.",
+          summary: "Mi hanno fatto tagliare la linea che avevo collegato.",
           tags: ["conduit", "league"]
         })
       ],
-      disclosure: { risks: ["supply", "social"], unknowns: ["Whether Mara deals with the League again."] }
+      disclosure: { risks: ["supply", "social"], unknowns: ["Se Mara tratterà ancora con la Lega."] }
     }
   ]
 };
@@ -537,13 +537,13 @@ const f1ClinicRequest: ProofEvent = {
   taxonomy: "DILEMMA",
   eligibility: [{ predicate: "epidemic_stage_in", stages: ["STRAINED", "CRITICAL", "CRISIS"] }],
   presentation: {
-    title: "The clinic asks for the reserve",
-    body: "Ira Venn needs water and medicine from the strategic reserve to keep the crowded ward from turning into an outbreak."
+    title: "L'ambulatorio chiede la riserva",
+    body: "Ira Venn ha bisogno di acqua e medicinali dalla riserva strategica per evitare che il reparto sovraffollato diventi un focolaio."
   },
   choices: [
     {
       id: "treat_now",
-      label: "Open the reserve to the clinic",
+      label: "Apri la riserva all'ambulatorio",
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: -3 },
         { type: "RESOURCE_DELTA", key: "water", value: -3 },
@@ -556,15 +556,15 @@ const f1ClinicRequest: ProofEvent = {
           exposure: "private",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "When the ward needed it, the reserve was opened.",
+          summary: "Quando il reparto ne ha avuto bisogno, la riserva è stata aperta.",
           tags: ["clinic", "triage"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["Whether the reserve lasts the season."] }
+      disclosure: { risks: ["supply"], unknowns: ["Se la riserva durerà per tutta la stagione."] }
     },
     {
       id: "protect_reserve",
-      label: "Keep the reserve sealed",
+      label: "Tieni sigillata la riserva",
       effects: [
         { type: "EPIDEMIC_SHIFT", cause: "deferred_triage", delta: 0.1 },
         memory({
@@ -575,7 +575,7 @@ const f1ClinicRequest: ProofEvent = {
           exposure: "public",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "The clinic was turned away from the reserve, in front of everyone.",
+          summary: "All'ambulatorio è stata negata la riserva, davanti a tutti.",
           tags: ["clinic", "triage"]
         })
       ],
@@ -591,12 +591,12 @@ const f1ClinicRequest: ProofEvent = {
       ],
       disclosure: {
         risks: ["epidemic", "social"],
-        unknowns: ["How fast untreated cases spread."]
+        unknowns: ["Quanto in fretta si diffondono i casi non curati."]
       }
     },
     {
       id: "ration_district",
-      label: "Ration the lower district instead",
+      label: "Raziona invece il distretto basso",
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: -1 },
         { type: "EPIDEMIC_SHIFT", cause: "cohort_dissatisfaction", delta: 0.05 },
@@ -608,13 +608,13 @@ const f1ClinicRequest: ProofEvent = {
           exposure: "public",
           behaviorHook: "raise_publicly",
           callbackEligible: true,
-          summary: "The lower district carried the shortage for everyone else.",
+          summary: "Il distretto basso ha sopportato la carenza al posto di tutti gli altri.",
           tags: ["rationing", "district"]
         })
       ],
       disclosure: {
         risks: ["epidemic", "political"],
-        unknowns: ["Whether the district accepts it."]
+        unknowns: ["Se il distretto lo accetterà."]
       }
     }
   ]
@@ -630,13 +630,13 @@ const f1IraPreventionDrive: ProofEvent = {
     { predicate: "epidemic_stage_in", stages: ["STRAINED", "CRITICAL", "CRISIS"] }
   ],
   presentation: {
-    title: "Ira has a plan",
-    body: "Ira offers to lead volunteers through the district to repair household cisterns before the dry weeks, if the clinic can spare her."
+    title: "Ira ha un piano",
+    body: "Ira si offre di guidare dei volontari nel distretto per riparare le cisterne delle case prima delle settimane secche, se l'ambulatorio può fare a meno di lei."
   },
   choices: [
     {
       id: "back_the_drive",
-      label: "Back the cistern drive",
+      label: "Sostieni la campagna delle cisterne",
       effects: [
         { type: "RESOURCE_DELTA", key: "water", value: 4 },
         { type: "RESOURCE_DELTA", key: "medicine", value: -1 },
@@ -649,15 +649,15 @@ const f1IraPreventionDrive: ProofEvent = {
           exposure: "public",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "The district fixed its own cisterns with the clinic.",
+          summary: "Il distretto ha riparato le proprie cisterne insieme all'ambulatorio.",
           tags: ["district", "water"]
         })
       ],
-      disclosure: { risks: ["supply", "social"], unknowns: ["Whether the clinic copes without Ira."] }
+      disclosure: { risks: ["supply", "social"], unknowns: ["Se l'ambulatorio se la caverà senza Ira."] }
     },
     {
       id: "keep_ira_at_the_clinic",
-      label: "Keep Ira at the clinic",
+      label: "Tieni Ira all'ambulatorio",
       effects: [
         memory({
           characterId: "ira_001",
@@ -666,11 +666,11 @@ const f1IraPreventionDrive: ProofEvent = {
           salience: 0.4,
           exposure: "private",
           callbackEligible: false,
-          summary: "My cistern plan was set aside.",
+          summary: "Il mio piano per le cisterne è stato messo da parte.",
           tags: ["clinic", "water"]
         })
       ],
-      disclosure: { risks: [], unknowns: ["Whether the dry weeks come early."] }
+      disclosure: { risks: [], unknowns: ["Se le settimane secche arriveranno in anticipo."] }
     }
   ]
 };
@@ -683,14 +683,14 @@ const f1Outbreak: ProofEvent = {
   // GQP-C: an outbreak in a district that has carried the cost twice.
   relevance: [{ predicate: "pattern_detected", pattern: "REPEATED_PROTECTION_OR_NEGLECT", subject: "neglect", value: true }],
   presentation: {
-    title: "Outbreak",
-    body: "The fever is in three districts. Ira needs a decision before the day is out."
+    title: "Focolaio",
+    body: "La febbre è in tre distretti. Ira ha bisogno di una decisione prima che finisca il giorno."
   },
   choices: [
     {
       // Recovery by spending medicine and productive capacity.
       id: "full_treatment_campaign",
-      label: "Run a full treatment campaign",
+      label: "Avvia una campagna di cure completa",
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: -4 },
         { type: "RESOURCE_DELTA", key: "energy", value: -6 },
@@ -703,17 +703,17 @@ const f1Outbreak: ProofEvent = {
           salience: 0.7,
           exposure: "private",
           callbackEligible: true,
-          summary: "We beat it back, and emptied the shelves doing it.",
+          summary: "L'abbiamo respinta, e per farlo abbiamo svuotato gli scaffali.",
           tags: ["clinic", "outbreak"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["Whether it comes back."] }
+      disclosure: { risks: ["supply"], unknowns: ["Se tornerà."] }
     },
     {
       // Ira stretches the clinic for a steward -- unless she remembers being
       // turned away by the same steward in front of everyone.
       id: "clinic_stretches_supplies",
-      label: "Let Ira stretch what the clinic has",
+      label: "Lascia che Ira faccia bastare quello che l'ambulatorio ha",
       availability: [
         { predicate: "memory_hook_present", characterId: "ira_001", hook: "refuse_similar_request", value: false }
       ],
@@ -728,17 +728,17 @@ const f1Outbreak: ProofEvent = {
           salience: 0.7,
           exposure: "private",
           callbackEligible: true,
-          summary: "I held the outbreak with half of what it needed.",
+          summary: "Ho contenuto il focolaio con la metà di quello che serviva.",
           tags: ["clinic", "outbreak"]
         })
       ],
-      disclosure: { risks: ["social"], unknowns: ["How long Ira can keep this up."] }
+      disclosure: { risks: ["social"], unknowns: ["Per quanto Ira potrà reggere così."] }
     },
     {
       // Recovery by isolating a district and paying in consent. Closed once
       // the community has publicly seen the clinic turned away.
       id: "quarantine_district",
-      label: "Quarantine the district",
+      label: "Metti il distretto in quarantena",
       availability: [
         { predicate: "memory_known", characterId: "sela_001", memoryId: "fact_f1_clinic_refused", value: false }
       ],
@@ -756,17 +756,17 @@ const f1Outbreak: ProofEvent = {
           exposure: "public",
           behaviorHook: "raise_publicly",
           callbackEligible: true,
-          summary: "They sealed the district and called it care.",
+          summary: "Hanno sigillato il distretto e l'hanno chiamata cura.",
           tags: ["district", "outbreak"]
         })
       ],
-      disclosure: { risks: ["political", "social"], unknowns: ["Whether the district holds the line."] }
+      disclosure: { risks: ["political", "social"], unknowns: ["Se il distretto terrà duro."] }
     },
     {
       // Recovery by external supply, at a political price. The Council opens
       // its stores to a settlement it considers reliable -- an agenda item.
       id: "council_medical_stores",
-      label: "Ask the Council for its medical stores",
+      label: "Chiedi al Consiglio le sue scorte mediche",
       availability: [{ predicate: "agenda_satisfied", agendaId: "agenda_co_reliability", value: true }],
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: 4 },
@@ -783,19 +783,19 @@ const f1Outbreak: ProofEvent = {
           exposure: "private",
           behaviorHook: "call_in_debt",
           callbackEligible: true,
-          summary: "The Council's stores came with the Council's memory.",
+          summary: "Le scorte del Consiglio sono arrivate insieme alla memoria del Consiglio.",
           tags: ["outbreak", "council"]
         })
       ],
       disclosure: {
-        knownNotes: ["The stores are sold at the Council's price, under the Council's eye."],
+        knownNotes: ["Le scorte si vendono al prezzo del Consiglio, sotto gli occhi del Consiglio."],
         risks: ["political"],
-        unknowns: ["What the Council will ask for in return."]
+        unknowns: ["Cosa chiederà il Consiglio in cambio."]
       }
     },
     {
       id: "ride_it_out",
-      label: "Hold what you have and ride it out",
+      label: "Tieni quello che hai e aspetta che passi",
       effects: [
         { type: "EPIDEMIC_SHIFT", cause: "cohort_dissatisfaction", delta: 0.05 },
         { type: "CHARACTER_STRESS", targetId: "ira_001", value: 15 },
@@ -806,11 +806,11 @@ const f1Outbreak: ProofEvent = {
           salience: 0.8,
           exposure: "public",
           callbackEligible: true,
-          summary: "We were told to endure it.",
+          summary: "Ci hanno detto di sopportare.",
           tags: ["clinic", "outbreak"]
         })
       ],
-      disclosure: { risks: ["epidemic", "social"], unknowns: ["How many it costs."] }
+      disclosure: { risks: ["epidemic", "social"], unknowns: ["Quante vite costerà."] }
     }
   ]
 };
@@ -838,15 +838,15 @@ const f5WaterConvoy: ProofEvent = {
   eligibility: [{ predicate: "resource_below", key: "water", value: 5 }],
   relevance: [leagueWantsAccess, leagueDependency],
   presentation: {
-    title: "The cisterns are nearly dry",
-    body: "Both factions have noticed. League haulers can be at the gate by nightfall; the Council will send an allocation, at the Council's price. Or Helios rations what it has."
+    title: "Le cisterne sono quasi vuote",
+    body: "Entrambe le fazioni se ne sono accorte. I trasportatori della Lega possono essere al cancello entro sera; il Consiglio manderà una quota, al prezzo del Consiglio. Oppure Helios razionerà quello che ha."
   },
   choices: [
     {
       // Once Helios owes the League twice, the League stops sending water as a
       // favour: the option closes, and its ledger (league_calls_in) opens.
       id: "league_convoy",
-      label: "Take the League's water",
+      label: "Prendi l'acqua della Lega",
       availability: [noLeagueDependency],
       effects: [
         { type: "RESOURCE_DELTA", key: "water", value: 10 },
@@ -860,7 +860,7 @@ const f5WaterConvoy: ProofEvent = {
           exposure: "public",
           behaviorHook: "call_in_debt",
           callbackEligible: true,
-          summary: "The League's water came with the League's ledger.",
+          summary: "L'acqua della Lega è arrivata insieme al registro dei debiti della Lega.",
           tags: ["water", "league", "debt"]
         })
       ],
@@ -875,16 +875,16 @@ const f5WaterConvoy: ProofEvent = {
         }
       ],
       disclosure: {
-        knownNotes: ["The Council will count this against Helios."],
+        knownNotes: ["Il Consiglio lo metterà in conto a Helios."],
         risks: ["political", "supply"],
-        unknowns: ["What the League asks for the next time."]
+        unknowns: ["Cosa chiederà la Lega la volta successiva."]
       }
     },
     {
       // The Council helps a settlement that keeps its plant running, and only
       // while Helios is not already living on its allocations.
       id: "council_allocation",
-      label: "Ask the Council for an allocation",
+      label: "Chiedi una quota al Consiglio",
       availability: [councilTrusts, noCouncilDependency],
       effects: [
         { type: "RESOURCE_DELTA", key: "water", value: 7 },
@@ -899,19 +899,19 @@ const f5WaterConvoy: ProofEvent = {
           exposure: "public",
           behaviorHook: "call_in_debt",
           callbackEligible: true,
-          summary: "The Council's water arrived with the Council's inspectors.",
+          summary: "L'acqua del Consiglio è arrivata insieme agli ispettori del Consiglio.",
           tags: ["water", "council", "debt"]
         })
       ],
       disclosure: {
-        knownNotes: ["The League will read this as Helios choosing a side."],
+        knownNotes: ["La Lega lo leggerà come una scelta di campo di Helios."],
         risks: ["political", "supply"],
-        unknowns: ["What the Council expects for its allocation."]
+        unknowns: ["Cosa si aspetta il Consiglio per la sua quota."]
       }
     },
     {
       id: "ration_the_cisterns",
-      label: "Ration the cisterns and ask no one",
+      label: "Raziona le cisterne e non chiedere a nessuno",
       effects: [
         { type: "RESOURCE_DELTA", key: "water", value: 3 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: -0.08 },
@@ -924,14 +924,14 @@ const f5WaterConvoy: ProofEvent = {
           exposure: "public",
           behaviorHook: "raise_publicly",
           callbackEligible: true,
-          summary: "The district queued at dry taps so Helios would owe nobody.",
+          summary: "Il distretto ha fatto la fila davanti a rubinetti asciutti perché Helios non dovesse niente a nessuno.",
           tags: ["water", "rationing"]
         })
       ],
       disclosure: {
-        knownNotes: ["Rationing saves only what the district goes without."],
+        knownNotes: ["Il razionamento fa risparmiare solo ciò di cui il distretto si priva."],
         risks: ["epidemic", "political", "social"],
-        unknowns: ["How long the district accepts the queues."]
+        unknowns: ["Per quanto il distretto accetterà le file."]
       }
     }
   ]
@@ -948,13 +948,13 @@ const f5MedicalRelief: ProofEvent = {
   ],
   relevance: [leagueWantsAccess, leagueDependency],
   presentation: {
-    title: "The clinic's shelves are bare",
-    body: "Ira has rationed the last of the fever tonic. The League has medics on the relay; the Council keeps a field team for settlements it trusts."
+    title: "Gli scaffali dell'ambulatorio sono vuoti",
+    body: "Ira ha razionato le ultime dosi del tonico contro la febbre. La Lega ha medici al ripetitore; il Consiglio tiene una squadra sul campo per gli insediamenti di cui si fida."
   },
   choices: [
     {
       id: "league_medics",
-      label: "Bring in the League's medics",
+      label: "Fai venire i medici della Lega",
       availability: [noLeagueDependency],
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: 5 },
@@ -969,7 +969,7 @@ const f5MedicalRelief: ProofEvent = {
           exposure: "public",
           behaviorHook: "call_in_debt",
           callbackEligible: true,
-          summary: "League medics held my ward. They will want that remembered.",
+          summary: "I medici della Lega hanno tenuto in piedi il mio reparto. Vorranno che non lo si dimentichi.",
           tags: ["clinic", "league", "debt"]
         })
       ],
@@ -984,14 +984,14 @@ const f5MedicalRelief: ProofEvent = {
         }
       ],
       disclosure: {
-        knownNotes: ["The Council will count this against Helios."],
+        knownNotes: ["Il Consiglio lo metterà in conto a Helios."],
         risks: ["political", "supply"],
-        unknowns: ["What the League asks for the next time."]
+        unknowns: ["Cosa chiederà la Lega la volta successiva."]
       }
     },
     {
       id: "league_medics_on_terms",
-      label: "Bring in the League's medics, on the League's terms",
+      label: "Fai venire i medici della Lega, alle condizioni della Lega",
       availability: [leagueDependency],
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: 5 },
@@ -1009,19 +1009,19 @@ const f5MedicalRelief: ProofEvent = {
           exposure: "public",
           behaviorHook: "call_in_debt",
           callbackEligible: true,
-          summary: "The League's medics came with a League clinic charter.",
+          summary: "I medici della Lega sono arrivati con uno statuto della Lega per l'ambulatorio.",
           tags: ["clinic", "league", "debt"]
         })
       ],
       disclosure: {
-        knownNotes: ["Helios already owes the League. This time the price is standing access."],
+        knownNotes: ["Helios è già in debito con la Lega. Questa volta il prezzo è un accesso stabile."],
         risks: ["political", "social"],
-        unknowns: ["Whose clinic this is, a season from now."]
+        unknowns: ["Di chi sarà questo ambulatorio, fra una stagione."]
       }
     },
     {
       id: "council_field_team",
-      label: "Request the Council's field team",
+      label: "Chiedi la squadra sul campo del Consiglio",
       availability: [councilTrusts, noCouncilDependency],
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: 4 },
@@ -1037,19 +1037,19 @@ const f5MedicalRelief: ProofEvent = {
           exposure: "public",
           behaviorHook: "call_in_debt",
           callbackEligible: true,
-          summary: "The Council's field team wrote everything down.",
+          summary: "La squadra sul campo del Consiglio ha messo tutto per iscritto.",
           tags: ["clinic", "council", "debt"]
         })
       ],
       disclosure: {
-        knownNotes: ["The League will read this as Helios choosing a side."],
+        knownNotes: ["La Lega lo leggerà come una scelta di campo di Helios."],
         risks: ["political", "supply"],
-        unknowns: ["What the Council expects for its team."]
+        unknowns: ["Cosa si aspetta il Consiglio per la sua squadra."]
       }
     },
     {
       id: "pool_household_remedies",
-      label: "Pool the district's household remedies",
+      label: "Raccogli i rimedi delle case del distretto",
       effects: [
         { type: "RESOURCE_DELTA", key: "medicine", value: 2 },
         { type: "RESOURCE_DELTA", key: "food", value: -4 },
@@ -1062,14 +1062,14 @@ const f5MedicalRelief: ProofEvent = {
           exposure: "public",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "The district emptied its own cupboards for the ward.",
+          summary: "Il distretto ha svuotato le proprie dispense per il reparto.",
           tags: ["clinic", "district"]
         })
       ],
       disclosure: {
-        knownNotes: ["Household remedies are traded for food the district needs."],
+        knownNotes: ["I rimedi delle case vengono scambiati con cibo che serve al distretto."],
         risks: ["epidemic", "supply", "social"],
-        unknowns: ["Whether the remedies are enough."]
+        unknowns: ["Se i rimedi basteranno."]
       }
     }
   ]
@@ -1091,13 +1091,13 @@ const f4OpenTheBooks: ProofEvent = {
   // district twice, and can show the numbers.
   eligibility: [{ predicate: "pattern_detected", pattern: "REPEATED_PROTECTION_OR_NEGLECT", subject: "protection", value: true }],
   presentation: {
-    title: "Sela asks for the real accounts",
-    body: "While the district still trusts you, Sela wants the reserve's true level before the assembly: what it held, what it cost, what is coming."
+    title: "Sela chiede i conti veri",
+    body: "Finché il distretto si fida ancora di te, Sela vuole il livello reale della riserva davanti all'assemblea: quanto conteneva, quanto è costata, cosa sta arrivando."
   },
   choices: [
     {
       id: "publish_the_accounts",
-      label: "Put the real accounts before the assembly",
+      label: "Porta i conti veri davanti all'assemblea",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: 0.12 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: -0.06 },
@@ -1110,19 +1110,19 @@ const f4OpenTheBooks: ProofEvent = {
           exposure: "public",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "The steward read the reserve's real numbers aloud.",
+          summary: "Chi guida Helios ha letto ad alta voce i numeri veri della riserva.",
           tags: ["assembly", "accounts"]
         })
       ],
       disclosure: {
-        knownNotes: ["The Security Council dislikes a shortfall read aloud."],
+        knownNotes: ["Al comitato di sicurezza non piace che un ammanco venga letto ad alta voce."],
         risks: ["political"],
-        unknowns: ["What the assembly does with the numbers."]
+        unknowns: ["Cosa farà l'assemblea con quei numeri."]
       }
     },
     {
       id: "keep_the_margin",
-      label: "Give the assembly a summary and keep your margin",
+      label: "Dai all'assemblea un riassunto e tieniti un margine",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: 0.04 },
         memory({
@@ -1133,7 +1133,7 @@ const f4OpenTheBooks: ProofEvent = {
           exposure: "private",
           behaviorHook: "raise_publicly",
           callbackEligible: true,
-          summary: "I asked for the numbers and got a summary.",
+          summary: "Ho chiesto i numeri e ho avuto un riassunto.",
           tags: ["assembly", "accounts"]
         })
       ],
@@ -1149,7 +1149,7 @@ const f4OpenTheBooks: ProofEvent = {
       ],
       disclosure: {
         risks: ["political", "social"],
-        unknowns: ["Whether Sela lets it go."]
+        unknowns: ["Se Sela lascerà perdere."]
       }
     }
   ]
@@ -1162,13 +1162,13 @@ const f4DistrictDemandsAnswers: ProofEvent = {
   // Accountability after neglect: the district has carried the cost twice.
   eligibility: [{ predicate: "pattern_detected", pattern: "REPEATED_PROTECTION_OR_NEGLECT", subject: "neglect", value: true }],
   presentation: {
-    title: "The district wants an answer",
-    body: "The lower district has paid for the settlement's choices twice. Sela brings its question to the assembly floor: why them, and what now."
+    title: "Il distretto vuole una risposta",
+    body: "Il distretto basso ha pagato due volte per le scelte dell'insediamento. Sela porta la sua domanda in assemblea: perché proprio loro, e adesso cosa."
   },
   choices: [
     {
       id: "make_restitution",
-      label: "Admit it and make restitution",
+      label: "Ammettilo e risarcisci",
       effects: [
         { type: "RESOURCE_DELTA", key: "credits", value: -5 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: 0.1 },
@@ -1181,18 +1181,18 @@ const f4DistrictDemandsAnswers: ProofEvent = {
           exposure: "public",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "The steward owned the district's losses and paid some of them back.",
+          summary: "Chi guida Helios si è assunto le perdite del distretto e ne ha ripagata una parte.",
           tags: ["assembly", "district"]
         })
       ],
       disclosure: {
         risks: ["supply"],
-        unknowns: ["Whether restitution is enough."]
+        unknowns: ["Se il risarcimento basterà."]
       }
     },
     {
       id: "defend_the_triage",
-      label: "Defend the triage as necessary",
+      label: "Difendi il triage come necessario",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: -0.08 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: 0.05 },
@@ -1205,13 +1205,13 @@ const f4DistrictDemandsAnswers: ProofEvent = {
           exposure: "public",
           behaviorHook: "raise_publicly",
           callbackEligible: true,
-          summary: "The steward told the district its losses were the price of order.",
+          summary: "Chi guida Helios ha detto al distretto che le sue perdite erano il prezzo dell'ordine.",
           tags: ["assembly", "district"]
         })
       ],
       disclosure: {
         risks: ["political", "social"],
-        unknowns: ["What the district does with its anger."]
+        unknowns: ["Cosa farà il distretto con la sua rabbia."]
       }
     }
   ]
@@ -1224,13 +1224,13 @@ const f4ConduitExposed: ProofEvent = {
   // Accountability after concealment: the spliced line has been found.
   eligibility: [{ predicate: "pattern_detected", pattern: "SECRET_ACTION_DISCOVERED", subject: "fact_f3_secret_tap", value: true }],
   presentation: {
-    title: "Tarek found the line",
-    body: "Tarek traced the unexplained load on the recycler bus to a League line nobody registered. He brings it to you before the Council's inspectors do."
+    title: "Tarek ha trovato la linea",
+    body: "Tarek ha seguito il carico inspiegato sulla dorsale del riciclatore fino a una linea della Lega che nessuno ha registrato. Te lo porta prima che lo facciano gli ispettori del Consiglio."
   },
   choices: [
     {
       id: "own_it_publicly",
-      label: "Own the line before the assembly and register it",
+      label: "Assumiti la linea davanti all'assemblea e registrala",
       effects: [
         { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_f3_secret_tap" },
         { type: "FLAG_SET", key: "conduit_registered", value: true },
@@ -1239,14 +1239,14 @@ const f4ConduitExposed: ProofEvent = {
         { type: "CHARACTER_STRESS", targetId: "brann_001", value: 10 }
       ],
       disclosure: {
-        knownNotes: ["Everyone will know Helios ran on an undeclared League line."],
+        knownNotes: ["Tutti sapranno che Helios andava avanti con una linea della Lega non dichiarata."],
         risks: ["political", "social"],
-        unknowns: ["Whether the Council accepts a late registration."]
+        unknowns: ["Se il Consiglio accetterà una registrazione tardiva."]
       }
     },
     {
       id: "bury_it",
-      label: "Tell Tarek to forget what he found",
+      label: "Di' a Tarek di dimenticare quello che ha trovato",
       effects: [
         { type: "CHARACTER_STRESS", targetId: "tarek_001", value: 10 },
         memory({
@@ -1257,7 +1257,7 @@ const f4ConduitExposed: ProofEvent = {
           exposure: "secret",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "I found a line nobody declared, and was told to forget it.",
+          summary: "Ho trovato una linea che nessuno aveva dichiarato, e mi hanno detto di dimenticarla.",
           tags: ["conduit", "secret"]
         })
       ],
@@ -1273,12 +1273,12 @@ const f4ConduitExposed: ProofEvent = {
       ],
       disclosure: {
         risks: ["political", "social"],
-        unknowns: ["Who else Tarek tells."]
+        unknowns: ["A chi altro lo dirà Tarek."]
       }
     },
     {
       id: "blame_the_quartermaster",
-      label: "Name Mara as the one who spliced it",
+      label: "Fai il nome di Mara come chi l'ha collegata",
       effects: [
         { type: "MEMORY_PUBLISH", characterId: "mara_001", memoryId: "fact_f3_secret_tap" },
         { type: "FLAG_SET", key: "unregistered_conduit_active", value: false },
@@ -1292,14 +1292,14 @@ const f4ConduitExposed: ProofEvent = {
           exposure: "private",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "I spliced that line for Helios, and Helios hung it on me.",
+          summary: "Ho collegato quella linea per Helios, e Helios l'ha scaricata su di me.",
           tags: ["conduit", "blame"]
         })
       ],
       disclosure: {
-        knownNotes: ["The line comes out, and so does who spliced it."],
+        knownNotes: ["La linea viene staccata, e viene fuori anche chi l'ha collegata."],
         risks: ["political", "social", "supply"],
-        unknowns: ["What Mara does next."]
+        unknowns: ["Cosa farà Mara adesso."]
       }
     }
   ]
@@ -1312,13 +1312,13 @@ const f4TarekGoesPublic: ProofEvent = {
   // Accountability after ignored warnings: overruled twice, Tarek says so.
   eligibility: [{ predicate: "pattern_detected", pattern: "IGNORED_TECHNICAL_WARNINGS", subject: "tarek_001", value: true }],
   presentation: {
-    title: "Tarek tells the assembly",
-    body: "In his own flat words, Tarek lists every time the recycler warnings were overruled, and who overruled them."
+    title: "Tarek parla all'assemblea",
+    body: "Con le sue parole asciutte, Tarek elenca ogni volta che i suoi avvertimenti sul riciclatore sono stati ignorati, e chi li ha ignorati."
   },
   choices: [
     {
       id: "back_tarek",
-      label: "Stand beside him and commit to the overhauls",
+      label: "Mettiti al suo fianco e impegnati con le revisioni",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: 0.08 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: -0.06 },
@@ -1332,19 +1332,19 @@ const f4TarekGoesPublic: ProofEvent = {
           exposure: "public",
           behaviorHook: "volunteer_help",
           callbackEligible: true,
-          summary: "The steward stood up beside me and owned the warnings.",
+          summary: "Chi guida Helios si è alzato al mio fianco e si è assunto gli avvertimenti ignorati.",
           tags: ["assembly", "recycler"]
         })
       ],
       disclosure: {
-        knownNotes: ["The overhaul schedule takes power the settlement is short of."],
+        knownNotes: ["Il programma di revisioni toglie energia di cui l'insediamento è a corto."],
         risks: ["political", "supply"],
-        unknowns: ["Whether owning it is enough for the assembly."]
+        unknowns: ["Se assumersene la responsabilità basterà all'assemblea."]
       }
     },
     {
       id: "discredit_tarek",
-      label: "Call his account exaggerated",
+      label: "Definisci esagerato il suo racconto",
       effects: [
         { type: "CHARACTER_STRESS", targetId: "tarek_001", value: 15 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: -0.06 },
@@ -1358,13 +1358,13 @@ const f4TarekGoesPublic: ProofEvent = {
           exposure: "private",
           behaviorHook: "refuse_similar_request",
           callbackEligible: true,
-          summary: "They called Tarek a liar in front of the assembly.",
+          summary: "Hanno dato del bugiardo a Tarek davanti all'assemblea.",
           tags: ["assembly", "recycler"]
         })
       ],
       disclosure: {
         risks: ["political", "social"],
-        unknowns: ["What Tarek's friends make of it."]
+        unknowns: ["Cosa ne penseranno gli amici di Tarek."]
       }
     }
   ]
@@ -1380,13 +1380,13 @@ const f4SelaTakesItPublic: ProofEvent = {
   eligibility: [{ predicate: "memory_hook_present", characterId: "sela_001", hook: "raise_publicly", value: true }],
   relevance: [{ predicate: "pattern_detected", pattern: "REPEATED_PROTECTION_OR_NEGLECT", subject: "neglect", value: true }],
   presentation: {
-    title: "Sela takes it to the floor",
-    body: "Sela reads the district's grievance into the assembly record, with names and dates, and waits for the steward to answer."
+    title: "Sela porta la questione in aula",
+    body: "Sela mette a verbale in assemblea la protesta del distretto, con nomi e date, e aspetta che chi guida Helios risponda."
   },
   choices: [
     {
       id: "answer_on_the_floor",
-      label: "Answer her on the floor",
+      label: "Rispondile in aula",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: 0.06 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: -0.04 },
@@ -1398,19 +1398,19 @@ const f4SelaTakesItPublic: ProofEvent = {
           salience: 0.6,
           exposure: "public",
           callbackEligible: true,
-          summary: "The steward stood and answered the district in front of everyone.",
+          summary: "Chi guida Helios si è alzato e ha risposto al distretto davanti a tutti.",
           tags: ["assembly"]
         })
       ],
       disclosure: {
-        knownNotes: ["An answer on the record is an answer the assembly will quote back."],
+        knownNotes: ["Una risposta messa a verbale è una risposta che l'assemblea ti ricorderà."],
         risks: ["political", "social"],
-        unknowns: ["Whether the answer satisfies the district."]
+        unknowns: ["Se la risposta soddisferà il distretto."]
       }
     },
     {
       id: "close_the_session",
-      label: "Close the session",
+      label: "Chiudi la seduta",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: -0.1 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: 0.05 },
@@ -1422,13 +1422,13 @@ const f4SelaTakesItPublic: ProofEvent = {
           salience: 0.8,
           exposure: "public",
           callbackEligible: true,
-          summary: "The session was closed before the district was answered.",
+          summary: "La seduta è stata chiusa prima che il distretto avesse una risposta.",
           tags: ["assembly"]
         })
       ],
       disclosure: {
         risks: ["political", "social"],
-        unknowns: ["What the district does outside the chamber."]
+        unknowns: ["Cosa farà il distretto fuori dall'aula."]
       }
     }
   ]
@@ -1443,13 +1443,13 @@ const f5CouncilCallsIn: ProofEvent = {
   eligibility: [{ predicate: "memory_hook_present", characterId: "brann_001", hook: "call_in_debt", subjectId: "faction_compact", value: true }],
   relevance: [{ predicate: "pattern_detected", pattern: "FACTION_DEPENDENCY_GROWING", subject: "faction_compact", value: true }],
   presentation: {
-    title: "The Council sends its envoy",
-    body: "The Council's envoy arrives with the ledger. Its help is to be repaid: in credits, or with Council inspectors resident on the recycler."
+    title: "Il Consiglio manda il suo inviato",
+    body: "L'inviato del Consiglio arriva con il registro dei debiti. Il suo aiuto va ripagato: in crediti, oppure con ispettori del Consiglio residenti al riciclatore."
   },
   choices: [
     {
       id: "repay_in_credits",
-      label: "Repay it in credits",
+      label: "Ripagalo in crediti",
       effects: [
         { type: "RESOURCE_DELTA", key: "credits", value: -8 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: 0.03 },
@@ -1461,15 +1461,15 @@ const f5CouncilCallsIn: ProofEvent = {
           salience: 0.5,
           exposure: "private",
           callbackEligible: true,
-          summary: "We paid the Council back, and paid dearly.",
+          summary: "Abbiamo ripagato il Consiglio, e l'abbiamo pagata cara.",
           tags: ["council", "debt"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["What the credits were going to be needed for."] }
+      disclosure: { risks: ["supply"], unknowns: ["A cosa sarebbero serviti quei crediti."] }
     },
     {
       id: "admit_the_inspectors",
-      label: "Admit Council inspectors to the recycler",
+      label: "Ammetti gli ispettori del Consiglio al riciclatore",
       effects: [
         { type: "FLAG_SET", key: "council_inspectors_resident", value: true },
         { type: "NODE_CONDITION_SHIFT", nodeId: RECYCLER, delta: 0.05 },
@@ -1483,15 +1483,15 @@ const f5CouncilCallsIn: ProofEvent = {
           salience: 0.6,
           exposure: "public",
           callbackEligible: true,
-          summary: "Council inspectors now sign off on my recycler.",
+          summary: "Ora sono gli ispettori del Consiglio a firmare per il mio riciclatore.",
           tags: ["council", "recycler"]
         })
       ],
-      disclosure: { risks: ["political", "social"], unknowns: ["What else the inspectors look at."] }
+      disclosure: { risks: ["political", "social"], unknowns: ["Cos'altro guarderanno gli ispettori."] }
     },
     {
       id: "refuse_the_envoy",
-      label: "Send the envoy away",
+      label: "Rimanda indietro l'inviato",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: -0.08 },
         { type: "PRESSURE_DELTA", value: 2 },
@@ -1503,11 +1503,11 @@ const f5CouncilCallsIn: ProofEvent = {
           salience: 0.7,
           exposure: "public",
           callbackEligible: true,
-          summary: "I sent the Council's envoy home with nothing.",
+          summary: "Ho rimandato a casa l'inviato del Consiglio a mani vuote.",
           tags: ["council", "debt"]
         })
       ],
-      disclosure: { risks: ["political"], unknowns: ["How the Council answers a refusal."] }
+      disclosure: { risks: ["political"], unknowns: ["Come risponderà il Consiglio a un rifiuto."] }
     }
   ]
 };
@@ -1522,13 +1522,13 @@ const f2TarekUpgrade: ProofEvent = {
   // technician well gets a technician who brings it the next thing.
   eligibility: [{ predicate: "memory_hook_present", characterId: "tarek_001", hook: "volunteer_help", value: true }],
   presentation: {
-    title: "Tarek wants to go further",
-    body: "With the seals holding, Tarek proposes rebuilding the intake manifold so the recycler draws less power -- if he can have the alloys and a day of downtime."
+    title: "Tarek vuole andare oltre",
+    body: "Ora che le guarnizioni reggono, Tarek propone di ricostruire il collettore di aspirazione perché il riciclatore consumi meno energia — se può avere le leghe e un giorno di fermo."
   },
   choices: [
     {
       id: "fund_the_upgrade",
-      label: "Give him the alloys and the downtime",
+      label: "Dagli le leghe e il giorno di fermo",
       effects: [
         { type: "RESOURCE_DELTA", key: "energy", value: -6 },
         { type: "RESOURCE_DELTA", key: "alloys", value: -2 },
@@ -1540,15 +1540,15 @@ const f2TarekUpgrade: ProofEvent = {
           salience: 0.6,
           exposure: "private",
           callbackEligible: true,
-          summary: "They let me build it properly, for once.",
+          summary: "Per una volta mi hanno lasciato costruirlo come si deve.",
           tags: ["recycler", "upgrade"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["Whether the manifold is worth a day without water."] }
+      disclosure: { risks: ["supply"], unknowns: ["Se il collettore vale un giorno senz'acqua."] }
     },
     {
       id: "not_now",
-      label: "Not now; the settlement needs the power",
+      label: "Non ora; l'insediamento ha bisogno dell'energia",
       effects: [
         { type: "CHARACTER_STRESS", targetId: "tarek_001", value: 5 },
         memory({
@@ -1558,11 +1558,11 @@ const f2TarekUpgrade: ProofEvent = {
           salience: 0.4,
           exposure: "private",
           callbackEligible: false,
-          summary: "The manifold can wait, they said.",
+          summary: "Il collettore può aspettare, hanno detto.",
           tags: ["recycler", "upgrade"]
         })
       ],
-      disclosure: { risks: [], unknowns: ["Whether he offers again."] }
+      disclosure: { risks: [], unknowns: ["Se si offrirà di nuovo."] }
     }
   ]
 };
@@ -1577,13 +1577,13 @@ const f1DistrictVolunteers: ProofEvent = {
   eligibility: [{ predicate: "memory_hook_present", characterId: "sela_001", hook: "volunteer_help", value: true }],
   relevance: [{ predicate: "pattern_detected", pattern: "REPEATED_PROTECTION_OR_NEGLECT", subject: "protection", value: true }],
   presentation: {
-    title: "The district offers its hands",
-    body: "Sela brings a list of names: people willing to run the water queues and the clinic's night shift, if the steward will put them on the rota and pay them a stipend."
+    title: "Il distretto offre le sue braccia",
+    body: "Sela porta una lista di nomi: persone disposte a gestire le file per l'acqua e il turno di notte dell'ambulatorio, se chi guida Helios le mette nei turni e paga loro un compenso."
   },
   choices: [
     {
       id: "put_them_on_the_rota",
-      label: "Put them on the rota",
+      label: "Mettili nei turni",
       effects: [
         { type: "RESOURCE_DELTA", key: "credits", value: -3 },
         { type: "EPIDEMIC_SHIFT", cause: "crowding", delta: -0.03 },
@@ -1595,15 +1595,15 @@ const f1DistrictVolunteers: ProofEvent = {
           salience: 0.4,
           exposure: "private",
           callbackEligible: true,
-          summary: "The district covered my night shift.",
+          summary: "Il distretto ha coperto il mio turno di notte.",
           tags: ["clinic", "district"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["How long the volunteers keep coming."] }
+      disclosure: { risks: ["supply"], unknowns: ["Per quanto continueranno a venire i volontari."] }
     },
     {
       id: "thank_and_decline",
-      label: "Thank them and keep the rota as it is",
+      label: "Ringraziali e lascia i turni come sono",
       effects: [
         { type: "CHARACTER_STRESS", targetId: "ira_001", value: 5 },
         memory({
@@ -1613,11 +1613,11 @@ const f1DistrictVolunteers: ProofEvent = {
           salience: 0.4,
           exposure: "private",
           callbackEligible: false,
-          summary: "The district offered; the rota stayed as it was.",
+          summary: "Il distretto si è offerto; i turni sono rimasti come erano.",
           tags: ["district"]
         })
       ],
-      disclosure: { risks: [], unknowns: ["Whether the district offers again."] }
+      disclosure: { risks: [], unknowns: ["Se il distretto si offrirà di nuovo."] }
     }
   ]
 };
@@ -1632,13 +1632,13 @@ const f5LeagueCallsIn: ProofEvent = {
   eligibility: [leagueDependency],
   relevance: [leagueWantsAccess],
   presentation: {
-    title: "The League presents its ledger",
-    body: "A League factor arrives with every favour Helios has taken, itemised. The League wants standing access -- or payment, or it stops sending anything at all."
+    title: "La Lega presenta il suo registro dei debiti",
+    body: "Arriva un agente della Lega con l'elenco di ogni favore che Helios ha ricevuto, voce per voce. La Lega vuole un accesso stabile — oppure un pagamento, altrimenti smette di mandare qualsiasi cosa."
   },
   choices: [
     {
       id: "grant_standing_access",
-      label: "Grant the League standing access",
+      label: "Concedi alla Lega un accesso stabile",
       availability: [leagueWantsAccess],
       effects: [
         { type: "FLAG_SET", key: "front_access_granted", value: true },
@@ -1651,19 +1651,19 @@ const f5LeagueCallsIn: ProofEvent = {
           salience: 0.7,
           exposure: "public",
           callbackEligible: true,
-          summary: "The League has a standing right of way into Helios now.",
+          summary: "Ora la Lega ha un diritto di passaggio permanente dentro Helios.",
           tags: ["league", "access"]
         })
       ],
       disclosure: {
-        knownNotes: ["The Security Council's red line is League control of the relay."],
+        knownNotes: ["La linea rossa del comitato di sicurezza è il controllo del ripetitore da parte della Lega."],
         risks: ["political", "social"],
-        unknowns: ["What the League does with a foothold."]
+        unknowns: ["Cosa farà la Lega con un punto d'appoggio."]
       }
     },
     {
       id: "pay_the_league_off",
-      label: "Pay the ledger off",
+      label: "Salda il registro dei debiti",
       effects: [
         { type: "RESOURCE_DELTA", key: "credits", value: -8 },
         { type: "RESOURCE_DELTA", key: "energy", value: -4 },
@@ -1677,15 +1677,15 @@ const f5LeagueCallsIn: ProofEvent = {
           salience: 0.5,
           exposure: "private",
           callbackEligible: true,
-          summary: "We paid the League's ledger in full, and it cost us.",
+          summary: "Abbiamo saldato per intero il registro della Lega, e ci è costato.",
           tags: ["league", "debt"]
         })
       ],
-      disclosure: { risks: ["supply"], unknowns: ["What the credits were going to be needed for."] }
+      disclosure: { risks: ["supply"], unknowns: ["A cosa sarebbero serviti quei crediti."] }
     },
     {
       id: "refuse_the_ledger",
-      label: "Refuse the ledger",
+      label: "Rifiuta il registro dei debiti",
       effects: [
         { type: "PRESSURE_DELTA", value: 2 },
         memory({
@@ -1696,7 +1696,7 @@ const f5LeagueCallsIn: ProofEvent = {
           salience: 0.7,
           exposure: "private",
           callbackEligible: true,
-          summary: "We took the League's help and refused its bill. My contacts will remember.",
+          summary: "Abbiamo preso l'aiuto della Lega e rifiutato il suo conto. I miei contatti se ne ricorderanno.",
           tags: ["league", "debt"]
         })
       ],
@@ -1710,7 +1710,7 @@ const f5LeagueCallsIn: ProofEvent = {
           breadcrumb: { memoryId: "fact_f5_ledger_refused" }
         }
       ],
-      disclosure: { risks: ["political", "supply"], unknowns: ["What the League stops sending."] }
+      disclosure: { risks: ["political", "supply"], unknowns: ["Cosa smetterà di mandare la Lega."] }
     }
   ]
 };
@@ -1723,13 +1723,13 @@ const f4WhoseSettlement: ProofEvent = {
   // is, and the assembly wants to know whose settlement this still is.
   eligibility: [{ predicate: "pattern_detected", pattern: "FACTION_DEPENDENCY_GROWING", value: true }],
   presentation: {
-    title: "Whose settlement is this?",
-    body: "The assembly has counted the favours. Sela puts the question plainly: does Helios still decide for itself, or does it answer to whoever last filled its cisterns?"
+    title: "Di chi è questo insediamento?",
+    body: "L'assemblea ha contato i favori. Sela pone la domanda senza giri di parole: Helios decide ancora da sola, o risponde a chiunque le abbia riempito le cisterne per ultimo?"
   },
   choices: [
     {
       id: "pledge_self_reliance",
-      label: "Pledge to stand on Helios's own stores",
+      label: "Impegnati a far vivere Helios delle sue scorte",
       effects: [
         { type: "RESOURCE_DELTA", key: "credits", value: -4 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: 0.06 },
@@ -1741,19 +1741,19 @@ const f4WhoseSettlement: ProofEvent = {
           salience: 0.6,
           exposure: "public",
           callbackEligible: true,
-          summary: "The steward promised the assembly Helios would stand on its own.",
+          summary: "Chi guida Helios ha promesso all'assemblea che Helios si sarebbe retta da sola.",
           tags: ["assembly", "dependency"]
         })
       ],
       disclosure: {
-        knownNotes: ["A pledge made on the record is one the assembly will hold you to."],
+        knownNotes: ["Un impegno preso a verbale è un impegno che l'assemblea ti chiederà di mantenere."],
         risks: ["political", "supply"],
-        unknowns: ["Whether Helios can keep it."]
+        unknowns: ["Se Helios riuscirà a mantenerlo."]
       }
     },
     {
       id: "defend_the_arrangements",
-      label: "Defend the arrangements as what kept Helios alive",
+      label: "Difendi gli accordi come ciò che ha tenuto in vita Helios",
       effects: [
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_labor", delta: -0.06 },
         { type: "POLITICAL_STANDING_SHIFT", groupId: "group_security", delta: 0.04 },
@@ -1766,13 +1766,13 @@ const f4WhoseSettlement: ProofEvent = {
           salience: 0.7,
           exposure: "public",
           callbackEligible: true,
-          summary: "The steward told the assembly the favours were the price of survival.",
+          summary: "Chi guida Helios ha detto all'assemblea che i favori erano il prezzo della sopravvivenza.",
           tags: ["assembly", "dependency"]
         })
       ],
       disclosure: {
         risks: ["political", "social"],
-        unknowns: ["Whether the assembly accepts the price."]
+        unknowns: ["Se l'assemblea accetterà il prezzo."]
       }
     }
   ]
