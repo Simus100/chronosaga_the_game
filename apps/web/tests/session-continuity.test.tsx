@@ -126,7 +126,7 @@ describe("A03: the run survives a trip to diagnostics", () => {
 
     // GQP-D: the shell opens on the mode menu. Baseline M1 is chosen
     // explicitly, and from there its screen is the one this test always drove.
-    click("BASELINE M1");
+    click("VERSIONE BASE (M1)");
     click(NEW_RUN);
     expect(body()).toContain("cmp_7419");
     const turnBefore = body().match(/TURNO GIOCATORE\s*(\d+)/)?.[1];
@@ -286,7 +286,7 @@ describe("A05: replacing a run is a decision, not a click", () => {
   it("requires the warning again after a trip to diagnostics", () => {
     render(createElement(App));
 
-    click("BASELINE M1"); // GQP-D mode menu, see A03
+    click("VERSIONE BASE (M1)"); // GQP-D mode menu, see A03
     click(NEW_RUN);
     click("WORLD TICK");
     const tick = body().match(/WORLD TICK\s*(\d+)/)?.[1];

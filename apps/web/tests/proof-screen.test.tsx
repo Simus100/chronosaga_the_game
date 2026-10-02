@@ -82,8 +82,8 @@ function mount(rows: Record<string, string> = {}) {
 
 async function startProof(rows: Record<string, string> = {}) {
   const mounted = mount(rows);
-  click("GAMEPLAY QUALITY PROOF");
-  click("INIZIA IL PROOF");
+  click("PROVA DI GIOCO");
+  click("INIZIA LA PROVA");
   await settle();
   return mounted;
 }
@@ -105,11 +105,11 @@ async function playBeat() {
 describe("the menu keeps the two Helios Reach explicit", () => {
   it("starts the Gameplay Quality Proof as itself, with telemetry created", async () => {
     const { sink } = mount();
-    expect(body()).toContain("Gameplay Quality Proof");
-    expect(body()).toContain("Baseline M1");
-    click("GAMEPLAY QUALITY PROOF");
-    expect(body()).toContain("Gameplay Quality Proof di Helios Reach");
-    click("INIZIA IL PROOF");
+    expect(body()).toContain("Prova di gioco");
+    expect(body()).toContain("Versione base (M1)");
+    click("PROVA DI GIOCO");
+    expect(body()).toContain("prova di gioco di Helios Reach");
+    click("INIZIA LA PROVA");
     await settle();
     expect(body()).toContain("gqp_7419");
     expect(clock("TURNO GIOCATORE")).toBe(1);
@@ -120,11 +120,11 @@ describe("the menu keeps the two Helios Reach explicit", () => {
 
   it("starts Baseline M1 as the accepted M1 screen", () => {
     mount();
-    click("BASELINE M1");
+    click("VERSIONE BASE (M1)");
     expect(body()).toContain("Helios Reach · simulazione sistemica");
     click("NUOVA CAMPAGNA");
     expect(body()).toContain("cmp_7419");
-    expect(body()).not.toContain("GAMEPLAY QUALITY PROOF");
+    expect(body()).not.toContain("PROVA DI GIOCO");
   });
 });
 
@@ -135,11 +135,11 @@ describe("EVENT and QUIET on screen", () => {
     expect(buttons().some(button => button.textContent === "SCEGLI")).toBe(false);
     expect(container.querySelectorAll(".proof-developments li").length).toBeGreaterThan(0);
     expect(container.querySelectorAll(".proof-focus--quiet > .proof-developments li").length).toBeLessThanOrEqual(3);
-    const [turn, tick] = [clock("TURNO GIOCATORE"), clock("WORLD TICK")];
+    const [turn, tick] = [clock("TURNO GIOCATORE"), clock("CICLO DEL MONDO")];
     click("LASCIA PASSARE IL TEMPO");
     await settle();
     expect(clock("TURNO GIOCATORE")).toBe(turn);
-    expect(clock("WORLD TICK")).toBe(tick + 1);
+    expect(clock("CICLO DEL MONDO")).toBe(tick + 1);
     expect(body()).toContain("Il tempo è passato");
   });
 
@@ -178,21 +178,21 @@ describe("save, load, and a load that fails", () => {
     click("SALVA");
     await settle();
     expect(persistence.rows.gqp_7419).toBeDefined();
-    const [turn, tick] = [clock("TURNO GIOCATORE"), clock("WORLD TICK")];
+    const [turn, tick] = [clock("TURNO GIOCATORE"), clock("CICLO DEL MONDO")];
     await playBeat();
     click("CARICA");
     await settle();
-    expect([clock("TURNO GIOCATORE"), clock("WORLD TICK")]).toEqual([turn, tick]);
-    expect(body()).toContain("Proof caricato");
+    expect([clock("TURNO GIOCATORE"), clock("CICLO DEL MONDO")]).toEqual([turn, tick]);
+    expect(body()).toContain("Prova caricata");
   });
 
   it("says a corrupted save is corrupted, and starts nothing", async () => {
     mount({ gqp_7419: "{ broken" });
-    click("GAMEPLAY QUALITY PROOF");
-    click("CARICA IL PROOF");
+    click("PROVA DI GIOCO");
+    click("CARICA LA PROVA");
     await settle();
     expect(body()).toContain("Salvataggio non valido");
-    expect(body()).toContain("INIZIA IL PROOF");
+    expect(body()).toContain("INIZIA LA PROVA");
     expect(body()).not.toContain("TURNO GIOCATORE");
   });
 });
@@ -205,11 +205,11 @@ describe("the founder flow: run, 12 beats, questionnaire, answers, export", () =
     const records = sink.lines[sessionId]!.map(line => JSON.parse(line) as { type: string });
     expect(records.filter(record => record.type === "beat")).toHaveLength(12);
     expect(records.some(record => record.type === "sample_target_reached")).toBe(true);
-    expect(body()).toContain("Obiettivo del campione raggiunto");
+    expect(body()).toContain("Obiettivo della sessione raggiunto");
     // Play is not blocked at the target.
     expect(buttons().some(button => button.textContent === "SCEGLI" || button.textContent === "LASCIA PASSARE IL TEMPO" || body().includes("PRIMA DI CONTINUARE"))).toBe(true);
 
-    click(find("PLAYTEST ·"));
+    click(find("SESSIONE DI PROVA ·"));
     click("TERMINA E QUESTIONARIO");
     await settle();
 
@@ -232,7 +232,7 @@ describe("the founder flow: run, 12 beats, questionnaire, answers, export", () =
     expect(JSON.stringify(answers)).not.toMatch(/"(score|pass|passed|verdict)"/i);
     expect(sink.files[`${sessionId}/founder_answers.md`]).toContain("La Lega ha riscosso il debito");
 
-    click("ESPORTA BUNDLE");
+    click("ESPORTA IL PACCHETTO");
     await settle();
     for (const file of ["final_save.json", "summary.json", "build.json", "founder_answers.json", "founder_answers.md"]) {
       expect(sink.files[`${sessionId}/${file}`], file).toBeDefined();
@@ -251,22 +251,22 @@ describe("an export that loses a write says so", () => {
       return write(sessionId, file, content);
     };
     act(() => root.render(createElement(PlayRoot, { persistence, sink })));
-    click("GAMEPLAY QUALITY PROOF");
-    click("INIZIA IL PROOF");
+    click("PROVA DI GIOCO");
+    click("INIZIA LA PROVA");
     await settle();
     await playBeat();
-    click(find("PLAYTEST ·"));
+    click(find("SESSIONE DI PROVA ·"));
     click("TERMINA E QUESTIONARIO"); // fewer than 12 beats: armed
     click("TERMINA E QUESTIONARIO"); // confirmed
     await settle();
     click("SALVA LE RISPOSTE");
     await settle();
     expect(body()).toContain("Risposte salvate");
-    click("ESPORTA BUNDLE");
+    click("ESPORTA IL PACCHETTO");
     await settle();
-    expect(body()).toContain("Export incompleto");
+    expect(body()).toContain("Esportazione incompleta");
     expect(body()).toContain("disco pieno");
-    expect(body()).not.toContain("Bundle esportato");
+    expect(body()).not.toContain("Pacchetto esportato");
   });
 });
 

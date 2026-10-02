@@ -54,7 +54,7 @@ export function PlayRoot({ persistence = tauriPersistence, sink = tauriTelemetry
           }}
           onBlur={() => setLeaveArmed(false)}
         >
-          {leaveArmed ? "CONFERMA: TORNA AL MENU (la run non salvata va persa)" : "◂ MENU"}
+          {leaveArmed ? "CONFERMA: TORNA AL MENU (la partita non salvata va persa)" : "◂ MENU"}
         </button>
       </>
     );
@@ -66,17 +66,17 @@ export function PlayRoot({ persistence = tauriPersistence, sink = tauriTelemetry
       <p className="play__subtitle">HELIOS REACH · SCEGLI COSA GIOCARE</p>
       <div className="mode-menu__options">
         <section className="mode-menu__option mode-menu__option--proof">
-          <h2>Gameplay Quality Proof</h2>
-          <p>La build del founder playtest: decisioni, momenti di quiete, personaggi che ricordano. 12–15 momenti di gioco.</p>
+          <h2>Prova di gioco</h2>
+          <p>La versione per il playtest del founder (Gameplay Quality Proof): decisioni, momenti di quiete, personaggi che ricordano. 12–15 momenti di gioco.</p>
           <button className="play__button play__button--primary" onClick={() => setMode("proof")}>
-            GAMEPLAY QUALITY PROOF
+            PROVA DI GIOCO
           </button>
         </section>
         <section className="mode-menu__option">
-          <h2>Baseline M1</h2>
+          <h2>Versione base (M1)</h2>
           <p>La simulazione sistemica M1 già accettata, invariata.</p>
           <button className="play__button" onClick={() => setMode("m1")}>
-            BASELINE M1
+            VERSIONE BASE (M1)
           </button>
         </section>
       </div>
@@ -85,7 +85,7 @@ export function PlayRoot({ persistence = tauriPersistence, sink = tauriTelemetry
           DIAGNOSTICA P0
         </button>
       ) : null}
-      <p className="mode-menu__build">build {BUILD_INFO.commit.slice(0, 12)}</p>
+      <p className="mode-menu__build">versione {BUILD_INFO.commit.slice(0, 12)}</p>
     </main>
   );
 }

@@ -59,7 +59,7 @@ export const QUESTIONS: readonly Question[] = [
   {
     id: "strategy_change",
     section: "Cambio di strategia",
-    text: "Durante la run hai cambiato intenzionalmente strategia perché il mondo ha reagito a qualcosa che avevi fatto?",
+    text: "Durante la partita hai cambiato intenzionalmente strategia perché il mondo ha reagito a qualcosa che avevi fatto?",
     kind: "yes_no",
     followUp: { id: "strategy_change_example", text: "Se sì: quando e perché? Un esempio concreto." },
     weight: "critical"
@@ -96,7 +96,7 @@ export const QUESTIONS: readonly Question[] = [
   {
     id: "signal_story",
     section: "Altri segnali (facoltativi)",
-    text: "Racconta con parole tue la storia di questa run.",
+    text: "Racconta con parole tue la storia di questa partita.",
     kind: "text",
     weight: "signal"
   },
@@ -156,7 +156,7 @@ export function answersMarkdown(answers: FounderAnswers): string {
     `- Sessione: \`${answers.sessionId}\``,
     `- Build: \`${answers.build.commit}\` (${answers.build.branch}, ${answers.build.builtAt})`,
     `- Completato: ${answers.completedAt}`,
-    `- Gameplay Beat giocati: ${answers.beatsPlayed}`,
+    `- Momenti di gioco giocati: ${answers.beatsPlayed}`,
     `- Founder gate: **${answers.founderGate}**`,
     "",
     `> ${answers.note}`,
@@ -173,7 +173,7 @@ export function answersMarkdown(answers: FounderAnswers): string {
       lines.push(`*${question.followUp.text}*`, "", answers.answers[question.followUp.id]?.trim() || "_(nessuna risposta)_", "");
     }
   }
-  lines.push("## Previsioni sui personaggi (raccolte durante la run)", "");
+  lines.push("## Previsioni sui personaggi (raccolte durante la partita)", "");
   if (answers.predictions.length === 0) lines.push("_(nessuna previsione registrata)_", "");
   for (const [index, prediction] of answers.predictions.entries()) {
     lines.push(

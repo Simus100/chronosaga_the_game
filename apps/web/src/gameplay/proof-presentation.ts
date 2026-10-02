@@ -44,6 +44,22 @@ export function characterName(state: WorldState, characterId: string): string {
   return byId(state.party, characterId)?.name ?? characterId;
 }
 
+/**
+ * Roles, in Italian. The world carries M1's English role strings; the M1
+ * baseline is not changed, so the proof translates them here, by id.
+ */
+const ROLE_LABEL: Readonly<Record<string, string>> = {
+  ira_001: "Cartografa",
+  brann_001: "Responsabile della sicurezza",
+  mara_001: "Responsabile delle scorte",
+  tarek_001: "Tecnico sul campo",
+  sela_001: "Mediatrice"
+};
+
+export function roleLabel(state: WorldState, characterId: string): string {
+  return ROLE_LABEL[characterId] ?? byId(state.party, characterId)?.role ?? "";
+}
+
 export function firstName(state: WorldState, characterId: string): string {
   return characterName(state, characterId).split(" ")[0]!;
 }
@@ -68,8 +84,14 @@ const FACTION_FROM: Readonly<Record<string, string>> = {
   faction_front: "dalla Lega"
 };
 
+/** The factions' own names, in Italian (the world carries M1's English ones). */
+const FACTION_NAME: Readonly<Record<string, string>> = {
+  faction_compact: "Patto Civico di Helios",
+  faction_front: "Fronte di Rimward"
+};
+
 export function factionLabel(state: WorldState, factionId: string): string {
-  const name = byId(state.simulation?.factions, factionId)?.name;
+  const name = FACTION_NAME[factionId] ?? byId(state.simulation?.factions, factionId)?.name;
   const alias = FACTION_ALIAS[factionId];
   if (alias && name) return `${capitalize(alias)} (${name})`;
   return name ?? factionId;
@@ -84,12 +106,9 @@ const GROUP_OF: Readonly<Record<string, string>> = {
   group_security: "del comitato di sicurezza"
 };
 
-/** "dell'assemblea dei lavoratori (Labor Assembly)" -- for "il consenso ...". */
+/** "dell'assemblea dei lavoratori" -- for "il consenso ...". */
 export function groupLabel(state: WorldState, groupId: string): string {
-  const name = byId(state.simulation?.politicalGroups, groupId)?.name;
-  const alias = GROUP_OF[groupId];
-  if (alias) return name ? `${alias} (${name})` : alias;
-  return `di ${name ?? groupId}`;
+  return GROUP_OF[groupId] ?? `di ${byId(state.simulation?.politicalGroups, groupId)?.name ?? groupId}`;
 }
 
 /** "del riciclatore" -- for "condizione ...". */
@@ -206,8 +225,21 @@ export function decisionLabel(catalogue: readonly ProofEvent[], decision: Decisi
   return `«${choiceLabel(catalogue, decision.eventId, decision.choiceId)}» (turno ${decision.playerTurn})`;
 }
 
+/**
+ * Memories the proof world inherits from M1 (the scenario's opening memory,
+ * and the World Tick's water-shortage memory) carry English summaries written
+ * by the M1 Core, which is not changed. Shown in Italian, by stable id.
+ */
+function inheritedSummary(memoryId: string): string | null {
+  if (memoryId === "mem_ira_001") return "Ha tracciato il percorso esposto del ripetitore prima dell'attuale crisi delle scorte.";
+  if (/^mem_world_tick_\d+_water_shortage$/.test(memoryId)) return "Helios ha chiuso il ciclo sotto la riserva d'acqua prevista.";
+  return null;
+}
+
 /** The authored summary of a fact, from whoever holds a copy of it. */
 export function memorySummary(state: WorldState, memoryId: string): string | null {
+  const inherited = inheritedSummary(memoryId);
+  if (inherited) return inherited;
   for (const character of state.party) {
     const memory = character.memories?.find(item => item.id === memoryId);
     if (memory) return memory.summary;
@@ -339,11 +371,11 @@ export function knownSentence(state: WorldState, item: KnownItem): string {
     case "memory": {
       const others = item.reach.filter(id => id !== item.characterId).map(id => firstName(state, id));
       const kept =
-        item.exposure === "secret" ? "resterà un segreto" : item.exposure === "public" ? "lo saprà tutto il distretto" : others.length ? `lo sapranno anche ${others.join(", ")}` : "resterà tra voi";
+        item.exposure === "secret" ? "resterà un segreto" : item.exposure === "public" ? "lo saprà tutto il distretto" : others.length ? `lo ${others.length > 1 ? "sapranno" : "saprà"} anche ${others.join(", ")}` : "resterà tra voi";
       return `${firstName(state, item.characterId)} se lo ricorderà (${kept})`;
     }
     case "publish":
-      return `Diventa pubblico${item.reach.length ? `: lo sapranno ${item.reach.map(id => firstName(state, id)).join(", ")}` : ""}`;
+      return `Diventa pubblico${item.reach.length ? `: lo ${item.reach.length > 1 ? "sapranno" : "saprà"} ${item.reach.map(id => firstName(state, id)).join(", ")}` : ""}`;
   }
 }
 

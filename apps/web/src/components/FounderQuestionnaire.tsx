@@ -66,8 +66,8 @@ export function FounderQuestionnaire({
     }
     setSaved(
       result.error
-        ? { ok: true, message: `Export incompleto: ${result.error}. Le risposte restano salvate; riprova.` }
-        : { ok: true, message: result.where ? `Bundle esportato in ${result.where}` : "Bundle esportato." }
+        ? { ok: true, message: `Esportazione incompleta: ${result.error}. Le risposte restano salvate; riprova.` }
+        : { ok: true, message: result.where ? `Pacchetto esportato in ${result.where}` : "Pacchetto esportato." }
     );
     setExportFailed(result.error !== null);
   };
@@ -117,12 +117,12 @@ export function FounderQuestionnaire({
           SALVA LE RISPOSTE
         </button>
         <button className="play__button" onClick={() => void exportBundle()} disabled={busy || !saved?.ok}>
-          ESPORTA BUNDLE
+          ESPORTA IL PACCHETTO
         </button>
         <button className="play__button play__button--ghost" onClick={onBack} disabled={busy}>
           TORNA AL GIOCO
         </button>
-        <span className="play__status">Founder gate: {FOUNDER_GATE_STATUS}</span>
+        <span className="play__status">Valutazione del founder: in attesa del playtest umano ({FOUNDER_GATE_STATUS})</span>
         {saved ? (
           <span className={`play__status play__status--${saved.ok && !exportFailed ? "ok" : "error"}`} role="status">
             {saved.message}

@@ -188,7 +188,7 @@ export async function loadProofGame(persistence: SystemicPersistence, campaignId
     return { ok: false, reason: "transport_error", message: `Impossibile leggere il database: ${(error as Error).message}` };
   }
   if (stored.status === "notFound") {
-    return { ok: false, reason: "not_found", message: `Nessun salvataggio del Gameplay Quality Proof (${campaignId}).` };
+    return { ok: false, reason: "not_found", message: `Nessun salvataggio della prova di gioco (${campaignId}).` };
   }
   if (stored.status === "incompatibleEnvelope") {
     return {
@@ -210,7 +210,7 @@ export async function loadProofGame(persistence: SystemicPersistence, campaignId
     return {
       ok: false,
       reason: "wrong_mode",
-      message: `Il salvataggio ${campaignId} è un mondo schema v${String(schemaVersion)}, non del Gameplay Quality Proof (v${PROOF_SCHEMA_VERSION}). Nessuna migrazione: non è stato aperto.`
+      message: `Il salvataggio ${campaignId} è un mondo schema v${String(schemaVersion)}, non della prova di gioco (v${PROOF_SCHEMA_VERSION}). Nessuna migrazione: non è stato aperto.`
     };
   }
   // A load is a bootstrap: the world opened has no earlier session to answer to.

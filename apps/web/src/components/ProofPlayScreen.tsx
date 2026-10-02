@@ -34,6 +34,7 @@ import {
   percent,
   rankDevelopments,
   resourceLabel,
+  roleLabel,
   stepLines
 } from "../gameplay/proof-presentation";
 import { createPersistenceLock, type PersistenceLock } from "../gameplay/persistence-lock";
@@ -195,7 +196,7 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
   const start = useCallback(() => {
     if (session && confirm !== "new") {
       setConfirm("new");
-      setStatus({ kind: "error", message: `La run in corso (turno ${session.state.turn}) verrà abbandonata e il salvataggio del proof la sostituirà. Premi di nuovo per confermare.` });
+      setStatus({ kind: "error", message: `La partita in corso (turno ${session.state.turn}) verrà abbandonata e il salvataggio della prova la sostituirà. Premi di nuovo per confermare.` });
       return;
     }
     io.protect(() => {
@@ -204,7 +205,7 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
       setPrompt(null);
       setSession(next);
       startTelemetry(next);
-      setStatus({ kind: "ok", message: "Gameplay Quality Proof avviato (seed 7419)." });
+      setStatus({ kind: "ok", message: "Prova di gioco avviata (seme 7419)." });
     });
   }, [session, confirm, io, startTelemetry]);
 
@@ -269,14 +270,14 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
       setSession(outcome.session);
       const active = telemetry ?? startTelemetry(outcome.session);
       if (active) void active.load({ ok: true }, outcome.session.state, proofPayload(outcome.session.state));
-      setStatus({ kind: "ok", message: `Proof caricato: turno ${outcome.session.state.turn}, tick ${outcome.session.state.simulation?.tick ?? 0}.` });
+      setStatus({ kind: "ok", message: `Prova caricata: turno ${outcome.session.state.turn}, tick ${outcome.session.state.simulation?.tick ?? 0}.` });
     });
   }, [persistence, io, telemetry, startTelemetry]);
 
   const toMenu = useCallback(() => {
     if (session && confirm !== "menu") {
       setConfirm("menu");
-      setStatus({ kind: "error", message: "Tornando al menu la run non salvata va persa. Premi di nuovo per confermare." });
+      setStatus({ kind: "error", message: "Tornando al menu la partita non salvata va persa. Premi di nuovo per confermare." });
       return;
     }
     onMenu();
@@ -285,7 +286,7 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
   const finish = useCallback(() => {
     if (beats < SAMPLE_TARGET.min && confirm !== "finish") {
       setConfirm("finish");
-      setStatus({ kind: "error", message: `Hai giocato ${beats} Gameplay Beat su ${SAMPLE_TARGET.min}–${SAMPLE_TARGET.max}. Premi di nuovo per passare comunque al questionario.` });
+      setStatus({ kind: "error", message: `Hai giocato ${beats} momenti su ${SAMPLE_TARGET.min}–${SAMPLE_TARGET.max}. Premi di nuovo per passare comunque al questionario.` });
       return;
     }
     setConfirm(null);
@@ -313,8 +314,8 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
       setLocation(where);
       setStatus(
         result.error
-          ? { kind: "error", message: `Bundle incompleto: ${result.error}` }
-          : { kind: "ok", message: where ? `Bundle esportato in ${where}` : "Bundle esportato (nessuna cartella disponibile in questa build)." }
+          ? { kind: "error", message: `Pacchetto incompleto: ${result.error}` }
+          : { kind: "ok", message: where ? `Pacchetto esportato in ${where}` : "Pacchetto esportato (nessuna cartella disponibile in questa versione)." }
       );
     }
     return result;
@@ -366,11 +367,11 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
     return (
       <main className="play play--empty proof-landing">
         <h1>CHRONOSAGA</h1>
-        <p className="play__subtitle">GAMEPLAY QUALITY PROOF · HELIOS REACH</p>
+        <p className="play__subtitle">PROVA DI GIOCO · HELIOS REACH</p>
         <section className="proof-landing__card">
           <p>
-            Stai per iniziare il <strong>Gameplay Quality Proof di Helios Reach</strong>: una sessione guidata di {SAMPLE_TARGET.min}–
-            {SAMPLE_TARGET.max} momenti di gioco (Gameplay Beat), seed {PROOF_SEED}. Alcuni momenti chiedono una decisione; altri sono
+            Stai per iniziare la <strong>prova di gioco di Helios Reach</strong> (Gameplay Quality Proof): una sessione guidata di{" "}
+            {SAMPLE_TARGET.min}–{SAMPLE_TARGET.max} momenti di gioco, seme {PROOF_SEED}. Alcuni momenti chiedono una decisione; altri sono
             momenti di quiete in cui il mondo si muove senza di te.
           </p>
           <label className="proof-landing__toggle">
@@ -380,10 +381,10 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
         </section>
         <div className="play__actions">
           <button className="play__button play__button--primary" onClick={start} disabled={ioBusy}>
-            INIZIA IL PROOF
+            INIZIA LA PROVA
           </button>
           <button className="play__button" onClick={() => void load()} disabled={ioBusy}>
-            CARICA IL PROOF
+            CARICA LA PROVA
           </button>
           <button className="play__button play__button--ghost" onClick={onMenu} disabled={ioBusy}>
             MENU
@@ -398,7 +399,7 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
     <main className="play proof">
       <header className="play__top">
         <div className="play__identity">
-          <strong>GAMEPLAY QUALITY PROOF</strong>
+          <strong>PROVA DI GIOCO</strong>
           <span className="play__campaign">Helios Reach · {session.state.campaignId}</span>
         </div>
         <dl className="play__clocks">
@@ -411,7 +412,7 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
             <dd>{session.state.day}</dd>
           </div>
           <div>
-            <dt>WORLD TICK</dt>
+            <dt>CICLO DEL MONDO</dt>
             <dd>{session.state.simulation?.tick ?? 0}</dd>
           </div>
         </dl>
@@ -493,13 +494,13 @@ function FocusPanel({
   if (session.defect) {
     return (
       <section className="panel proof-focus proof-focus--defect" aria-live="polite">
-        <span className="panel__tag">IL PROOF SI FERMA QUI</span>
+        <span className="panel__tag">LA PROVA SI FERMA QUI</span>
         <h2>Nessuna decisione disponibile</h2>
         <p className="event__body">
           Il Core segnala che a questo punto non c'è nessun evento disponibile e il mondo non ha più nulla da mostrare. È un limite
           del contenuto del proof, non una fine della partita: salva, rispondi al questionario ed esporta le prove.
         </p>
-        <p className="proof-focus__technical">Codice: {session.defect.reason}</p>
+        <p className="proof-focus__technical">Codice tecnico: {session.defect.reason}</p>
       </section>
     );
   }
@@ -788,7 +789,7 @@ function CharactersPanel({ state }: { state: WorldState }) {
             <li key={character.id} className="crew__member">
               <div className="crew__head">
                 <strong>{character.name}</strong>
-                <small>{character.role}</small>
+                <small>{roleLabel(state, character.id)}</small>
               </div>
               {character.coreValue ? <p className="crew__value">{capitalize(VALUE_LABEL[character.coreValue])}.</p> : null}
               <div className="crew__bars">
@@ -874,9 +875,10 @@ function PlaytestOverlay({
   return (
     <aside className={`playtest${open ? " playtest--open" : ""}`} aria-label="Playtest">
       <button className="playtest__chip" onClick={() => setOpen(value => !value)} aria-expanded={open}>
-        PLAYTEST · beat {beats} · T{session.state.turn} · W{session.state.simulation?.tick ?? 0} · telemetria {telemetry ? (error ? "ERRORE" : "ON") : "OFF"}
+        SESSIONE DI PROVA · momento {beats} · turno {session.state.turn} · ciclo {session.state.simulation?.tick ?? 0} · telemetria{" "}
+        {telemetry ? (error ? "IN ERRORE" : "attiva") : "disattivata"}
       </button>
-      {reached ? <p className="playtest__target">Obiettivo del campione raggiunto ({SAMPLE_TARGET.min} beat). Puoi fermarti qui o continuare fino a {SAMPLE_TARGET.max}.</p> : null}
+      {reached ? <p className="playtest__target">Obiettivo della sessione raggiunto ({SAMPLE_TARGET.min} momenti). Puoi fermarti qui o continuare fino a {SAMPLE_TARGET.max}.</p> : null}
       {open ? (
         <div className="playtest__panel">
           <dl>
@@ -884,12 +886,12 @@ function PlaytestOverlay({
             <dd>{telemetry?.sessionId ?? "telemetria disattivata"}</dd>
             <dt>Cartella</dt>
             <dd>{location ?? "—"}</dd>
-            <dt>Build</dt>
+            <dt>Versione</dt>
             <dd>
               {BUILD_INFO.commit.slice(0, 12)} · {BUILD_INFO.branch}
             </dd>
-            <dt>Founder gate</dt>
-            <dd>{FOUNDER_GATE_STATUS}</dd>
+            <dt>Valutazione del founder</dt>
+            <dd>in attesa del playtest umano ({FOUNDER_GATE_STATUS})</dd>
           </dl>
           {error ? <p className="playtest__error">Telemetria: {error}</p> : null}
           <div className="playtest__actions">
@@ -897,7 +899,7 @@ function PlaytestOverlay({
               TERMINA E QUESTIONARIO
             </button>
             <button className="play__button" onClick={onExport} disabled={!telemetry}>
-              ESPORTA BUNDLE
+              ESPORTA IL PACCHETTO
             </button>
             <button className="play__button play__button--ghost" onClick={() => setPredicting(value => !value)} disabled={!telemetry}>
               REGISTRA UNA PREVISIONE
