@@ -178,11 +178,16 @@ mod tests {
         for bad in ["../summary.json", "evil.exe", "summary.json.partial", "", "telemetry.jsonl"] {
             assert!(write_file(&root, "s1", bad, "x").is_err(), "accepted {bad:?}");
         }
-        // Replacing a file leaves no partial behind.
-        write_file(&root, "s1", "summary.json", "second").unwrap();
+        // `summary.json` is rewritten after every beat. On Windows,
+        // `std::fs::rename` is `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`, so the
+        // replacement succeeds over an existing file; this runs on the Windows
+        // CI job too. Each replacement leaves no partial behind.
         let dir = root.join("playtest").join("s1");
-        assert_eq!(fs::read_to_string(dir.join("summary.json")).unwrap(), "second");
-        assert!(!dir.join("summary.json.partial").exists());
+        for round in ["second", "third", "fourth"] {
+            write_file(&root, "s1", "summary.json", round).unwrap();
+            assert_eq!(fs::read_to_string(dir.join("summary.json")).unwrap(), round);
+            assert!(!dir.join("summary.json.partial").exists());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

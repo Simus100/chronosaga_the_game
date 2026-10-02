@@ -2,6 +2,7 @@ import { useState } from "react";
 import { BUILD_INFO } from "../playtest/build-info";
 import { QUESTIONS, answersMarkdown, founderAnswers, type Answers } from "../playtest/questionnaire";
 import { FOUNDER_GATE_STATUS, type NpcPrediction, type Telemetry } from "../playtest/telemetry";
+import type { ExportResult } from "./ProofPlayScreen";
 
 /**
  * The end-of-run questionnaire (GQP spec 20).
@@ -23,12 +24,13 @@ export function FounderQuestionnaire({
   beatsPlayed: number;
   predictions: readonly NpcPrediction[];
   telemetry: Telemetry | null;
-  onExport: () => Promise<string | null>;
+  onExport: () => Promise<ExportResult | null>;
   onBack: () => void;
 }) {
   const [answers, setAnswers] = useState<Answers>({});
   const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [exportFailed, setExportFailed] = useState(false);
 
   const set = (id: string, value: string) => setAnswers(current => ({ ...current, [id]: value }));
 
@@ -38,24 +40,36 @@ export function FounderQuestionnaire({
       return;
     }
     setBusy(true);
+    // Only a failure of these writes means the answers were not stored.
+    const before = telemetry.errors.length;
     const record = founderAnswers({ sessionId, build: BUILD_INFO, completedAt: new Date().toISOString(), beatsPlayed, answers, predictions });
     await telemetry.writeFile("founder_answers.json", JSON.stringify(record, null, 2));
     await telemetry.writeFile("founder_answers.md", answersMarkdown(record));
     await telemetry.questionnaire(true);
     await telemetry.flush();
     setBusy(false);
+    const failed = telemetry.errors.slice(before);
     setSaved(
-      telemetry.errors.length
-        ? { ok: false, message: `Salvataggio delle risposte non riuscito: ${telemetry.errors.slice(-1)[0]}` }
+      failed.length
+        ? { ok: false, message: `Salvataggio delle risposte non riuscito: ${failed.at(-1)}` }
         : { ok: true, message: "Risposte salvate." }
     );
   };
 
   const exportBundle = async () => {
     setBusy(true);
-    const where = await onExport();
+    const result = await onExport();
     setBusy(false);
-    setSaved({ ok: true, message: where ? `Bundle esportato in ${where}` : "Bundle esportato." });
+    if (!result) {
+      setSaved({ ok: false, message: "Nessuna sessione di telemetria: niente da esportare." });
+      return;
+    }
+    setSaved(
+      result.error
+        ? { ok: true, message: `Export incompleto: ${result.error}. Le risposte restano salvate; riprova.` }
+        : { ok: true, message: result.where ? `Bundle esportato in ${result.where}` : "Bundle esportato." }
+    );
+    setExportFailed(result.error !== null);
   };
 
   let section = "";
@@ -110,7 +124,7 @@ export function FounderQuestionnaire({
         </button>
         <span className="play__status">Founder gate: {FOUNDER_GATE_STATUS}</span>
         {saved ? (
-          <span className={`play__status play__status--${saved.ok ? "ok" : "error"}`} role="status">
+          <span className={`play__status play__status--${saved.ok && !exportFailed ? "ok" : "error"}`} role="status">
             {saved.message}
           </span>
         ) : null}

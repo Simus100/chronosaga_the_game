@@ -76,6 +76,12 @@ type Status =
 
 type Screen = "play" | "questionnaire";
 
+/** How an export ended: where the bundle is, and the first write it lost, if any. */
+export interface ExportResult {
+  readonly where: string | null;
+  readonly error: string | null;
+}
+
 /** Spec 20: a prediction before at least one important NPC reaction. Asked at most this often. */
 const PREDICTION_PROMPTS = 2;
 
@@ -287,23 +293,31 @@ export function ProofPlayScreen({ persistence, sink, onMenu, onExit }: Props) {
     setScreen("questionnaire");
   }, [beats, confirm]);
 
-  const exportBundle = useCallback(async () => {
+  /**
+   * Write the evidence bundle. The result says whether *this* export wrote
+   * everything: only failures raised during it count, and a failed write is
+   * never reported as an export.
+   */
+  const exportBundle = useCallback(async (): Promise<ExportResult | null> => {
     if (!telemetry || !session) return null;
+    const before = telemetry.errors.length;
     const payload = proofPayload(session.state);
     if (payload) await telemetry.writeFile("final_save.json", payload);
     await telemetry.writeFile("build.json", JSON.stringify(BUILD_INFO, null, 2));
     await telemetry.writeFile("summary.json", JSON.stringify(telemetry.summary(), null, 2));
     await telemetry.flush();
+    const failed = telemetry.errors.slice(before);
     const where = await telemetry.location().catch(() => null);
+    const result: ExportResult = { where, error: payload ? (failed.at(-1) ?? null) : "il mondo non ha superato il confine di salvataggio" };
     if (mounted.current) {
       setLocation(where);
       setStatus(
-        telemetry.errors.length
-          ? { kind: "error", message: `Bundle incompleto: ${telemetry.errors.slice(-1)[0]}` }
+        result.error
+          ? { kind: "error", message: `Bundle incompleto: ${result.error}` }
           : { kind: "ok", message: where ? `Bundle esportato in ${where}` : "Bundle esportato (nessuna cartella disponibile in questa build)." }
       );
     }
-    return where;
+    return result;
   }, [telemetry, session]);
 
   const submitPrediction = useCallback(

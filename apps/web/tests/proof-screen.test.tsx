@@ -241,6 +241,35 @@ describe("the founder flow: run, 12 beats, questionnaire, answers, export", () =
   });
 });
 
+describe("an export that loses a write says so", () => {
+  it("never reports a bundle as exported when one of its files failed to write", async () => {
+    const persistence = store();
+    const sink = memorySink();
+    const write = sink.write.bind(sink);
+    sink.write = async (sessionId, file, content) => {
+      if (file === "final_save.json") throw new Error("disco pieno");
+      return write(sessionId, file, content);
+    };
+    act(() => root.render(createElement(PlayRoot, { persistence, sink })));
+    click("GAMEPLAY QUALITY PROOF");
+    click("INIZIA IL PROOF");
+    await settle();
+    await playBeat();
+    click(find("PLAYTEST ·"));
+    click("TERMINA E QUESTIONARIO"); // fewer than 12 beats: armed
+    click("TERMINA E QUESTIONARIO"); // confirmed
+    await settle();
+    click("SALVA LE RISPOSTE");
+    await settle();
+    expect(body()).toContain("Risposte salvate");
+    click("ESPORTA BUNDLE");
+    await settle();
+    expect(body()).toContain("Export incompleto");
+    expect(body()).toContain("disco pieno");
+    expect(body()).not.toContain("Bundle esportato");
+  });
+});
+
 describe("React renders and dispatches; it never plays the game itself", () => {
   it("the proof screen and its presentation call no Core mutator and write no world field", () => {
     for (const file of ["../src/components/ProofPlayScreen.tsx", "../src/gameplay/proof-presentation.ts", "../src/components/PlayRoot.tsx", "../src/components/FounderQuestionnaire.tsx"]) {
