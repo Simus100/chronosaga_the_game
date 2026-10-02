@@ -9,6 +9,7 @@ import type {
 import { projectResource, resolveSettlementTarget } from "./resource-authority.js";
 import { findCastMember } from "./cast-roles.js";
 import { rounded } from "./numeric.js";
+import { advanceClock } from "./clock.js";
 import { isProofSimulation } from "../proof/schema-version.js";
 import { writeEpidemicContributor } from "../proof/epidemic-contributors.js";
 
@@ -138,7 +139,13 @@ function setNumber(
   changes.push({ type: changeType, key: changeKey, before, after });
 }
 
-function weightedSettlementSatisfaction(cohorts: PopulationCohortState[]): number {
+/**
+ * A settlement's satisfaction: the population-weighted mean of its cohorts'.
+ *
+ * Exported (GQP-C) so the one effect that moves cohort satisfaction outside the
+ * tick re-derives the settlement's value by this rule rather than a copy of it.
+ */
+export function weightedSettlementSatisfaction(cohorts: readonly PopulationCohortState[]): number {
   const population = cohorts.reduce((sum, cohort) => sum + cohort.population, 0);
   if (population <= 0) return 0.5;
   return rounded(
@@ -693,7 +700,12 @@ export function runWorldTick(input: WorldState): WorldTickResult {
   const changes: StateChange[] = [];
   // The tick this run produces. Separate from `state.turn`, which is the Player
   // Turn and belongs to the player's decision, not to the simulation.
-  const nextTick = simulation.tick + 1;
+  //
+  // Both clocks are advanced exactly or not at all (issue #37), and decided
+  // before anything is written: a tick at `Number.MAX_SAFE_INTEGER` is refused
+  // here rather than reported as a success that did not move the clock.
+  const nextTick = advanceClock(simulation.tick, "simulation.tick");
+  const nextDay = advanceClock(state.day, "day");
 
   const production = runProduction(state, changes);
   const consumption = consumePopulationResources(state, changes);
@@ -717,7 +729,7 @@ export function runWorldTick(input: WorldState): WorldTickResult {
   changes.push({ type: "tick", key: "simulation.tick", before: tickBefore, after: nextTick });
 
   const dayBefore = state.day;
-  state.day += 1;
+  state.day = nextDay;
   changes.push({ type: "day", key: "day", before: dayBefore, after: state.day });
 
   const result: WorldTickResult = {

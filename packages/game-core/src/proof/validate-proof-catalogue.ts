@@ -1,10 +1,13 @@
 import {
   EVENT_FAMILY_IDS,
   MEMORY_BEHAVIOR_HOOKS,
+  PATTERN_IDS,
+  PROTECTION_DIRECTIONS,
   PRESSURE_STAGES,
   PROOF_EVENT_TAXONOMY,
   PROOF_PREDICATES,
   PROOF_RISK_CATEGORIES,
+  type EventEffect,
   type ProofRiskCategory,
   type WorldState
 } from "@paa/game-types";
@@ -14,6 +17,7 @@ import {
   validateProofEffectReferences,
   validateProofEffectShape
 } from "./proof-effect-contract.js";
+import { guardianOf } from "./pattern-detectors.js";
 import { proofConsequenceId } from "./proof-events.js";
 import { isProofSimulation } from "./schema-version.js";
 
@@ -56,6 +60,8 @@ function harmCategory(effect: Record<string, unknown>): ProofRiskCategory | null
       return "political";
     case "PRESSURE_DELTA":
       return typeof effect.value === "number" && effect.value > 0 ? "political" : null;
+    case "POLITICAL_STANDING_SHIFT":
+      return typeof effect.delta === "number" && effect.delta < 0 ? "political" : null;
     default:
       return null;
   }
@@ -115,7 +121,9 @@ const PREDICATE_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
   memory_hook_present: ["predicate", "characterId", "hook", "subjectId", "value"],
   memory_known: ["predicate", "characterId", "memoryId", "value"],
   agenda_satisfied: ["predicate", "agendaId", "value"],
-  consequence_status: ["predicate", "consequenceId", "status"]
+  consequence_status: ["predicate", "consequenceId", "status"],
+  resource_below: ["predicate", "key", "value"],
+  pattern_detected: ["predicate", "pattern", "subject", "value"]
 };
 
 export function validateProofCatalogue(
@@ -132,7 +140,8 @@ export function validateProofCatalogue(
   const references = {
     characterIds: new Set(world.party.map(character => character.id)),
     factionIds: new Set(simulation.factions.map(faction => faction.id)),
-    nodeIds: new Set(simulation.productionNodes.map(node => node.id))
+    nodeIds: new Set(simulation.productionNodes.map(node => node.id)),
+    groupIds: new Set(simulation.politicalGroups.map(group => group.id))
   };
   const settlementIds = new Set(simulation.settlements.map(item => item.id));
   const agendaIds = new Set(simulation.factionAgenda.map(item => item.id));
@@ -149,7 +158,18 @@ export function validateProofCatalogue(
   // Who records which fact, and how widely: what a publication must be able
   // to rely on (P2-4).
   const producers: { memoryId: string; characterId: string; exposure: unknown }[] = [];
-  const publishedBy = new Map<string, string>(); // fact -> event
+  const publishedBy = new Map<string, { event: string; delayed: boolean }[]>(); // fact -> publishers
+  // What the pattern detectors can ever match on (GQP-C): factions some choice
+  // records a debt to, and facts whose own choice leaves a scheduled trace.
+  const debtSubjects = new Set<string>();
+  const tracedFacts = new Set<string>();
+  // Resource keys a `resource_below` may read: stocked by the settlement or
+  // held by the campaign today, or written by some choice. Anything else reads
+  // as zero, which would be a fabricated shortage rather than an error.
+  const resourceKeys = new Set<string>([
+    ...Object.keys(world.resources),
+    ...simulation.settlements.flatMap(item => Object.keys(item.resourceStock))
+  ]);
 
   const events = catalogue.filter(isRecord);
   if (events.length !== catalogue.length) errors.push("every catalogue entry must be an object");
@@ -176,6 +196,7 @@ export function validateProofCatalogue(
       const withinChoice = new Set<string>();
       for (const effect of [...effects, ...scheduledEffects]) {
         if (effect.type === "FLAG_SET" && nonEmpty(effect.key)) settableFlags.add(effect.key);
+        if (effect.type === "RESOURCE_DELTA" && nonEmpty(effect.key)) resourceKeys.add(effect.key);
         if (effect.type === "MEMORY_RECORD" && nonEmpty(effect.characterId) && nonEmpty(effect.memoryId)) {
           const key = effect.memoryId;
           if (withinChoice.has(key)) {
@@ -190,6 +211,18 @@ export function validateProofCatalogue(
           recordedFacts.add(effect.memoryId);
           producers.push({ memoryId: effect.memoryId, characterId: effect.characterId, exposure: effect.exposure });
           if (nonEmpty(effect.behaviorHook)) hooksByCharacter.add(`${effect.characterId}:${effect.behaviorHook}`);
+          if (effect.behaviorHook === "call_in_debt" && nonEmpty(effect.subjectId)) debtSubjects.add(effect.subjectId);
+          // A trace is discoverable only if one of the choice's scheduled
+          // effects has a guardian, and someone other than the holder carries
+          // that core value. A schedule of flags, stress or memories leaves
+          // nothing SECRET_ACTION_DISCOVERED can ever read: their guardian is
+          // null, and no core value is.
+          const holder = effect.characterId;
+          const readable = scheduledEffects.some(scheduled => {
+            const guardian = typeof scheduled.type === "string" ? guardianOf(scheduled as Pick<EventEffect, "type">) : null;
+            return world.party.some(character => character.id !== holder && character.coreValue === guardian);
+          });
+          if (readable) tracedFacts.add(effect.memoryId);
         }
       }
       for (const schedule of Array.isArray(choice.schedules) ? choice.schedules.filter(isRecord) : []) {
@@ -286,6 +319,55 @@ export function validateProofCatalogue(
             errors.push(`${at}.status must be pending, applied or absent`);
           }
           return;
+        case "resource_below":
+          if (!nonEmpty(raw.key)) errors.push(`${at}.key must be a non-empty string`);
+          else if (!resourceKeys.has(raw.key)) errors.push(`${at}.key '${raw.key}' is stocked by nothing and written by no choice`);
+          if (typeof raw.value !== "number" || !Number.isFinite(raw.value) || raw.value <= 0) {
+            errors.push(`${at}.value must be a positive finite number`);
+          }
+          return;
+        case "pattern_detected": {
+          if (typeof raw.pattern !== "string" || !(PATTERN_IDS as readonly string[]).includes(raw.pattern)) {
+            errors.push(`${at}.pattern must be one of ${PATTERN_IDS.join(", ")}`);
+            bool(raw.value);
+            return;
+          }
+          bool(raw.value);
+          if (raw.subject === undefined) return;
+          // What `subject` names depends on the pattern, and each is checked
+          // against something the catalogue can actually make true: a subject
+          // no detector can ever match is an event that silently never appears.
+          const subject = raw.subject;
+          switch (raw.pattern) {
+            case "IGNORED_TECHNICAL_WARNINGS":
+              if (!nonEmpty(subject) || !references.characterIds.has(subject)) {
+                errors.push(`${at}.subject must be a party character`);
+              } else if (world.party.find(character => character.id === subject)?.coreValue !== "technical_integrity") {
+                errors.push(`${at}.subject '${subject}' is not a technician (core value technical_integrity)`);
+              }
+              return;
+            case "REPEATED_PROTECTION_OR_NEGLECT":
+              if (typeof subject !== "string" || !(PROTECTION_DIRECTIONS as readonly string[]).includes(subject)) {
+                errors.push(`${at}.subject must be one of ${PROTECTION_DIRECTIONS.join(", ")}`);
+              }
+              return;
+            case "FACTION_DEPENDENCY_GROWING":
+              if (!nonEmpty(subject) || !references.factionIds.has(subject)) {
+                errors.push(`${at}.subject must be a faction`);
+              } else if (!debtSubjects.has(subject)) {
+                errors.push(`${at}.subject '${subject}' is a faction no choice records a debt to`);
+              }
+              return;
+            case "SECRET_ACTION_DISCOVERED":
+              if (!nonEmpty(subject) || !recordedFacts.has(subject)) {
+                errors.push(`${at}.subject '${String(subject)}' is a fact no choice records`);
+              } else if (!tracedFacts.has(subject)) {
+                errors.push(`${at}.subject '${subject}' is recorded by no choice that leaves a trace to discover`);
+              }
+              return;
+          }
+          return;
+        }
       }
     });
   };
@@ -319,6 +401,25 @@ export function validateProofCatalogue(
       errors.push(`event ${id} needs a presentation title and body`);
     }
     predicates(event.eligibility, `event ${id}.eligibility`);
+    if (event.relevance !== undefined) {
+      predicates(event.relevance, `event ${id}.relevance`);
+      // A relevance reference counts only when it points at something the
+      // world holds. One that can never count is dead content: a reason to
+      // emerge that no state can ever supply.
+      (Array.isArray(event.relevance) ? event.relevance : []).forEach((raw, index) => {
+        if (!isRecord(raw)) return;
+        const causal =
+          ((raw.predicate === "memory_hook_present" || raw.predicate === "memory_known" || raw.predicate === "pattern_detected") && raw.value === true) ||
+          (raw.predicate === "agenda_satisfied" && raw.value === false) ||
+          (raw.predicate === "consequence_status" && (raw.status === "pending" || raw.status === "applied"));
+        if (!causal) {
+          errors.push(
+            `event ${id}.relevance[${index}] must point at something the world holds: a memory or pattern present, ` +
+              "an agenda item still open, or a consequence pending or applied"
+          );
+        }
+      });
+    }
 
     const choices = recordsOf(event.choices, `event ${id}.choices`, errors, false);
     if (choices.length === 0) {
@@ -380,10 +481,18 @@ export function validateProofCatalogue(
         if (effect.type === "MEMORY_RECORD" && nonEmpty(effect.memoryId)) recordedHere.set(effect.memoryId, effect);
       }
       // A publication must be one the content can make (P2-4): the named
-      // holder records the fact somewhere, not already public, and only one
-      // event ever publishes it. An immediate publication may not publish
-      // what its own choice records -- availability reads the world before
-      // the choice, and that fact is not in it yet; record it public instead.
+      // holder records the fact somewhere, and not already public. An
+      // immediate publication may not publish what its own choice records --
+      // availability reads the world before the choice, and that fact is not
+      // in it yet; record it public instead.
+      //
+      // Several events may publish one fact immediately (GQP-C): a secret can
+      // be confessed where it was made, or exposed where it was discovered.
+      // Whichever comes first makes the fact public, and the precondition
+      // every publication shares then closes the others by availability. A
+      // *delayed* publication cannot share a fact: it would sit pending while
+      // another event published it, and the boundary refuses a pending
+      // publication its holder can no longer make.
       const publications = (at2: string, effect: JsonRecord, delayed: boolean) => {
         if (!nonEmpty(effect.memoryId) || !nonEmpty(effect.characterId)) return;
         const fact = effect.memoryId;
@@ -393,9 +502,13 @@ export function validateProofCatalogue(
         } else if (recorders.some(item => item.exposure === "public")) {
           errors.push(`${at2} publishes '${fact}', which is recorded public already`);
         }
-        const owner = publishedBy.get(fact);
-        if (owner !== undefined && owner !== id) errors.push(`fact '${fact}' is published by both '${owner}' and '${id}'`);
-        publishedBy.set(fact, id);
+        const publishers = publishedBy.get(fact) ?? [];
+        const other = publishers.find(item => item.event !== id && (item.delayed || delayed));
+        if (other) {
+          errors.push(`fact '${fact}' is published by both '${other.event}' and '${id}', and a delayed publication cannot share its fact`);
+        }
+        publishers.push({ event: id, delayed });
+        publishedBy.set(fact, publishers);
         const recordedByThisChoice = recordedHere.get(fact)?.characterId === effect.characterId;
         if (!delayed && recordedHere.has(fact)) {
           errors.push(`${at2} records and publishes '${fact}' in one choice; record it public instead`);

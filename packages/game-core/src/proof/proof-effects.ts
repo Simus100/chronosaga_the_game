@@ -8,6 +8,7 @@ import type {
 } from "@paa/game-types";
 import { requireFiniteResult, rounded, withinUnitInterval } from "../state/numeric.js";
 import { shiftEpidemicContributor } from "./epidemic-contributors.js";
+import { weightedSettlementSatisfaction } from "../state/run-world-tick.js";
 import {
   validateProofEffectReferences,
   validateProofEffectShape,
@@ -50,7 +51,8 @@ function referencesOf(state: WorldState, simulation: SystemicSimulationStateV2):
   return {
     characterIds: new Set(state.party.map(character => character.id)),
     factionIds: new Set(simulation.factions.map(faction => faction.id)),
-    nodeIds: new Set(simulation.productionNodes.map(node => node.id))
+    nodeIds: new Set(simulation.productionNodes.map(node => node.id)),
+    groupIds: new Set(simulation.politicalGroups.map(group => group.id))
   };
 }
 
@@ -174,6 +176,48 @@ export function applyProofEffect(
         after: { origin: "direct", exposure: effect.exposure, hook: memory.behaviorHook ?? null }
       });
       commitPropagation(state, simulation, plan, changes);
+      return;
+    }
+
+    case "POLITICAL_STANDING_SHIFT": {
+      const group = simulation.politicalGroups.find(item => item.id === effect.groupId)!;
+      // Plan every write first: the group, its cohorts, and the settlements
+      // whose satisfaction those cohorts derive. Approval and satisfaction are
+      // validated to 0..1 by the persistence boundary; staying inside that
+      // range keeps an existing rule rather than inventing a cap.
+      const move = (value: number, field: string) =>
+        rounded(withinUnitInterval(requireFiniteResult(value + effect.delta, field)));
+      const approval = { before: group.approval, after: move(group.approval, `${group.id}.approval`) };
+      const cohorts = simulation.populationCohorts
+        .filter(cohort => cohort.politicalAffinity === group.id)
+        .map(cohort => ({ cohort, before: cohort.satisfaction, after: move(cohort.satisfaction, `${cohort.id}.satisfaction`) }));
+      const settlements = simulation.settlements
+        .filter(settlement => cohorts.some(item => item.cohort.settlementId === settlement.id))
+        .map(settlement => {
+          const planned = simulation.populationCohorts
+            .filter(cohort => cohort.settlementId === settlement.id)
+            .map(cohort => ({ ...cohort, satisfaction: cohorts.find(item => item.cohort === cohort)?.after ?? cohort.satisfaction }));
+          return {
+            settlement,
+            before: settlement.satisfaction,
+            after: requireFiniteResult(weightedSettlementSatisfaction(planned), `${settlement.id}.satisfaction`)
+          };
+        });
+
+      if (approval.after !== approval.before) {
+        group.approval = approval.after;
+        changes.push({ type: "politicalApproval", key: `${group.id}.approval`, before: approval.before, after: approval.after });
+      }
+      for (const item of cohorts) {
+        if (item.after === item.before) continue;
+        item.cohort.satisfaction = item.after;
+        changes.push({ type: "cohortSatisfaction", key: `${item.cohort.id}.satisfaction`, before: item.before, after: item.after });
+      }
+      for (const item of settlements) {
+        if (item.after === item.before) continue;
+        item.settlement.satisfaction = item.after;
+        changes.push({ type: "settlementSatisfaction", key: `${item.settlement.id}.satisfaction`, before: item.before, after: item.after });
+      }
       return;
     }
 

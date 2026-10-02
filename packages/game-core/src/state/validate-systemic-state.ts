@@ -14,6 +14,7 @@ import {
 } from "../proof/schema-version.js";
 import { refuseProofFieldsOnBaseline, validateProofState } from "../proof/validate-proof-state.js";
 import { publicationRefusal } from "../proof/proof-effects.js";
+import { isClockValue } from "./clock.js";
 
 export interface SystemicValidationResult {
   ok: boolean;
@@ -92,6 +93,20 @@ function requireInteger(
   }
   if (min !== undefined && (value as number) < min) {
     errors.push(`${label} must be at least ${min}, got ${String(value)}`);
+  }
+}
+
+/**
+ * An authoritative clock: a whole number, a floor, and the safe-integer range
+ * (issue #37). The integer and floor messages are the ones every other
+ * integer field uses; beyond `Number.MAX_SAFE_INTEGER` the value is still an
+ * integer, but no longer one a clock can advance from exactly.
+ */
+function requireClock(owner: JsonRecord, key: string, label: string, errors: string[], min: number): void {
+  const before = errors.length;
+  requireInteger(owner, key, label, errors, min);
+  if (errors.length === before && !isClockValue(owner[key], min)) {
+    errors.push(`${label} must be a safe integer (at most ${Number.MAX_SAFE_INTEGER}), got ${String(owner[key])}`);
   }
 }
 
@@ -247,8 +262,11 @@ function validateShape(input: unknown): string[] {
   // event eligibility, and `campaignId` decides which save is whose.
   requireString(input, "campaignId", "WorldState.campaignId", errors);
   requireFiniteNumber(input, "seed", "WorldState.seed", errors);
-  requireInteger(input, "turn", "WorldState.turn", errors, 1);
-  requireInteger(input, "day", "WorldState.day", errors, 1);
+  requireClock(input, "turn", "WorldState.turn", errors, 1);
+  requireClock(input, "day", "WorldState.day", errors, 1);
+  // The Player Turn every persisted turn stamp is bounded by, once it is
+  // itself a clock. Nothing a world holds can have happened after it.
+  const currentTurn = isClockValue(input.turn, 1) ? (input.turn as number) : null;
   requireFiniteNumber(input, "worldPressure", "WorldState.worldPressure", errors, 0);
   requireFlags(input, "WorldState.flags", errors);
   requireFiniteNumberMap(input, "resources", "WorldState.resources", errors);
@@ -264,6 +282,12 @@ function validateShape(input: unknown): string[] {
   // Untrusted input: a save may arrive without it, or with a string.
   if (!Number.isInteger(simulationValue.tick) || (simulationValue.tick as number) < 0) {
     errors.push("WorldState.simulation.tick must be a non-negative integer");
+  } else if (!isClockValue(simulationValue.tick, 0)) {
+    // The quiet bound and every "ticks since" reading subtract this clock
+    // (GQP spec 14.6). At 2^53 a World Tick no longer moves it.
+    errors.push(
+      `WorldState.simulation.tick must be a safe integer (at most ${Number.MAX_SAFE_INTEGER}), got ${String(simulationValue.tick)}`
+    );
   }
 
   const settlements = requireEntityArray(simulationValue, "settlements", "settlements", errors);
@@ -309,7 +333,17 @@ function validateShape(input: unknown): string[] {
           requireString(memory, "id", `${at}.id`, errors);
           requireString(memory, "summary", `${at}.summary`, errors, false);
           requireStringArray(memory, "tags", `${at}.tags`, errors);
-          requireInteger(memory, "turn", `${at}.turn`, errors, 1);
+          // A clock, not a label: the GQP-C detectors order evidence by it
+          // (`firstInvolvementAfter`, `engagedAt`). Every memory is written at
+          // the Player Turn it happens on -- a World Tick writes on the current
+          // turn, so equality is legitimate -- and the turn only grows. A turn
+          // past the world's own is evidence from the future: a save could use
+          // it to plant an involvement or retract an engagement after the fact.
+          const turnErrors = errors.length;
+          requireClock(memory, "turn", `${at}.turn`, errors, 1);
+          if (errors.length === turnErrors && currentTurn !== null && (memory.turn as number) > currentTurn) {
+            errors.push(`${at}.turn ${String(memory.turn)} is after WorldState.turn ${currentTurn}; a memory cannot come from the future`);
+          }
           validateCausalSource(memory.source, `${at}.source`, errors);
         });
       }
@@ -391,7 +425,25 @@ function validateShape(input: unknown): string[] {
     requireFiniteNumber(squad, "intelligence", `${label}.intelligence`, errors);
     requireOptionalString(squad, "commanderId", `${label}.commanderId`, errors);
   }
-  for (const consequence of consequences ?? []) consequenceShapeErrors(consequence, errors);
+  for (const consequence of consequences ?? []) {
+    const before = errors.length;
+    consequenceShapeErrors(consequence, errors);
+    // A consequence applies only once its trigger turn is reached, and the turn
+    // only grows, so an applied one never lies ahead of the world. The
+    // SECRET_ACTION_DISCOVERED detector reads an applied consequence as the
+    // physical trace of a secret: applied in the future is a planted trace.
+    // Pending ones may of course lie ahead.
+    if (
+      errors.length === before &&
+      currentTurn !== null &&
+      consequence.status === "applied" &&
+      (consequence.triggerTurn as number) > currentTurn
+    ) {
+      errors.push(
+        `consequence ${String(consequence.id)} is applied at triggerTurn ${String(consequence.triggerTurn)}, after WorldState.turn ${currentTurn}`
+      );
+    }
+  }
 
   return errors;
 }
@@ -405,7 +457,8 @@ function validateShape(input: unknown): string[] {
  */
 function consequenceShapeErrors(consequence: JsonRecord, errors: string[]): void {
   const label = `consequence ${String(consequence.id)}`;
-  requireInteger(consequence, "triggerTurn", `${label}.triggerTurn`, errors, 1);
+  // A Player Turn clock like `WorldState.turn` it is compared against (#37).
+  requireClock(consequence, "triggerTurn", `${label}.triggerTurn`, errors, 1);
   requireEnum(consequence, "visibility", `${label}.visibility`, ["visible", "hidden"], errors);
   requireEnum(
     consequence,
@@ -490,7 +543,8 @@ function consequenceContext(state: WorldState): ConsequenceContext {
     proofReferences: {
       characterIds,
       factionIds: new Set(simulation.factions.map(faction => faction.id)),
-      nodeIds: new Set(simulation.productionNodes.map(node => node.id))
+      nodeIds: new Set(simulation.productionNodes.map(node => node.id)),
+      groupIds: new Set(simulation.politicalGroups.map(group => group.id))
     }
   };
 }

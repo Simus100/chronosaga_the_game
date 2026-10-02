@@ -130,12 +130,13 @@ const memoryRecord = (overrides: Record<string, unknown> = {}): EventEffect =>
   }) as unknown as EventEffect;
 
 describe("GQP-B effects: vocabulary and version boundaries", () => {
-  it("adds exactly four proof-only types and leaves the M1 vocabulary alone", () => {
+  it("adds the proof-only types (four in GQP-B, one in GQP-C) and leaves the M1 vocabulary alone", () => {
     expect([...PROOF_EVENT_EFFECT_TYPES].sort()).toEqual([
       "EPIDEMIC_SHIFT",
       "MEMORY_PUBLISH",
       "MEMORY_RECORD",
-      "NODE_CONDITION_SHIFT"
+      "NODE_CONDITION_SHIFT",
+      "POLITICAL_STANDING_SHIFT"
     ]);
     // The GQP-0 list is untouched: it is what M1 content and v1 saves may hold.
     expect([...EVENT_EFFECT_TYPES].sort()).toEqual([
@@ -171,7 +172,8 @@ describe("GQP-B effects: vocabulary and version boundaries", () => {
       EPIDEMIC_SHIFT: { type, cause: "crowding", delta: 0.1 },
       NODE_CONDITION_SHIFT: { type, nodeId: "prod_recycler_01", delta: 0.1 },
       MEMORY_RECORD: memoryRecord(),
-      MEMORY_PUBLISH: { type, memoryId: "fact_probe" }
+      MEMORY_PUBLISH: { type, memoryId: "fact_probe" },
+      POLITICAL_STANDING_SHIFT: { type, groupId: "group_labor", delta: 0.1 }
     };
     refusedWithoutMutation(createSystemicScenario(7419), effects[type], /cannot apply to a baseline world/);
   });
@@ -357,6 +359,9 @@ describe("GQP-B effects: NODE_CONDITION_SHIFT is agency over the node itself", (
 describe("GQP-B effects: MEMORY_RECORD writes a salient memory, typed", () => {
   it("records the fact on the character with exactly the GQP-A fields, and origin direct", () => {
     const state = proof();
+    // The Core stamps a memory with the turn the world is on; a stamp past the
+    // world's own turn is refused at the boundary (GQP-C P2-1).
+    state.turn = 3;
     const changes: StateChange[] = [];
     applyEventEffect(state, memoryRecord({ exposure: "secret" }), changes, { source: SOURCE, turn: 3 });
     const memory = memoriesOf(state, "tarek_001").find(m => m.id === "fact_probe")!;
@@ -517,6 +522,7 @@ describe("GQP-B effects: MEMORY_PUBLISH makes a kept fact public, by decision", 
 
   it("turns the holder's copy public and runs the public channel from her settlement", () => {
     const state = withSecret();
+    state.turn = 4;
     const publish = { source: { kind: "choice" as const, id: "evt_publish:disclose" }, turn: 4 };
     const changes: StateChange[] = [];
     expect(isFactPublic(state, state.simulation as never, "fact_secret")).toBe(false);
@@ -930,6 +936,7 @@ describe("One memory id, one fact, across the party (P2-7)", () => {
       ["tarek_001", fact({ origin: "reflected", salience: 0.4, turn: 3 })],
       ["sela_001", fact({ origin: "public", salience: 0.4, source: { kind: "choice", id: "evt_other:x" } })]
     ]);
+    state.turn = 3; // the reflected copy is stamped on the world's current turn
     expect(validateSystemicWorldState(state)).toEqual({ ok: true, errors: [] });
   });
 

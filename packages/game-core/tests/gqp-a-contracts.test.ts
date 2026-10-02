@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ProofEvent, SystemicSimulationStateV2, WorldState } from "@paa/game-types";
 import {
   BASELINE_SCHEMA_VERSION,
+  GQP_SCENARIO_FLAGS,
   PROOF_SCHEMA_VERSION,
   SUPPORTED_SCHEMA_VERSIONS,
   agendaConditionHolds,
@@ -166,8 +167,12 @@ describe("GQP-A: the M1 baseline is untouched", () => {
     const baseline = createSystemicScenario(7419);
     const state = proof();
 
+    // The proof's declared flags (GQP-C) are ownership too: exactly those
+    // keys, and nothing else, may differ from the baseline's flags.
+    const flags = Object.fromEntries(Object.entries(state.flags).filter(([key]) => !(key in GQP_SCENARIO_FLAGS)));
     const stripped = {
       ...state,
+      flags,
       campaignId: baseline.campaignId,
       party: state.party.map(character => {
         const { coreValue, currentGoal, ...rest } = character;
@@ -743,10 +748,12 @@ describe("GQP-A: agenda conditions are typed predicates over authoritative state
     const simulation = proofSimulation(state);
     const council = simulation.factionAgenda.filter(i => i.factionId === "faction_compact");
 
-    expect(satisfiedAgendaItems(council, state)).toEqual([]);
+    // GQP-C's latent grievance holds from the start: no League help taken.
+    expect(satisfiedAgendaItems(council, state).map(i => i.id)).toEqual(["agenda_co_no_league_client"]);
     state.flags.conduit_registered = true;
     expect(satisfiedAgendaItems(council, state).map(i => i.id)).toEqual([
-      "agenda_co_unregistered_access"
+      "agenda_co_unregistered_access",
+      "agenda_co_no_league_client"
     ]);
   });
 });

@@ -13,6 +13,7 @@ import { rounded } from "../state/numeric.js";
 import { readAuthoritativeResource } from "../state/resource-authority.js";
 import { agendaConditionHolds } from "./agenda-condition.js";
 import { epidemicStage, pressureStage, settlementInfrastructurePressure } from "./pressure.js";
+import { isPatternDetected } from "./pattern-detectors.js";
 import { publicationRefusal } from "./proof-effects.js";
 import { isProofSimulation } from "./schema-version.js";
 
@@ -113,6 +114,15 @@ export function evaluateProofPredicate(predicate: ProofPredicate, state: WorldSt
       if (predicate.status === "absent") return consequence === undefined;
       return consequence?.status === predicate.status;
     }
+
+    case "resource_below":
+      // The authority affordability reads and RESOURCE_DELTA writes.
+      return readAuthoritativeResource(state, predicate.key) < predicate.value;
+
+    case "pattern_detected":
+      // A detector reads the world; this only asks it. The match is derived
+      // afresh on every evaluation -- there is no stored pattern to go stale.
+      return isPatternDetected(state, predicate.pattern, predicate.subject) === predicate.value;
 
     default: {
       // Content that skipped the catalogue gate. Refused like an unknown
@@ -242,6 +252,7 @@ export type KnownItem =
   | { kind: "stress"; characterId: string; before: number; after: number; delta: number }
   | { kind: "epidemic"; cause: string; before: number; after: number; delta: number }
   | { kind: "node_condition"; nodeId: string; before: number; after: number; delta: number }
+  | { kind: "standing"; groupId: string; before: number; after: number; delta: number }
   | { kind: "memory"; characterId: string; memoryId: string; valence: string; exposure: string; reach: string[] }
   | { kind: "publish"; characterId: string; memoryId: string; reach: string[] };
 
@@ -297,6 +308,12 @@ function previewEffect(world: WorldState, effect: EventEffect, turn: number): Kn
       const before = condition();
       apply();
       return { kind: "node_condition", nodeId: effect.nodeId, ...change(before, condition()) };
+    }
+    case "POLITICAL_STANDING_SHIFT": {
+      const approval = () => simulation.politicalGroups.find(group => group.id === effect.groupId)?.approval ?? 0;
+      const before = approval();
+      apply();
+      return { kind: "standing", groupId: effect.groupId, ...change(before, approval()) };
     }
     case "MEMORY_RECORD": {
       apply();

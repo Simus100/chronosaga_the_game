@@ -39,6 +39,7 @@ export function createGqpScenario(seed = 7419): WorldState {
     // same seed cannot be filed under one key by the persistence layer, which
     // derives the storage key from this field.
     campaignId: `gqp_${seed}`,
+    flags: { ...base.flags, ...GQP_SCENARIO_FLAGS },
     party: base.party.map(character => ({
       ...character,
       coreValue: CAST_VALUES[character.id] ?? "institutional_order",
@@ -57,6 +58,21 @@ export function createGqpScenario(seed = 7419): WorldState {
     } satisfies SystemicSimulationStateV2
   };
 }
+
+/**
+ * The flags the proof scenario declares and owns (GQP-C).
+ *
+ * Two faction agenda items are latent grievances: each is resolved while the
+ * settlement has taken no help from the other side, and becomes active the
+ * moment it does (spec 11, F5: rescue costs an immediate, visible agenda item
+ * with the adverse faction). Agenda conditions compare flags strictly -- an
+ * absent flag is not `false` -- so the scenario states both as `false` rather
+ * than leaving the grievances unresolvable by omission.
+ */
+export const GQP_SCENARIO_FLAGS: Readonly<Record<string, boolean>> = {
+  league_aid_accepted: false,
+  council_aid_accepted: false
+};
 
 /**
  * Functional roles from spec 6.2, expressed the only way 5.2 permits.
@@ -176,6 +192,29 @@ function factionAgenda(): FactionAgendaItem[] {
       subject: "informal_access",
       intensity: 0.65,
       condition: { predicate: "flag_equals", key: "front_access_granted", value: true },
+      source: bootstrap
+    },
+    {
+      // Latent until the settlement leans on the League (GQP-C, F5). The
+      // Council fears manifest dependence on the autonomist faction above all
+      // (spec 8, CO escalation); League help is what turns this on.
+      id: "agenda_co_no_league_client",
+      factionId: "faction_compact",
+      kind: "grievance",
+      subject: "informal_access",
+      intensity: 0.6,
+      condition: { predicate: "flag_equals", key: "league_aid_accepted", value: false },
+      source: bootstrap
+    },
+    {
+      // The mirror image: the League fears institutional lock-in (spec 8,
+      // FCL), and a settlement that runs to the Council for help is exactly it.
+      id: "agenda_fcl_no_council_client",
+      factionId: "faction_front",
+      kind: "grievance",
+      subject: "settlement_autonomy",
+      intensity: 0.5,
+      condition: { predicate: "flag_equals", key: "council_aid_accepted", value: false },
       source: bootstrap
     },
     {

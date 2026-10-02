@@ -409,14 +409,23 @@ describe("#34 the World Tick refuses to write a non-finite authoritative number"
    * as a follow-up rather than answered here.
    */
   it("advances tick and day without producing a non-finite clock", () => {
+    // Before issue #37 this world "advanced": `Number.MAX_VALUE + 1` is
+    // finite, equal to itself, and was save-valid, so the tick succeeded
+    // without moving the clock. The clock contract refuses both halves: the
+    // save boundary does not accept a clock beyond the safe-integer range, and
+    // the World Tick will not advance one. No non-finite clock is produced
+    // either way -- nothing is produced at all.
     const state = createSystemicScenario(4201);
     state.simulation!.tick = Number.MAX_VALUE;
     state.day = Number.MAX_VALUE;
 
-    const result = runWorldTick(state);
-    expect(Number.isFinite(result.state.simulation!.tick)).toBe(true);
-    expect(Number.isFinite(result.state.day)).toBe(true);
-    expect(validateSystemicWorldState(result.state).ok).toBe(true);
+    expect(validateSystemicWorldState(state).ok).toBe(false);
+    expect(() => runWorldTick(state)).toThrow(/not a safe integer/);
+
+    const ordinary = runWorldTick(createSystemicScenario(4201));
+    expect(Number.isFinite(ordinary.state.simulation!.tick)).toBe(true);
+    expect(Number.isFinite(ordinary.state.day)).toBe(true);
+    expect(validateSystemicWorldState(ordinary.state).ok).toBe(true);
   });
 
   /** The property, asserted over the ordinary scenario rather than argued. */
